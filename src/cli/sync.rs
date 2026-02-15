@@ -342,6 +342,13 @@ mod tests {
             }
         }
 
+        fn events(&self) -> Vec<String> {
+            self.events
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        }
+
         fn swap_targets(&self) -> Vec<String> {
             self.restore_scripts
                 .lock()
@@ -355,6 +362,36 @@ mod tests {
                         .map(ToString::to_string)
                 })
                 .collect()
+        }
+
+        fn entries_for_target_set(&self, target_set_name: &str) -> Vec<String> {
+            let mut entries = self
+                .restore_scripts
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .iter()
+                .filter_map(|script| {
+                    let target = script
+                        .lines()
+                        .find(|line| line.starts_with("swap "))
+                        .and_then(|line| line.split_whitespace().nth(2))?;
+                    if target != target_set_name {
+                        return None;
+                    }
+
+                    Some(
+                        script
+                            .lines()
+                            .filter(|line| line.starts_with("add "))
+                            .filter_map(|line| line.split_whitespace().nth(2))
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .flatten()
+                .collect::<Vec<_>>();
+            entries.sort();
+            entries
         }
 
         fn run_impl(
@@ -455,6 +492,26 @@ mod tests {
             },
             safe: SafeConfig {
                 ips: vec!["10.0.0.0/25".to_string()],
+                include_github_meta: false,
+                github_meta_categories: None,
+            },
+            remote: RemoteConfig { urls },
+        }
+    }
+
+    fn test_config_with_ipv6(urls: Vec<String>, enable_ipv6: bool) -> Config {
+        Config {
+            ipset: IpsetConfig {
+                set_name: "kidobo".to_string(),
+                set_name_v6: "kidobo-v6".to_string(),
+                enable_ipv6,
+                set_type: "hash:net".to_string(),
+                hashsize: 65536,
+                maxelem: 500000,
+                timeout: 0,
+            },
+            safe: SafeConfig {
+                ips: Vec::new(),
                 include_github_meta: false,
                 github_meta_categories: None,
             },
@@ -576,5 +633,112 @@ mod tests {
 
         assert_eq!(networks.len(), 7);
         assert!(http_client.max_in_flight() <= MAX_REMOTE_FETCH_WORKERS);
+    }
+
+    #[test]
+    fn minimal_behavioral_example_matches_architecture_contract() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = test_paths(temp.path());
+
+        fs::create_dir_all(paths.blocklist_file.parent().expect("parent")).expect("mkdir data");
+        fs::create_dir_all(&paths.remote_cache_dir).expect("mkdir cache");
+        fs::write(&paths.blocklist_file, "10.0.0.0/24\n2001:db8::/32\n").expect("write blocklist");
+
+        let url = "https://example.com/minimal.txt".to_string();
+        let mut config = test_config(vec![url.clone()]);
+        config.safe.ips = vec!["10.0.0.0/25".to_string()];
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let responses = BTreeMap::from([(
+            url,
+            VecDeque::from([Ok(HttpResponse {
+                status: 200,
+                body: b"10.0.0.128/25\n198.51.100.7\n".to_vec(),
+                etag: None,
+                last_modified: None,
+            })]),
+        )]);
+
+        let http_client = MockHttpClient::new(responses, Arc::clone(&events), 0);
+        let runner = MockCommandRunner::new(Arc::clone(&events));
+
+        let summary = run_sync_with_dependencies(
+            &paths,
+            &config,
+            &BTreeMap::new(),
+            &http_client,
+            &runner,
+            &runner,
+        )
+        .expect("sync");
+
+        assert_eq!(summary.ipv4_entries, 2);
+        assert_eq!(summary.ipv6_entries, 1);
+        assert_eq!(
+            runner.entries_for_target_set("kidobo"),
+            vec!["10.0.0.128/25".to_string(), "198.51.100.7/32".to_string()]
+        );
+        assert_eq!(
+            runner.entries_for_target_set("kidobo-v6"),
+            vec!["2001:db8::/32".to_string()]
+        );
+
+        let events = runner.events();
+        assert!(events.iter().any(|entry| {
+            entry.contains("cmd:iptables -A kidobo-input -m set --match-set kidobo src -j DROP")
+        }));
+        assert!(events.iter().any(|entry| {
+            entry.contains("cmd:ip6tables -A kidobo-input -m set --match-set kidobo-v6 src -j DROP")
+        }));
+    }
+
+    #[test]
+    fn sync_respects_ipv6_disable_mode_end_to_end() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = test_paths(temp.path());
+
+        fs::create_dir_all(paths.blocklist_file.parent().expect("parent")).expect("mkdir data");
+        fs::create_dir_all(&paths.remote_cache_dir).expect("mkdir cache");
+        fs::write(&paths.blocklist_file, "10.0.0.0/24\n2001:db8::/32\n").expect("write blocklist");
+
+        let url = "https://example.com/ipv6-off.txt".to_string();
+        let config = test_config_with_ipv6(vec![url.clone()], false);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let responses = BTreeMap::from([(
+            url,
+            VecDeque::from([Ok(HttpResponse {
+                status: 200,
+                body: b"198.51.100.7\n2001:db8:ffff::/48\n".to_vec(),
+                etag: None,
+                last_modified: None,
+            })]),
+        )]);
+
+        let http_client = MockHttpClient::new(responses, Arc::clone(&events), 0);
+        let runner = MockCommandRunner::new(events);
+
+        let summary = run_sync_with_dependencies(
+            &paths,
+            &config,
+            &BTreeMap::new(),
+            &http_client,
+            &runner,
+            &runner,
+        )
+        .expect("sync");
+
+        assert_eq!(summary.ipv4_entries, 2);
+        assert_eq!(summary.ipv6_entries, 0);
+        assert_eq!(runner.swap_targets(), vec!["kidobo"]);
+        assert_eq!(
+            runner.entries_for_target_set("kidobo"),
+            vec!["10.0.0.0/24".to_string(), "198.51.100.7/32".to_string()]
+        );
+        assert!(
+            runner
+                .events()
+                .iter()
+                .all(|entry| !entry.starts_with("cmd:ip6tables"))
+        );
     }
 }
