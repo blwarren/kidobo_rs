@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use crate::adapters::path::PathResolutionError;
+use crate::core::config::ConfigError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -25,6 +26,15 @@ pub enum KidoboError {
 
     #[error("config file does not exist: {path}")]
     MissingConfigFile { path: PathBuf },
+
+    #[error("failed to read config file {path}: {reason}")]
+    ConfigRead { path: PathBuf, reason: String },
+
+    #[error("config parse/validation failed: {source}")]
+    ConfigParse {
+        #[from]
+        source: ConfigError,
+    },
 }
 
 impl KidoboError {
@@ -33,5 +43,21 @@ impl KidoboError {
             Self::Interrupted => 130,
             _ => 1,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::KidoboError;
+
+    #[test]
+    fn interrupted_maps_to_130() {
+        assert_eq!(KidoboError::Interrupted.exit_code(), 130);
+    }
+
+    #[test]
+    fn non_interrupted_maps_to_1() {
+        let err = KidoboError::UnimplementedCommand { command: "sync" };
+        assert_eq!(err.exit_code(), 1);
     }
 }

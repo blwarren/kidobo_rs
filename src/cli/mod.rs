@@ -4,8 +4,8 @@ mod interrupt;
 
 use std::process::ExitCode;
 
-use clap::error::ErrorKind;
 use clap::Parser;
+use clap::error::ErrorKind;
 
 use crate::error::KidoboError;
 
@@ -67,8 +67,7 @@ mod tests {
 
     #[test]
     fn help_maps_to_exit_code_0() {
-        let err = Cli::try_parse_from(["kidobo", "--help"])
-            .expect_err("help should early-exit");
+        let err = Cli::try_parse_from(["kidobo", "--help"]).expect_err("help should early-exit");
         assert_eq!(clap_error_exit_code(&err), 0);
     }
 }

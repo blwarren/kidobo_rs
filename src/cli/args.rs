@@ -61,3 +61,18 @@ pub enum Command {
         file: Option<PathBuf>,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::LogLevel;
+    use log::LevelFilter;
+
+    #[test]
+    fn log_level_mapping_matches_rust_levels() {
+        assert_eq!(LevelFilter::from(LogLevel::Trace), LevelFilter::Trace);
+        assert_eq!(LevelFilter::from(LogLevel::Debug), LevelFilter::Debug);
+        assert_eq!(LevelFilter::from(LogLevel::Info), LevelFilter::Info);
+        assert_eq!(LevelFilter::from(LogLevel::Warn), LevelFilter::Warn);
+        assert_eq!(LevelFilter::from(LogLevel::Error), LevelFilter::Error);
+    }
+}
