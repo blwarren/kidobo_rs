@@ -5,4 +5,5 @@ pub mod http_cache;
 pub mod ipset;
 pub mod iptables;
 pub mod lock;
+pub mod lookup_sources;
 pub mod path;

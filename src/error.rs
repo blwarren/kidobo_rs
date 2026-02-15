@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use crate::adapters::lock::LockError;
+use crate::adapters::lookup_sources::LookupSourceLoadError;
 use crate::adapters::path::PathResolutionError;
 use crate::core::config::ConfigError;
 use thiserror::Error;
@@ -34,6 +36,24 @@ pub enum KidoboError {
     ConfigParse {
         #[from]
         source: ConfigError,
+    },
+
+    #[error("failed to read lookup targets file {path}: {reason}")]
+    LookupTargetFileRead { path: PathBuf, reason: String },
+
+    #[error("lookup failed for {count} invalid target(s)")]
+    LookupInvalidTargets { count: usize },
+
+    #[error("lookup source loading failed: {source}")]
+    LookupSourceLoad {
+        #[from]
+        source: LookupSourceLoadError,
+    },
+
+    #[error("lock operation failed: {source}")]
+    Lock {
+        #[from]
+        source: LockError,
     },
 }
 
