@@ -5,15 +5,19 @@ use crate::adapters::config::load_config_from_file;
 use crate::adapters::lookup_sources::load_lookup_sources;
 use crate::adapters::path::{PathResolutionInput, resolve_paths};
 use crate::cli::args::Command;
+use crate::cli::doctor::run_doctor_command;
+use crate::cli::flush::run_flush_command;
+use crate::cli::init::run_init_command;
+use crate::cli::sync::run_sync_command;
 use crate::core::lookup::run_lookup;
 use crate::error::KidoboError;
 
 pub fn dispatch(command: Command) -> Result<(), KidoboError> {
     match command {
-        Command::Init => Err(KidoboError::UnimplementedCommand { command: "init" }),
-        Command::Doctor => Err(KidoboError::UnimplementedCommand { command: "doctor" }),
-        Command::Sync => Err(KidoboError::UnimplementedCommand { command: "sync" }),
-        Command::Flush => Err(KidoboError::UnimplementedCommand { command: "flush" }),
+        Command::Init => run_init_command(),
+        Command::Doctor => run_doctor_command(),
+        Command::Sync => run_sync_command(),
+        Command::Flush => run_flush_command(),
         Command::Lookup { ip, file } => run_lookup_command(ip, file),
     }
 }
@@ -77,26 +81,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{collect_lookup_targets, read_target_lines};
-    use crate::cli::args::Command;
     use crate::error::KidoboError;
-
-    #[test]
-    fn non_lookup_commands_remain_stubbed() {
-        let cases = vec![
-            (Command::Init, "init"),
-            (Command::Doctor, "doctor"),
-            (Command::Sync, "sync"),
-            (Command::Flush, "flush"),
-        ];
-
-        for (command, expected) in cases {
-            let err = super::dispatch(command).expect_err("commands are currently stubs");
-            match err {
-                KidoboError::UnimplementedCommand { command } => assert_eq!(command, expected),
-                _ => panic!("unexpected error variant"),
-            }
-        }
-    }
 
     #[test]
     fn lookup_target_collection_single_mode() {

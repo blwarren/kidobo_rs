@@ -106,8 +106,21 @@ pub enum PathResolutionError {
 }
 
 pub fn resolve_paths(input: &PathResolutionInput) -> Result<ResolvedPaths, PathResolutionError> {
+    resolve_paths_with_policy(input, false)
+}
+
+pub fn resolve_paths_for_init(
+    input: &PathResolutionInput,
+) -> Result<ResolvedPaths, PathResolutionError> {
+    resolve_paths_with_policy(input, true)
+}
+
+fn resolve_paths_with_policy(
+    input: &PathResolutionInput,
+    allow_missing_config: bool,
+) -> Result<ResolvedPaths, PathResolutionError> {
     let base = derive_base_paths(input);
-    let config_file = select_config_path(input, &base)?;
+    let config_file = select_config_path(input, &base, allow_missing_config)?;
 
     let config_dir = config_file
         .parent()
@@ -143,9 +156,10 @@ fn derive_base_paths(input: &PathResolutionInput) -> BasePaths {
 fn select_config_path(
     input: &PathResolutionInput,
     base: &BasePaths,
+    allow_missing_config: bool,
 ) -> Result<PathBuf, PathResolutionError> {
     if let Some(explicit) = input.explicit_config_path.clone() {
-        if explicit.exists() {
+        if explicit.exists() || allow_missing_config {
             return Ok(explicit);
         }
 
@@ -156,23 +170,27 @@ fn select_config_path(
         return Ok(base.config_file.clone());
     }
 
-    if !env_truthy(&input.env, ENV_KIDOBO_ALLOW_REPO_CONFIG_FALLBACK) {
-        return Err(PathResolutionError::MissingConfig {
+    if env_truthy(&input.env, ENV_KIDOBO_ALLOW_REPO_CONFIG_FALLBACK) {
+        let repo_root =
+            find_repo_root(&input.cwd).ok_or_else(|| PathResolutionError::RepoRootNotFound {
+                start: input.cwd.clone(),
+            })?;
+
+        let fallback = repo_root.join("config.toml");
+        if fallback.exists() || allow_missing_config {
+            return Ok(fallback);
+        }
+
+        return Err(PathResolutionError::RepoFallbackConfigMissing { path: fallback });
+    }
+
+    if allow_missing_config {
+        Ok(base.config_file.clone())
+    } else {
+        Err(PathResolutionError::MissingConfig {
             attempted: base.config_file.clone(),
-        });
+        })
     }
-
-    let repo_root =
-        find_repo_root(&input.cwd).ok_or_else(|| PathResolutionError::RepoRootNotFound {
-            start: input.cwd.clone(),
-        })?;
-
-    let fallback = repo_root.join("config.toml");
-    if fallback.exists() {
-        return Ok(fallback);
-    }
-
-    Err(PathResolutionError::RepoFallbackConfigMissing { path: fallback })
 }
 
 fn find_repo_root(start: &Path) -> Option<PathBuf> {
@@ -214,7 +232,7 @@ mod tests {
     use super::{
         ENV_KIDOBO_ALLOW_REPO_CONFIG_FALLBACK, ENV_KIDOBO_DISABLE_TEST_SANDBOX, ENV_KIDOBO_ROOT,
         ENV_KIDOBO_TEST_SANDBOX, PathResolutionError, PathResolutionInput, is_truthy_value,
-        resolve_paths,
+        resolve_paths, resolve_paths_for_init,
     };
 
     fn test_input(temp: &TempDir) -> PathResolutionInput {
@@ -437,5 +455,43 @@ mod tests {
                 attempted: root.join("config/config.toml"),
             }
         );
+    }
+
+    #[test]
+    fn init_resolution_allows_missing_default_config_path() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = temp.path().join("root");
+        fs::create_dir_all(&root).expect("mkdir root");
+
+        let mut input = test_input(&temp);
+        input
+            .env
+            .insert(ENV_KIDOBO_ROOT.to_string(), root.display().to_string());
+
+        let resolved = resolve_paths_for_init(&input).expect("resolve");
+        assert_eq!(resolved.config_file, root.join("config/config.toml"));
+    }
+
+    #[test]
+    fn init_resolution_allows_missing_repo_fallback_config() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = temp.path().join("root");
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(&root).expect("mkdir root");
+        fs::create_dir_all(repo.join(".git")).expect("mkdir .git");
+
+        let mut input = test_input(&temp);
+        input.cwd = repo.join("nested");
+        fs::create_dir_all(&input.cwd).expect("mkdir nested");
+        input
+            .env
+            .insert(ENV_KIDOBO_ROOT.to_string(), root.display().to_string());
+        input.env.insert(
+            ENV_KIDOBO_ALLOW_REPO_CONFIG_FALLBACK.to_string(),
+            "yes".to_string(),
+        );
+
+        let resolved = resolve_paths_for_init(&input).expect("resolve");
+        assert_eq!(resolved.config_file, repo.join("config.toml"));
     }
 }

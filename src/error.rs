@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use crate::adapters::ipset::IpsetError;
+use crate::adapters::iptables::FirewallError;
 use crate::adapters::lock::LockError;
 use crate::adapters::lookup_sources::LookupSourceLoadError;
 use crate::adapters::path::PathResolutionError;
@@ -14,11 +16,17 @@ pub enum KidoboError {
     #[error("failed to initialize logger: {reason}")]
     LoggerInit { reason: String },
 
+    #[error("failed to serialize doctor report: {reason}")]
+    DoctorReportSerialize { reason: String },
+
     #[error("failed to install SIGINT handler: {reason}")]
     SignalHandlerInstall { reason: String },
 
     #[error("operation interrupted by SIGINT")]
     Interrupted,
+
+    #[error("doctor checks failed")]
+    DoctorFailed,
 
     #[error("path resolution failed: {source}")]
     PathResolution {
@@ -29,8 +37,14 @@ pub enum KidoboError {
     #[error("config file does not exist: {path}")]
     MissingConfigFile { path: PathBuf },
 
+    #[error("initialization I/O failed for {path}: {reason}")]
+    InitIo { path: PathBuf, reason: String },
+
     #[error("failed to read config file {path}: {reason}")]
     ConfigRead { path: PathBuf, reason: String },
+
+    #[error("failed to read blocklist file {path}: {reason}")]
+    BlocklistRead { path: PathBuf, reason: String },
 
     #[error("config parse/validation failed: {source}")]
     ConfigParse {
@@ -54,6 +68,18 @@ pub enum KidoboError {
     Lock {
         #[from]
         source: LockError,
+    },
+
+    #[error("firewall operation failed: {source}")]
+    Firewall {
+        #[from]
+        source: FirewallError,
+    },
+
+    #[error("ipset operation failed: {source}")]
+    Ipset {
+        #[from]
+        source: IpsetError,
     },
 }
 

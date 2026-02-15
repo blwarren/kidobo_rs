@@ -1,6 +1,10 @@
 mod args;
 mod commands;
+mod doctor;
+mod flush;
+mod init;
 mod interrupt;
+mod sync;
 
 use std::process::ExitCode;
 
@@ -36,6 +40,7 @@ pub fn run() -> ExitCode {
     match commands::dispatch(cli.command) {
         Ok(()) => ExitCode::SUCCESS,
         Err(KidoboError::Interrupted) => ExitCode::from(130),
+        Err(KidoboError::DoctorFailed) => ExitCode::from(1),
         Err(err) => {
             eprintln!("{err}");
             ExitCode::from(err.exit_code())

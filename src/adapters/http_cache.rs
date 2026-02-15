@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use log::warn;
+use reqwest::header::{ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -67,6 +68,74 @@ pub enum HttpClientError {
 
 pub trait HttpClient {
     fn fetch(&self, request: HttpRequest) -> Result<HttpResponse, HttpClientError>;
+}
+
+#[derive(Debug, Clone)]
+pub struct ReqwestHttpClient {
+    user_agent: String,
+}
+
+impl Default for ReqwestHttpClient {
+    fn default() -> Self {
+        Self {
+            user_agent: format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
+        }
+    }
+}
+
+impl ReqwestHttpClient {
+    pub fn new(user_agent: String) -> Self {
+        Self { user_agent }
+    }
+}
+
+impl HttpClient for ReqwestHttpClient {
+    fn fetch(&self, request: HttpRequest) -> Result<HttpResponse, HttpClientError> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|err| HttpClientError::Request {
+                reason: err.to_string(),
+            })?;
+
+        runtime.block_on(async {
+            let client = reqwest::Client::new();
+
+            let mut builder = client
+                .get(&request.url)
+                .header(USER_AGENT, &self.user_agent);
+
+            if let Some(etag) = &request.if_none_match {
+                builder = builder.header(IF_NONE_MATCH, etag);
+            }
+            if let Some(last_modified) = &request.if_modified_since {
+                builder = builder.header(IF_MODIFIED_SINCE, last_modified);
+            }
+
+            let response = builder
+                .send()
+                .await
+                .map_err(|err| HttpClientError::Request {
+                    reason: err.to_string(),
+                })?;
+
+            let status = response.status().as_u16();
+            let headers = response.headers().clone();
+            let body = response
+                .bytes()
+                .await
+                .map_err(|err| HttpClientError::Request {
+                    reason: err.to_string(),
+                })?;
+
+            Ok(HttpResponse {
+                status,
+                body: body.to_vec(),
+                etag: header_to_string(&headers, ETAG),
+                last_modified: header_to_string(&headers, LAST_MODIFIED),
+            })
+        })
+    }
 }
 
 #[derive(Debug, Error)]
@@ -356,6 +425,16 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 fn hex_lower(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn header_to_string(
+    headers: &reqwest::header::HeaderMap,
+    name: reqwest::header::HeaderName,
+) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(ToString::to_string)
 }
 
 #[cfg(test)]

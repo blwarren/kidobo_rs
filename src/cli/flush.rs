@@ -1,0 +1,322 @@
+use log::warn;
+
+use crate::adapters::command_runner::{CommandResult, SudoCommandRunner};
+use crate::adapters::config::load_config_from_file;
+use crate::adapters::ipset::IpsetCommandRunner;
+use crate::adapters::iptables::{FirewallCommandRunner, KIDOBO_CHAIN_NAME};
+use crate::adapters::lock::acquire_non_blocking;
+use crate::adapters::path::{PathResolutionInput, resolve_paths};
+use crate::core::config::Config;
+use crate::error::KidoboError;
+
+pub fn run_flush_command() -> Result<(), KidoboError> {
+    let path_input = PathResolutionInput::from_process(None)?;
+    let paths = resolve_paths(&path_input)?;
+    let config = load_config_from_file(&paths.config_file)?;
+
+    let _lock = acquire_non_blocking(&paths.lock_file)?;
+
+    let sudo_runner = SudoCommandRunner::default();
+    run_flush_with_runner(&config, &sudo_runner, &sudo_runner)
+}
+
+pub(crate) fn run_flush_with_runner(
+    config: &Config,
+    firewall_runner: &dyn FirewallCommandRunner,
+    ipset_runner: &dyn IpsetCommandRunner,
+) -> Result<(), KidoboError> {
+    cleanup_firewall_family(firewall_runner, "iptables");
+    if config.ipset.enable_ipv6 {
+        cleanup_firewall_family(firewall_runner, "ip6tables");
+    }
+
+    best_effort_ipset_destroy(ipset_runner, &config.ipset.set_name);
+    if config.ipset.enable_ipv6 {
+        best_effort_ipset_destroy(ipset_runner, &config.ipset.set_name_v6);
+    }
+
+    Ok(())
+}
+
+fn cleanup_firewall_family(runner: &dyn FirewallCommandRunner, binary: &str) {
+    remove_all_input_jumps(runner, binary);
+    best_effort_firewall_command(runner, binary, &["-F", KIDOBO_CHAIN_NAME]);
+    best_effort_firewall_command(runner, binary, &["-X", KIDOBO_CHAIN_NAME]);
+}
+
+fn remove_all_input_jumps(runner: &dyn FirewallCommandRunner, binary: &str) {
+    loop {
+        match runner.run(binary, &["-D", "INPUT", "-j", KIDOBO_CHAIN_NAME]) {
+            Ok(result) if result.success => continue,
+            Ok(result) if is_missing_jump_result(&result) => break,
+            Ok(result) => {
+                warn!(
+                    "best-effort flush command failed: {} -D INPUT -j {} (status={:?} stderr={})",
+                    binary, KIDOBO_CHAIN_NAME, result.status, result.stderr
+                );
+                break;
+            }
+            Err(err) => {
+                warn!(
+                    "best-effort flush command execution failed: {} -D INPUT -j {} ({})",
+                    binary, KIDOBO_CHAIN_NAME, err
+                );
+                break;
+            }
+        }
+    }
+}
+
+fn best_effort_firewall_command(runner: &dyn FirewallCommandRunner, binary: &str, args: &[&str]) {
+    match runner.run(binary, args) {
+        Ok(result) if result.success => {}
+        Ok(result) => warn!(
+            "best-effort flush command failed: {} {} (status={:?} stderr={})",
+            binary,
+            args.join(" "),
+            result.status,
+            result.stderr
+        ),
+        Err(err) => warn!(
+            "best-effort flush command execution failed: {} {} ({})",
+            binary,
+            args.join(" "),
+            err
+        ),
+    }
+}
+
+fn best_effort_ipset_destroy(runner: &dyn IpsetCommandRunner, set_name: &str) {
+    match runner.run("ipset", &["destroy", set_name]) {
+        Ok(result) if result.success => {}
+        Ok(result) => warn!(
+            "best-effort flush command failed: ipset destroy {} (status={:?} stderr={})",
+            set_name, result.status, result.stderr
+        ),
+        Err(err) => warn!(
+            "best-effort flush command execution failed: ipset destroy {} ({})",
+            set_name, err
+        ),
+    }
+}
+
+fn is_missing_jump_result(result: &CommandResult) -> bool {
+    result.status == Some(1)
+        && (result.stderr.to_ascii_lowercase().contains("bad rule")
+            || result
+                .stderr
+                .to_ascii_lowercase()
+                .contains("no chain/target/match by that name"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
+
+    use super::run_flush_with_runner;
+    use crate::adapters::command_runner::{CommandResult, CommandRunnerError};
+    use crate::adapters::ipset::IpsetCommandRunner;
+    use crate::adapters::iptables::FirewallCommandRunner;
+    use crate::core::config::{Config, IpsetConfig, RemoteConfig, SafeConfig};
+
+    struct MockRunner {
+        invocations: RefCell<Vec<(String, Vec<String>)>>,
+        jump_budget: RefCell<BTreeMap<String, usize>>,
+        fail_cleanup: bool,
+    }
+
+    impl MockRunner {
+        fn new(ipv4_jump_count: usize, ipv6_jump_count: usize, fail_cleanup: bool) -> Self {
+            let mut jump_budget = BTreeMap::new();
+            jump_budget.insert("iptables".to_string(), ipv4_jump_count);
+            jump_budget.insert("ip6tables".to_string(), ipv6_jump_count);
+
+            Self {
+                invocations: RefCell::new(Vec::new()),
+                jump_budget: RefCell::new(jump_budget),
+                fail_cleanup,
+            }
+        }
+
+        fn invocations(&self) -> Vec<(String, Vec<String>)> {
+            self.invocations.borrow().clone()
+        }
+
+        fn run_impl(
+            &self,
+            command: &str,
+            args: &[&str],
+        ) -> Result<CommandResult, CommandRunnerError> {
+            self.invocations.borrow_mut().push((
+                command.to_string(),
+                args.iter().map(|value| (*value).to_string()).collect(),
+            ));
+
+            if args == ["-D", "INPUT", "-j", "kidobo-input"] {
+                let mut budget = self.jump_budget.borrow_mut();
+                let remaining = budget.get_mut(command).expect("jump budget");
+                if *remaining > 0 {
+                    *remaining -= 1;
+                    return Ok(success());
+                }
+
+                return Ok(CommandResult {
+                    status: Some(1),
+                    success: false,
+                    stdout: String::new(),
+                    stderr: "Bad rule (does a matching rule exist in that chain?).".to_string(),
+                });
+            }
+
+            if self.fail_cleanup
+                && ((command == "iptables" || command == "ip6tables")
+                    && (args.first() == Some(&"-F") || args.first() == Some(&"-X"))
+                    || (command == "ipset" && args.first() == Some(&"destroy")))
+            {
+                return Ok(CommandResult {
+                    status: Some(1),
+                    success: false,
+                    stdout: String::new(),
+                    stderr: "not found".to_string(),
+                });
+            }
+
+            Ok(success())
+        }
+    }
+
+    impl IpsetCommandRunner for MockRunner {
+        fn run(&self, command: &str, args: &[&str]) -> Result<CommandResult, CommandRunnerError> {
+            self.run_impl(command, args)
+        }
+    }
+
+    impl FirewallCommandRunner for MockRunner {
+        fn run(&self, command: &str, args: &[&str]) -> Result<CommandResult, CommandRunnerError> {
+            self.run_impl(command, args)
+        }
+    }
+
+    fn success() -> CommandResult {
+        CommandResult {
+            status: Some(0),
+            success: true,
+            stdout: String::new(),
+            stderr: String::new(),
+        }
+    }
+
+    fn test_config(enable_ipv6: bool) -> Config {
+        Config {
+            ipset: IpsetConfig {
+                set_name: "kidobo".to_string(),
+                set_name_v6: "kidobo-v6".to_string(),
+                enable_ipv6,
+                set_type: "hash:net".to_string(),
+                hashsize: 65536,
+                maxelem: 500000,
+                timeout: 0,
+            },
+            safe: SafeConfig {
+                ips: Vec::new(),
+                include_github_meta: false,
+                github_meta_categories: None,
+            },
+            remote: RemoteConfig { urls: Vec::new() },
+        }
+    }
+
+    #[test]
+    fn flush_attempts_all_cleanup_steps_with_ipv6_enabled() {
+        let config = test_config(true);
+        let runner = MockRunner::new(2, 1, false);
+
+        run_flush_with_runner(&config, &runner, &runner).expect("flush");
+
+        let invocations = runner.invocations();
+
+        let v4_jump_deletes = invocations
+            .iter()
+            .filter(|(cmd, args)| {
+                cmd == "iptables" && args == &["-D", "INPUT", "-j", "kidobo-input"]
+            })
+            .count();
+        assert_eq!(v4_jump_deletes, 3);
+
+        let v6_jump_deletes = invocations
+            .iter()
+            .filter(|(cmd, args)| {
+                cmd == "ip6tables" && args == &["-D", "INPUT", "-j", "kidobo-input"]
+            })
+            .count();
+        assert_eq!(v6_jump_deletes, 2);
+
+        assert!(
+            invocations
+                .iter()
+                .any(|(cmd, args)| cmd == "iptables" && args == &["-F", "kidobo-input"])
+        );
+        assert!(
+            invocations
+                .iter()
+                .any(|(cmd, args)| cmd == "iptables" && args == &["-X", "kidobo-input"])
+        );
+        assert!(
+            invocations
+                .iter()
+                .any(|(cmd, args)| cmd == "ip6tables" && args == &["-F", "kidobo-input"])
+        );
+        assert!(
+            invocations
+                .iter()
+                .any(|(cmd, args)| cmd == "ip6tables" && args == &["-X", "kidobo-input"])
+        );
+        assert!(
+            invocations
+                .iter()
+                .any(|(cmd, args)| cmd == "ipset" && args == &["destroy", "kidobo"])
+        );
+        assert!(
+            invocations
+                .iter()
+                .any(|(cmd, args)| cmd == "ipset" && args == &["destroy", "kidobo-v6"])
+        );
+    }
+
+    #[test]
+    fn flush_skips_ipv6_cleanup_when_disabled() {
+        let config = test_config(false);
+        let runner = MockRunner::new(1, 99, false);
+
+        run_flush_with_runner(&config, &runner, &runner).expect("flush");
+
+        let invocations = runner.invocations();
+        assert!(invocations.iter().all(|(cmd, _)| cmd != "ip6tables"));
+        assert!(
+            invocations
+                .iter()
+                .all(|(cmd, args)| !(cmd == "ipset" && args == &["destroy", "kidobo-v6"]))
+        );
+    }
+
+    #[test]
+    fn flush_is_idempotent_under_missing_artifacts() {
+        let config = test_config(true);
+        let runner = MockRunner::new(0, 0, true);
+
+        run_flush_with_runner(&config, &runner, &runner).expect("first flush");
+        run_flush_with_runner(&config, &runner, &runner).expect("second flush");
+
+        let invocations = runner.invocations();
+        let destroy_calls = invocations
+            .iter()
+            .filter(|(cmd, args)| cmd == "ipset" && args.first() == Some(&"destroy".to_string()))
+            .count();
+
+        assert_eq!(
+            destroy_calls, 4,
+            "two sets destroyed per run across two runs"
+        );
+    }
+}
