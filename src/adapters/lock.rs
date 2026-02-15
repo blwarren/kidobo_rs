@@ -1,0 +1,1 @@
+//! Lock management adapter boundary.

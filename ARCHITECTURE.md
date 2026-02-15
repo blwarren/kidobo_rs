@@ -530,3 +530,24 @@ Result:
 - Firewall chain references updated sets
 
 This preserves family separation, safelist carving, and atomic application.
+
+## 23. Build and Quality Gates
+
+The implementation and CI pipeline must enforce:
+
+- `cargo fmt --all --check`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- `cargo test --all-targets --all-features`
+- `cargo test --doc`
+- `cargo check --release --locked`
+- `cargo deny check advisories bans licenses sources`
+- `cargo audit`
+- `cargo llvm-cov --all-features --fail-under-lines 85`
+- Agent responses include a proposed commit message for operator review
+- Commits are operator-managed; agents do not run `git commit` without explicit operator instruction
+
+Periodic maintenance should include:
+
+- `cargo udeps --all-targets --all-features`
+
+Unsafe code is disallowed unless explicitly approved.

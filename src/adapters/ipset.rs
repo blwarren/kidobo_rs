@@ -1,0 +1,1 @@
+//! ipset integration adapter boundary.
