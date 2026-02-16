@@ -475,6 +475,12 @@ mod tests {
         assert_eq!(invocations[1].1[0], "restore");
         assert_eq!(invocations[1].1[1], "-file");
         assert_eq!(invocations[2].1[0], "destroy");
+        assert!(
+            invocations
+                .iter()
+                .all(|(_, args)| args.first().map(String::as_str) != Some("add")),
+            "atomic replace must use ipset restore script, not incremental ipset add commands"
+        );
 
         let scripts = runner.restore_scripts();
         assert_eq!(scripts.len(), 1);

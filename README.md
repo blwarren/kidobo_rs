@@ -33,15 +33,32 @@ run commands through `sudo -n ...` and therefore require non-interactive
 privilege (for example NOPASSWD sudo policy) or execution as a context where
 `sudo -n` succeeds.
 
-## Install / Build
+## Install
+
+Install from crates.io (recommended once published):
+
+```bash
+cargo install --locked --bin kidobo kidobo_rs
+```
+
+Install a prebuilt Linux x86_64 binary from GitHub Releases:
+
+```bash
+version="v0.1.0"
+archive="kidobo-${version}-linux-x86_64.tar.gz"
+base_url="https://github.com/blwarren/kidobo_rs/releases/download/${version}"
+
+curl -fsSL -O "${base_url}/${archive}"
+curl -fsSL -O "${base_url}/SHA256SUMS"
+sha256sum --check SHA256SUMS
+tar -xzf "${archive}"
+sudo install -m 0755 "kidobo-${version}-linux-x86_64/kidobo" /usr/local/bin/kidobo
+```
+
+Build from source:
 
 ```bash
 cargo build --release --locked
-```
-
-Binary path:
-
-```bash
 ./target/release/kidobo --help
 ```
 

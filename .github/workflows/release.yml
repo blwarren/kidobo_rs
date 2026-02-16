@@ -1,0 +1,59 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Validate tag matches Cargo version
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [[ -z "${cargo_version}" ]]; then
+            echo "unable to parse version from Cargo.toml"
+            exit 1
+          fi
+          if [[ "${cargo_version}" != "${tag_version}" ]]; then
+            echo "tag version (${tag_version}) does not match Cargo.toml version (${cargo_version})"
+            exit 1
+          fi
+
+      - name: Build release binary
+        run: cargo build --release --locked --bin kidobo
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive_root="kidobo-${GITHUB_REF_NAME}-linux-x86_64"
+          mkdir -p "${archive_root}"
+          install -m 0755 target/release/kidobo "${archive_root}/kidobo"
+          cp README.md LICENSE "${archive_root}/"
+          tar -czf "${archive_root}.tar.gz" "${archive_root}"
+          sha256sum "${archive_root}.tar.gz" > SHA256SUMS
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            kidobo-${{ github.ref_name }}-linux-x86_64.tar.gz
+            SHA256SUMS

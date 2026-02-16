@@ -591,6 +591,12 @@ mod tests {
 
         let swap_targets = runner.swap_targets();
         assert_eq!(swap_targets, vec!["kidobo-v6", "kidobo"]);
+        assert!(
+            events
+                .iter()
+                .all(|entry| !entry.starts_with("cmd:ipset add ")),
+            "sync must populate sets via ipset restore script in one shot"
+        );
     }
 
     #[test]
