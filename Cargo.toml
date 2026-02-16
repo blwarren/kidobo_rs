@@ -10,7 +10,7 @@ homepage = "https://github.com/blwarren/kidobo_rs"
 documentation = "https://docs.rs/kidobo_rs"
 keywords = ["firewall", "ipset", "iptables", "blocklist", "cli"]
 categories = ["command-line-utilities", "network-programming"]
-rust-version = "1.89"
+rust-version = "1.93.1"
 
 [[bin]]
 name = "kidobo"

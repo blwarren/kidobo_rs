@@ -12,7 +12,6 @@ use crate::adapters::http_cache::{HttpClient, HttpRequest, HttpResponse, max_htt
 use crate::core::config::{DEFAULT_GITHUB_META_CATEGORIES, GithubMetaCategoryMode};
 use crate::core::network::{CanonicalCidr, parse_ip_cidr_non_strict};
 
-pub const GITHUB_META_URL: &str = "https://api.github.com/meta";
 const GITHUB_META_RAW_CACHE_FILE: &str = "github-meta.raw.json";
 const GITHUB_META_META_CACHE_FILE: &str = "github-meta.meta.json";
 const GITHUB_META_CATEGORY_CACHE_FILE: &str = "github-meta.categories.json";
@@ -68,6 +67,13 @@ struct CachePaths {
     category_path: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+struct CachedFallback<'a> {
+    raw: Option<&'a [u8]>,
+    meta: Option<GithubMetaCacheMetadata>,
+    sidecar: Option<&'a GithubMetaCategorySidecar>,
+}
+
 impl CachePaths {
     fn from_cache_dir(cache_dir: &Path) -> Self {
         Self {
@@ -81,6 +87,7 @@ impl CachePaths {
 pub fn load_github_meta_safelist(
     client: &dyn HttpClient,
     cache_dir: &Path,
+    github_meta_url: &str,
     category_mode: GithubMetaCategoryMode,
     env: &BTreeMap<String, String>,
 ) -> Result<GithubMetaLoadResult, GithubMetaLoadError> {
@@ -93,7 +100,7 @@ pub fn load_github_meta_safelist(
     let cached_sidecar = read_optional_json::<GithubMetaCategorySidecar>(&paths.category_path);
 
     let conditional_request = HttpRequest {
-        url: GITHUB_META_URL.to_string(),
+        url: github_meta_url.to_string(),
         if_none_match: cached_meta.as_ref().and_then(|meta| meta.etag.clone()),
         if_modified_since: cached_meta
             .as_ref()
@@ -128,7 +135,7 @@ pub fn load_github_meta_safelist(
         }
 
         let unconditional_request = HttpRequest {
-            url: GITHUB_META_URL.to_string(),
+            url: github_meta_url.to_string(),
             if_none_match: None,
             if_modified_since: None,
             max_body_bytes: max_bytes,
@@ -151,10 +158,13 @@ pub fn load_github_meta_safelist(
         return handle_network_response(
             response,
             &paths,
+            github_meta_url,
             max_bytes,
-            cached_raw.as_deref(),
-            cached_meta,
-            cached_sidecar.as_ref(),
+            CachedFallback {
+                raw: cached_raw.as_deref(),
+                meta: cached_meta,
+                sidecar: cached_sidecar.as_ref(),
+            },
             &selection,
         );
     }
@@ -162,10 +172,13 @@ pub fn load_github_meta_safelist(
     handle_network_response(
         response,
         &paths,
+        github_meta_url,
         max_bytes,
-        cached_raw.as_deref(),
-        cached_meta,
-        cached_sidecar.as_ref(),
+        CachedFallback {
+            raw: cached_raw.as_deref(),
+            meta: cached_meta,
+            sidecar: cached_sidecar.as_ref(),
+        },
         &selection,
     )
 }
@@ -173,10 +186,9 @@ pub fn load_github_meta_safelist(
 fn handle_network_response(
     response: HttpResponse,
     paths: &CachePaths,
+    github_meta_url: &str,
     max_bytes: usize,
-    cached_raw: Option<&[u8]>,
-    cached_meta: Option<GithubMetaCacheMetadata>,
-    cached_sidecar: Option<&GithubMetaCategorySidecar>,
+    cached: CachedFallback<'_>,
     selection: &CategorySelection,
 ) -> Result<GithubMetaLoadResult, GithubMetaLoadError> {
     if !(200..300).contains(&response.status) {
@@ -185,9 +197,9 @@ fn handle_network_response(
             response.status
         );
         return Ok(cache_fallback(
-            cached_raw,
-            cached_meta,
-            cached_sidecar,
+            cached.raw,
+            cached.meta,
+            cached.sidecar,
             selection,
             GithubMetaSource::FallbackCache,
         ));
@@ -200,9 +212,9 @@ fn handle_network_response(
             max_bytes
         );
         return Ok(cache_fallback(
-            cached_raw,
-            cached_meta,
-            cached_sidecar,
+            cached.raw,
+            cached.meta,
+            cached.sidecar,
             selection,
             GithubMetaSource::FallbackCache,
         ));
@@ -211,16 +223,16 @@ fn handle_network_response(
     let Some(networks) = parse_and_extract_networks(&response.body, selection) else {
         warn!("github meta fetch failed: response body is not valid JSON");
         return Ok(cache_fallback(
-            cached_raw,
-            cached_meta,
-            cached_sidecar,
+            cached.raw,
+            cached.meta,
+            cached.sidecar,
             selection,
             GithubMetaSource::FallbackCache,
         ));
     };
 
     let metadata = GithubMetaCacheMetadata {
-        url: GITHUB_META_URL.to_string(),
+        url: github_meta_url.to_string(),
         etag: response.etag,
         last_modified: response.last_modified,
         sha256_raw: sha256_hex(&response.body),
@@ -491,12 +503,14 @@ mod tests {
 
     use super::{
         GITHUB_META_CATEGORY_CACHE_FILE, GITHUB_META_META_CACHE_FILE, GITHUB_META_RAW_CACHE_FILE,
-        GITHUB_META_URL, GithubMetaCacheMetadata, GithubMetaCategorySidecar, GithubMetaLoadResult,
-        GithubMetaSource, load_github_meta_safelist,
+        GithubMetaCacheMetadata, GithubMetaCategorySidecar, GithubMetaLoadResult, GithubMetaSource,
+        load_github_meta_safelist,
     };
     use crate::adapters::http_cache::{HttpClient, HttpClientError, HttpRequest, HttpResponse};
     use crate::core::config::GithubMetaCategoryMode;
     use crate::core::network::{CanonicalCidr, Ipv4Cidr, Ipv6Cidr};
+
+    const TEST_GITHUB_META_URL: &str = "https://api.github.com/meta";
 
     struct MockHttpClient {
         responses: RefCell<VecDeque<Result<HttpResponse, HttpClientError>>>,
@@ -555,6 +569,7 @@ mod tests {
         let result = load_github_meta_safelist(
             &client,
             temp.path(),
+            TEST_GITHUB_META_URL,
             GithubMetaCategoryMode::Default,
             &BTreeMap::new(),
         )
@@ -581,7 +596,7 @@ mod tests {
 
         let requests = client.requests();
         assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].url, GITHUB_META_URL);
+        assert_eq!(requests[0].url, TEST_GITHUB_META_URL);
     }
 
     #[test]
@@ -598,6 +613,7 @@ mod tests {
         let result = load_github_meta_safelist(
             &client,
             temp.path(),
+            TEST_GITHUB_META_URL,
             GithubMetaCategoryMode::Explicit(vec!["hooks".to_string()]),
             &BTreeMap::new(),
         )
@@ -627,6 +643,7 @@ mod tests {
         let result = load_github_meta_safelist(
             &client,
             temp.path(),
+            TEST_GITHUB_META_URL,
             GithubMetaCategoryMode::All,
             &BTreeMap::new(),
         )
@@ -656,6 +673,7 @@ mod tests {
         let _ = load_github_meta_safelist(
             &client,
             temp.path(),
+            TEST_GITHUB_META_URL,
             GithubMetaCategoryMode::Explicit(vec!["hooks".to_string()]),
             &BTreeMap::new(),
         )
@@ -665,7 +683,7 @@ mod tests {
             &fs::read(temp.path().join(GITHUB_META_META_CACHE_FILE)).expect("read metadata"),
         )
         .expect("metadata json");
-        assert_eq!(metadata.url, GITHUB_META_URL);
+        assert_eq!(metadata.url, TEST_GITHUB_META_URL);
 
         let sidecar: GithubMetaCategorySidecar = serde_json::from_slice(
             &fs::read(temp.path().join(GITHUB_META_CATEGORY_CACHE_FILE)).expect("read sidecar"),
@@ -707,6 +725,7 @@ mod tests {
         let result = load_github_meta_safelist(
             &client,
             temp.path(),
+            TEST_GITHUB_META_URL,
             GithubMetaCategoryMode::Default,
             &BTreeMap::new(),
         )
@@ -732,6 +751,7 @@ mod tests {
         let result = load_github_meta_safelist(
             &client,
             temp.path(),
+            TEST_GITHUB_META_URL,
             GithubMetaCategoryMode::Default,
             &BTreeMap::new(),
         )
@@ -754,7 +774,7 @@ mod tests {
         fs::write(
             temp.path().join(GITHUB_META_META_CACHE_FILE),
             serde_json::to_vec_pretty(&GithubMetaCacheMetadata {
-                url: GITHUB_META_URL.to_string(),
+                url: TEST_GITHUB_META_URL.to_string(),
                 etag: Some("etag-1".to_string()),
                 last_modified: Some("Mon, 01 Jan 2024 00:00:00 GMT".to_string()),
                 sha256_raw: "raw".to_string(),
@@ -788,6 +808,7 @@ mod tests {
         let result = load_github_meta_safelist(
             &client,
             temp.path(),
+            TEST_GITHUB_META_URL,
             GithubMetaCategoryMode::Default,
             &BTreeMap::new(),
         )
@@ -819,6 +840,7 @@ mod tests {
         let result = load_github_meta_safelist(
             &client,
             temp.path(),
+            TEST_GITHUB_META_URL,
             GithubMetaCategoryMode::Default,
             &BTreeMap::new(),
         )

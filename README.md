@@ -1,47 +1,44 @@
 # kidobo_rs (`kidobo` CLI)
 
 `kidobo` is a one-shot Linux firewall blocklist manager written in Rust.
-It builds blocklists from local and remote sources, carves out safelisted
-networks, and applies updates atomically to `ipset` with deterministic
-`iptables`/`ip6tables` wiring.
+It builds IP/CIDR blocklists from local and remote sources, removes safelisted
+ranges, and updates `ipset` atomically with deterministic `iptables`/`ip6tables`
+wiring.
 
-The crate is currently named `kidobo_rs`; the installed binary is `kidobo`.
+The crate name is currently `kidobo_rs`; the installed binary is `kidobo`.
 
-## What it does
+## What it can do
 
-- Parses non-strict IP/CIDR source data (ignores invalid lines).
-- Separates IPv4 and IPv6 processing.
-- Deduplicates, collapses, and safelist-subtracts networks.
-- Applies updates via atomic `ipset restore` + `swap`.
-- Enforces a deterministic firewall chain: `kidobo-input`.
-- Caches remote feeds with conditional HTTP requests (`ETag`/`Last-Modified`).
-- Provides offline lookup against local blocklist + cached remote sources.
+- Parse non-strict IP/CIDR source data (invalid lines are ignored).
+- Keep IPv4 and IPv6 processing separate.
+- Collapse and deduplicate ranges to reduce rule volume.
+- Subtract safelist ranges from blocklist ranges.
+- Apply updates atomically with `ipset restore` + `swap`.
+- Keep a deterministic firewall chain (`kidobo-input`) in place.
+- Cache remote feeds with conditional HTTP fetches (`ETag`/`Last-Modified`).
+- Run offline lookups against local + cached sources.
 
 ## Requirements
 
-- Linux with:
-  - `sudo`
-  - `ipset`
-  - `iptables`
-  - `iptables-save`
-  - `iptables-restore`
-  - `ip6tables` (only when IPv6 is enabled in config)
-- Rust stable toolchain (for building from source)
+- Linux
+- Rust/Cargo 1.93.1+ (for source builds/install only)
+- `sudo`
+- `ipset`
+- `iptables`
+- `iptables-save`
+- `iptables-restore`
+- `ip6tables` (only if IPv6 is enabled in config)
 
-Runtime commands that touch firewall state (`doctor` probes, `sync`, `flush`)
-run commands through `sudo -n ...` and therefore require non-interactive
-privilege (for example NOPASSWD sudo policy) or execution as a context where
-`sudo -n` succeeds.
-
+`doctor`, `sync`, and `flush` run privileged commands via `sudo -n ...`.
 With default system paths (`/etc/kidobo`, `/var/lib/kidobo`, `/var/cache/kidobo`),
-`init`, `doctor`, `sync`, and `flush` are typically run with `sudo`.
+`init` is also typically run with `sudo`.
 
 ## Install
 
 GitHub release artifacts are currently published for Linux x86_64 only.
 For other platforms/architectures, install from source with Cargo.
 
-Install from crates.io (recommended once published):
+Install from crates.io:
 
 ```bash
 cargo install --locked --bin kidobo kidobo_rs
@@ -77,11 +74,17 @@ sudo kidobo init
 ```
 
 This creates missing directories/files and does not overwrite existing config
-or blocklist files.
+or blocklist files. It also creates systemd unit files for periodic sync:
+
+- `/etc/systemd/system/kidobo-sync.service`
+- `/etc/systemd/system/kidobo-sync.timer`
+
+When `KIDOBO_ROOT` is set, those unit files are written under
+`$KIDOBO_ROOT/systemd/system/` instead.
 
 ### 2. Edit config
 
-Default config path:
+Default config file:
 
 ```text
 /etc/kidobo/config.toml
@@ -93,83 +96,134 @@ Example:
 sudoedit /etc/kidobo/config.toml
 ```
 
-Minimal generated template:
+### 3. Add local blocklist entries (optional)
+
+Default local blocklist file:
+
+```text
+/var/lib/kidobo/blocklist.txt
+```
+
+Example:
+
+```bash
+echo "203.0.113.0/24" | sudo tee -a /var/lib/kidobo/blocklist.txt
+```
+
+### 4. Check the environment
+
+```bash
+sudo kidobo doctor
+```
+
+`doctor` prints a JSON report and exits non-zero if required checks fail.
+
+### 5. Apply blocklists
+
+```bash
+sudo kidobo sync
+```
+
+### 6. Enable periodic sync (optional)
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now kidobo-sync.timer
+```
+
+### 7. Check whether an IP would match
+
+```bash
+kidobo lookup 203.0.113.7
+kidobo lookup --file targets.txt
+```
+
+### 8. Remove Kidobo firewall/ipset artifacts (optional)
+
+```bash
+sudo kidobo flush
+```
+
+## Configuration
+
+Example config:
 
 ```toml
 [ipset]
 set_name = "kidobo"
+set_name_v6 = "kidobo-v6"
+enable_ipv6 = true
+set_type = "hash:net"
+hashsize = 65536
+maxelem = 500000
+timeout = 0
 
 [safe]
 ips = []
 include_github_meta = true
+github_meta_url = "https://api.github.com/meta"
 # github_meta_categories = ["api", "git", "hooks", "packages"]
 
 [remote]
 urls = []
 ```
 
-### 3. Run environment checks
+Key fields:
 
-```bash
-sudo kidobo doctor
-```
+- `[ipset]`
+  - `set_name` required
+  - `set_name_v6` optional, defaults to `"<set_name>-v6"`
+  - `enable_ipv6` default `true`
+  - `maxelem` must be in `[1, 500000]`
+- `[safe]`
+  - `ips` static safelist entries
+  - `include_github_meta` default `true`
+  - `github_meta_url` default `https://api.github.com/meta`
+  - `github_meta_categories`:
+    - omitted: default categories (`api`, `git`, `hooks`, `packages`)
+    - `[]`: all categories
+    - explicit list: only those categories
+- `[remote]`
+  - `urls` list of remote feed URLs
 
-`doctor` prints JSON and exits non-zero if required checks fail.
+Invalid or missing required config causes command failure.
 
-### 4. Apply blocklist
+## Paths and Environment
 
-```bash
-sudo kidobo sync
-```
+Default system paths:
 
-### 5. Query matches
+- config dir: `/etc/kidobo`
+- config file: `/etc/kidobo/config.toml`
+- data dir: `/var/lib/kidobo`
+- blocklist file: `/var/lib/kidobo/blocklist.txt`
+- cache dir: `/var/cache/kidobo`
+- remote cache dir: `/var/cache/kidobo/remote`
+- lock file: `/var/cache/kidobo/sync.lock`
+- systemd service: `/etc/systemd/system/kidobo-sync.service`
+- systemd timer: `/etc/systemd/system/kidobo-sync.timer`
 
-```bash
-kidobo lookup 203.0.113.7
-kidobo lookup --file ./targets.txt
-```
+Useful environment variables:
 
-Output format (tab-separated):
+- `KIDOBO_ROOT`
+  - Relocates config/data/cache under one writable root.
+- `KIDOBO_ALLOW_REPO_CONFIG_FALLBACK`
+  - Truthy values (`1`, `true`, `yes`, `on`) allow config fallback to
+    `<repo-root>/config.toml` when the primary config is missing.
+- `KIDOBO_MAX_HTTP_BODY_BYTES`
+  - Overrides max remote response body size (default: `33554432` bytes).
 
-```text
-<queried-target-ip-or-cidr>    <source-label>    <matched-source-entry>
-```
-
-## Safe Local Sandbox Example (No System Paths)
-
-For local experiments that should not write `/etc`, `/var/lib`, or `/var/cache`,
-set `KIDOBO_ROOT`:
+Local sandbox example (no system paths):
 
 ```bash
 export KIDOBO_ROOT="$PWD/.kidobo-dev"
 kidobo init
 ```
 
-No `sudo` is required in this sandboxed flow as long as `KIDOBO_ROOT` points to
-a user-writable location.
-
-This relocates config/data/cache under:
-
-```text
-$KIDOBO_ROOT/config
-$KIDOBO_ROOT/data
-$KIDOBO_ROOT/cache
-```
-
-Example local-only lookup flow:
-
-```bash
-printf "203.0.113.0/24\n" > "$KIDOBO_ROOT/data/blocklist.txt"
-kidobo lookup 203.0.113.7
-```
-
-Note: `sync` and `flush` still operate on real firewall/ipset state and need
-working `sudo -n` permissions.
+No `sudo` is required in this sandbox flow if `KIDOBO_ROOT` is writable.
+If you use systemd with this layout, unit files are generated under
+`$KIDOBO_ROOT/systemd/system`.
 
 ## Commands
-
-Command surface (invocation may still require `sudo` depending on path and
-permission context):
 
 ```text
 kidobo init
@@ -184,190 +238,22 @@ Global flags:
 - `--version`
 - `--log-level <trace|debug|info|warn|error>`
 
+## Lookup Output
+
+Each match is printed as tab-separated fields:
+
+```text
+<queried-target-ip-or-cidr>    <source-label>    <matched-source-entry>
+```
+
+Lookup does not fetch remote data; it uses local and cached sources only.
+
 ## Exit Codes
 
 - `0`: success
 - `1`: operational failure
 - `2`: CLI usage error
 - `130`: interrupted by SIGINT
-
-## Path Resolution
-
-Default system paths:
-
-- config dir: `/etc/kidobo`
-- config file: `/etc/kidobo/config.toml`
-- data dir: `/var/lib/kidobo`
-- blocklist file: `/var/lib/kidobo/blocklist.txt`
-- cache dir: `/var/cache/kidobo`
-- remote cache dir: `/var/cache/kidobo/remote`
-- lock file: `/var/cache/kidobo/sync.lock`
-
-Environment controls:
-
-- `KIDOBO_ROOT`:
-  - Overrides the root for config/data/cache layout.
-- `KIDOBO_ALLOW_REPO_CONFIG_FALLBACK`:
-  - Truthy values (`1`, `true`, `yes`, `on`, case-insensitive) enable fallback
-    config at `<repo-root>/config.toml` when primary config is missing.
-  - This changes config file location only; data/cache remain under resolved base
-    paths.
-- `KIDOBO_TEST_SANDBOX`:
-  - Truthy enables temp-root fallback at `<temp-dir>/kidobo-tests`.
-- `KIDOBO_DISABLE_TEST_SANDBOX`:
-  - Presence disables the test sandbox behavior.
-
-## Configuration Reference
-
-```toml
-[ipset]
-set_name = "kidobo"       # required
-set_name_v6 = "kidobo-v6" # optional; defaults to "<set_name>-v6"
-enable_ipv6 = true        # default: true
-set_type = "hash:net"     # default: "hash:net"
-hashsize = 65536          # default: 65536, must be power-of-two >= 1
-maxelem = 500000          # default: 500000, range: 1..500000
-timeout = 0               # default: 0
-
-[safe]
-ips = []                  # static safelist entries
-include_github_meta = true
-# github_meta_categories behavior:
-# - omitted: default categories ["api", "git", "hooks", "packages"]
-# - []: all categories
-# - ["api", "hooks"]: explicit categories
-
-[remote]
-urls = []                 # remote IP/CIDR feed URLs
-```
-
-Invalid or missing required config causes failure.
-
-## Sync Behavior (High-Level)
-
-`sync` performs this sequence:
-
-1. Load config
-2. Acquire non-blocking lock
-3. Ensure ipset sets and firewall wiring exist
-4. Load internal blocklist + remote feeds + safelist inputs
-5. Subtract safelist ranges
-6. Deduplicate/collapse per family
-7. Atomic `ipset restore` + `swap`
-8. Best-effort temp set cleanup
-9. Log source and final counts
-10. Release lock (RAII drop)
-
-Remote source failures are soft-fail per source (warn + continue).
-
-## Firewall and Ipset Details
-
-- Chain name: `kidobo-input`
-- Exactly one `INPUT -> kidobo-input` jump is kept at position 1.
-- Chain is flushed and repopulated with:
-  - `-m set --match-set <set_name> src -j DROP`
-- Atomic set replacement uses a randomized temp set suffix with enforced max
-  name length 31 chars.
-- Temp set destroy is always attempted (best effort).
-
-## HTTP Cache Behavior
-
-Per remote URL:
-
-- Cache key: `sha256(url)` first 16 hex chars
-- Files:
-  - `<hash>.iplist` (normalized IP/CIDR lines)
-  - `<hash>.meta.json` (etag/last-modified/checksums)
-  - `<hash>.raw` (raw response bytes)
-- Conditional fetch uses `If-None-Match` and `If-Modified-Since`.
-- `304` uses cache when valid.
-- Network errors, non-2xx, or oversize body fall back to cache.
-- Successful responses are normalized into canonical IP/CIDR lines; invalid
-  lines are discarded.
-
-Body-size cap:
-
-- Default: `33554432` (32 MiB)
-- Override via `KIDOBO_MAX_HTTP_BODY_BYTES` (positive integer)
-
-## GitHub Meta Safelist
-
-When `safe.include_github_meta = true`, `sync` fetches GitHub metadata from:
-
-```text
-https://api.github.com/meta
-```
-
-It extracts IP/CIDR values recursively and applies category filtering mode.
-If cache scope is incompatible with the requested category filter, data is not
-widened from stale cache.
-
-## Lookup Semantics
-
-- No remote fetch is performed.
-- Sources are loaded from:
-  - internal blocklist file
-  - cached remote `*.iplist` files
-- Targets are validated strictly.
-- Invalid targets are reported, processing continues, and command exits with
-  failure if any invalid target was provided.
-- `ip` and `--file` are mutually exclusive.
-
-## Logging
-
-- Single global logger (`env_logger`)
-- Default level: `INFO`
-- Override with `--log-level`
-- Includes sync source counts, final counts, and doctor JSON payload.
-
-## Development
-
-Install repo hooks:
-
-```bash
-git config core.hooksPath .githooks
-```
-
-Fast local pre-commit checks:
-
-```bash
-scripts/pre-commit-fast.sh
-```
-
-Full local gates:
-
-```bash
-cargo fmt --all --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features
-cargo test --doc
-cargo check --release --locked
-cargo deny check advisories bans licenses sources
-cargo audit
-cargo llvm-cov --all-features --fail-under-lines 85
-cargo +nightly udeps --all-targets --all-features
-```
-
-Bump version references:
-
-```bash
-scripts/bump-version.sh patch
-# or: scripts/bump-version.sh minor
-# or: scripts/bump-version.sh major
-# or: scripts/bump-version.sh 0.2.0
-```
-
-This updates `Cargo.toml`, the root package version entry in `Cargo.lock`, and
-the GitHub release example tag in `README.md`. After that, push a matching tag
-(`v<version>`) to trigger release artifact creation.
-
-CI workflows:
-
-- `.github/workflows/ci.yml`
-- `.github/workflows/udeps-audit.yml`
-- `.github/workflows/release.yml`
-
-All GitHub workflows currently run on `ubuntu-latest`.
 
 ## License
 

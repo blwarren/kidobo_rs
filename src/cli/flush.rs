@@ -221,6 +221,7 @@ mod tests {
             safe: SafeConfig {
                 ips: Vec::new(),
                 include_github_meta: false,
+                github_meta_url: "https://api.github.com/meta".to_string(),
                 github_meta_categories: None,
             },
             remote: RemoteConfig { urls: Vec::new() },

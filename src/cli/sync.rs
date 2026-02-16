@@ -93,6 +93,7 @@ pub(crate) fn run_sync_with_dependencies(
         match load_github_meta_safelist(
             http_client,
             &paths.remote_cache_dir,
+            &config.safe.github_meta_url,
             config.safe.github_meta_category_mode(),
             env,
         ) {
@@ -493,6 +494,7 @@ mod tests {
             safe: SafeConfig {
                 ips: vec!["10.0.0.0/25".to_string()],
                 include_github_meta: false,
+                github_meta_url: "https://api.github.com/meta".to_string(),
                 github_meta_categories: None,
             },
             remote: RemoteConfig { urls },
@@ -513,6 +515,7 @@ mod tests {
             safe: SafeConfig {
                 ips: Vec::new(),
                 include_github_meta: false,
+                github_meta_url: "https://api.github.com/meta".to_string(),
                 github_meta_categories: None,
             },
             remote: RemoteConfig { urls },

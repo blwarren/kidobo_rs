@@ -7,6 +7,7 @@ pub const DEFAULT_MAXELEM: u32 = 500_000;
 pub const DEFAULT_TIMEOUT: u32 = 0;
 pub const DEFAULT_INCLUDE_GITHUB_META: bool = true;
 pub const DEFAULT_GITHUB_META_CATEGORIES: [&str; 4] = ["api", "git", "hooks", "packages"];
+pub const DEFAULT_GITHUB_META_URL: &str = "https://api.github.com/meta";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -30,6 +31,7 @@ pub struct IpsetConfig {
 pub struct SafeConfig {
     pub ips: Vec<String>,
     pub include_github_meta: bool,
+    pub github_meta_url: String,
     pub github_meta_categories: Option<Vec<String>>,
 }
 
@@ -89,6 +91,7 @@ struct RawIpsetConfig {
 struct RawSafeConfig {
     ips: Option<Vec<String>>,
     include_github_meta: Option<bool>,
+    github_meta_url: Option<String>,
     github_meta_categories: Option<Vec<String>>,
 }
 
@@ -197,6 +200,15 @@ fn parse_safe(raw: RawSafeConfig) -> Result<SafeConfig, ConfigError> {
         .include_github_meta
         .unwrap_or(DEFAULT_INCLUDE_GITHUB_META);
 
+    let github_meta_url = match raw.github_meta_url {
+        Some(value) => {
+            let parsed = non_empty(value, "safe.github_meta_url")?;
+            validate_http_url(&parsed, "safe.github_meta_url")?;
+            parsed
+        }
+        None => DEFAULT_GITHUB_META_URL.to_string(),
+    };
+
     let github_meta_categories = match raw.github_meta_categories {
         None => None,
         Some(values) => {
@@ -211,6 +223,7 @@ fn parse_safe(raw: RawSafeConfig) -> Result<SafeConfig, ConfigError> {
     Ok(SafeConfig {
         ips,
         include_github_meta,
+        github_meta_url,
         github_meta_categories,
     })
 }
@@ -293,11 +306,23 @@ fn validate_ipset_set_type(value: &str) -> Result<(), ConfigError> {
     Ok(())
 }
 
+fn validate_http_url(value: &str, field: &'static str) -> Result<(), ConfigError> {
+    if value.starts_with("http://") || value.starts_with("https://") {
+        Ok(())
+    } else {
+        Err(ConfigError::InvalidField {
+            field,
+            reason: "must start with http:// or https://".to_string(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        Config, ConfigError, DEFAULT_GITHUB_META_CATEGORIES, DEFAULT_HASHSIZE, DEFAULT_IPSET_TYPE,
-        DEFAULT_MAXELEM, DEFAULT_TIMEOUT, GithubMetaCategoryMode,
+        Config, ConfigError, DEFAULT_GITHUB_META_CATEGORIES, DEFAULT_GITHUB_META_URL,
+        DEFAULT_HASHSIZE, DEFAULT_IPSET_TYPE, DEFAULT_MAXELEM, DEFAULT_TIMEOUT,
+        GithubMetaCategoryMode,
     };
 
     #[test]
@@ -313,6 +338,7 @@ mod tests {
         assert_eq!(config.ipset.timeout, DEFAULT_TIMEOUT);
         assert_eq!(config.safe.ips, Vec::<String>::new());
         assert!(config.safe.include_github_meta);
+        assert_eq!(config.safe.github_meta_url, DEFAULT_GITHUB_META_URL);
         assert_eq!(
             config.safe.github_meta_category_mode(),
             GithubMetaCategoryMode::Default
@@ -364,6 +390,30 @@ mod tests {
         assert_eq!(
             config.safe.github_meta_category_mode(),
             GithubMetaCategoryMode::Explicit(vec!["api".to_string(), "hooks".to_string()])
+        );
+    }
+
+    #[test]
+    fn safe_github_meta_url_can_be_overridden() {
+        let config = Config::from_toml_str(
+            "[ipset]\nset_name='kidobo'\n[safe]\ngithub_meta_url='https://example.com/meta'\n",
+        )
+        .expect("parse");
+        assert_eq!(config.safe.github_meta_url, "https://example.com/meta");
+    }
+
+    #[test]
+    fn safe_github_meta_url_must_be_http_or_https() {
+        let err = Config::from_toml_str(
+            "[ipset]\nset_name='kidobo'\n[safe]\ngithub_meta_url='ftp://example.com/meta'\n",
+        )
+        .expect_err("must fail");
+        assert_eq!(
+            err,
+            ConfigError::InvalidField {
+                field: "safe.github_meta_url",
+                reason: "must start with http:// or https://".to_string(),
+            }
         );
     }
 
