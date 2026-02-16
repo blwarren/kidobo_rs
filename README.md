@@ -21,7 +21,7 @@ The crate name is currently `kidobo_rs`; the installed binary is `kidobo`.
 ## Requirements
 
 - Linux
-- Rust/Cargo 1.93.1+ (for source builds/install only)
+- Rust/Cargo 1.93.1+ (for source builds only)
 - `sudo`
 - `ipset`
 - `iptables`
@@ -36,29 +36,27 @@ With default system paths (`/etc/kidobo`, `/var/lib/kidobo`, `/var/cache/kidobo`
 ## Install
 
 GitHub release artifacts are currently published for Linux x86_64 only.
-For other platforms/architectures, install from source with Cargo.
+For other platforms/architectures, build from source.
 
-Install from crates.io:
-
-```bash
-cargo install --locked --bin kidobo kidobo_rs
-```
-
-Install a prebuilt Linux x86_64 binary from GitHub Releases:
+Install latest release:
 
 ```bash
-version="v0.1.3"
-archive="kidobo-${version}-linux-x86_64.tar.gz"
-base_url="https://github.com/blwarren/kidobo_rs/releases/download/${version}"
-
-curl -fsSL -O "${base_url}/${archive}"
-curl -fsSL -O "${base_url}/SHA256SUMS"
-sha256sum --check SHA256SUMS
-tar -xzf "${archive}"
-sudo install -m 0755 "kidobo-${version}-linux-x86_64/kidobo" /usr/local/bin/kidobo
+curl -fsSL https://raw.githubusercontent.com/blwarren/kidobo_rs/main/scripts/install.sh | sudo bash
 ```
 
-Build from source:
+Install a specific release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/blwarren/kidobo_rs/main/scripts/install.sh | sudo bash -s -- --version v0.1.3
+```
+
+Install and initialize in one step:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/blwarren/kidobo_rs/main/scripts/install.sh | sudo bash -s -- --init
+```
+
+Build from source (development):
 
 ```bash
 cargo build --release --locked
@@ -151,6 +149,12 @@ kidobo lookup --file targets.txt
 sudo kidobo flush
 ```
 
+To clear only remote feed cache files without touching firewall/ipset state:
+
+```bash
+sudo kidobo flush --cache-only
+```
+
 ## Configuration
 
 Example config:
@@ -238,7 +242,7 @@ If you use systemd with this layout, unit files are generated under
 kidobo init
 kidobo doctor
 kidobo sync
-kidobo flush
+kidobo flush [--cache-only]
 kidobo lookup [ip | --file <path>]
 ```
 

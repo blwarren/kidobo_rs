@@ -43,7 +43,10 @@ pub enum Command {
     Init,
     Doctor,
     Sync,
-    Flush,
+    Flush {
+        #[arg(long = "cache-only")]
+        cache_only: bool,
+    },
     Lookup {
         #[arg(
             value_name = "ip",
@@ -64,7 +67,8 @@ pub enum Command {
 
 #[cfg(test)]
 mod tests {
-    use super::LogLevel;
+    use super::{Cli, Command, LogLevel};
+    use clap::Parser;
     use log::LevelFilter;
 
     #[test]
@@ -74,5 +78,14 @@ mod tests {
         assert_eq!(LevelFilter::from(LogLevel::Info), LevelFilter::Info);
         assert_eq!(LevelFilter::from(LogLevel::Warn), LevelFilter::Warn);
         assert_eq!(LevelFilter::from(LogLevel::Error), LevelFilter::Error);
+    }
+
+    #[test]
+    fn flush_cache_only_flag_is_parsed() {
+        let cli = Cli::try_parse_from(["kidobo", "flush", "--cache-only"]).expect("flush parse");
+        match cli.command {
+            Command::Flush { cache_only } => assert!(cache_only),
+            _ => panic!("unexpected command variant"),
+        }
     }
 }

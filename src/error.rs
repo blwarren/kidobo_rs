@@ -49,6 +49,9 @@ pub enum KidoboError {
     #[error("failed to read blocklist file {path}: {reason}")]
     BlocklistRead { path: PathBuf, reason: String },
 
+    #[error("failed to clear remote cache at {path}: {reason}")]
+    FlushCacheIo { path: PathBuf, reason: String },
+
     #[error(
         "effective entry count exceeds ipset maxelem for {family} set `{set_name}`: entries={entries} maxelem={maxelem}"
     )]

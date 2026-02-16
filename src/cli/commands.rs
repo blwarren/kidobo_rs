@@ -17,7 +17,7 @@ pub fn dispatch(command: Command) -> Result<(), KidoboError> {
         Command::Init => run_init_command(),
         Command::Doctor => run_doctor_command(),
         Command::Sync => run_sync_command(),
-        Command::Flush => run_flush_command(),
+        Command::Flush { cache_only } => run_flush_command(cache_only),
         Command::Lookup { ip, file } => run_lookup_command(ip, file),
     }
 }

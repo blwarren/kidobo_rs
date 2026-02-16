@@ -1,3 +1,6 @@
+use std::fs;
+use std::path::Path;
+
 use log::warn;
 
 use crate::adapters::command_runner::{CommandResult, SudoCommandRunner};
@@ -5,25 +8,35 @@ use crate::adapters::config::load_config_from_file;
 use crate::adapters::ipset::IpsetCommandRunner;
 use crate::adapters::iptables::{FirewallCommandRunner, KIDOBO_CHAIN_NAME};
 use crate::adapters::lock::acquire_non_blocking;
-use crate::adapters::path::{PathResolutionInput, resolve_paths};
+use crate::adapters::path::{PathResolutionInput, resolve_paths, resolve_paths_for_init};
 use crate::core::config::Config;
 use crate::error::KidoboError;
 
-pub fn run_flush_command() -> Result<(), KidoboError> {
+pub fn run_flush_command(cache_only: bool) -> Result<(), KidoboError> {
     let path_input = PathResolutionInput::from_process(None)?;
-    let paths = resolve_paths(&path_input)?;
-    let config = load_config_from_file(&paths.config_file)?;
+    let paths = if cache_only {
+        resolve_paths_for_init(&path_input)?
+    } else {
+        resolve_paths(&path_input)?
+    };
 
     let _lock = acquire_non_blocking(&paths.lock_file)?;
 
+    if cache_only {
+        clear_remote_cache_dir(&paths.remote_cache_dir)?;
+        return Ok(());
+    }
+
+    let config = load_config_from_file(&paths.config_file)?;
     let sudo_runner = SudoCommandRunner::default();
-    run_flush_with_runner(&config, &sudo_runner, &sudo_runner)
+    run_flush_with_runner(&config, &sudo_runner, &sudo_runner, &paths.remote_cache_dir)
 }
 
 pub(crate) fn run_flush_with_runner(
     config: &Config,
     firewall_runner: &dyn FirewallCommandRunner,
     ipset_runner: &dyn IpsetCommandRunner,
+    remote_cache_dir: &Path,
 ) -> Result<(), KidoboError> {
     cleanup_firewall_family(firewall_runner, "iptables");
     if config.ipset.enable_ipv6 {
@@ -34,6 +47,8 @@ pub(crate) fn run_flush_with_runner(
     if config.ipset.enable_ipv6 {
         best_effort_ipset_destroy(ipset_runner, &config.ipset.set_name_v6);
     }
+
+    best_effort_clear_remote_cache_dir(remote_cache_dir);
 
     Ok(())
 }
@@ -100,6 +115,30 @@ fn best_effort_ipset_destroy(runner: &dyn IpsetCommandRunner, set_name: &str) {
     }
 }
 
+fn best_effort_clear_remote_cache_dir(remote_cache_dir: &Path) {
+    if let Err(err) = clear_remote_cache_dir(remote_cache_dir) {
+        warn!(
+            "best-effort flush cache cleanup failed for {} ({})",
+            remote_cache_dir.display(),
+            err
+        );
+    }
+}
+
+fn clear_remote_cache_dir(remote_cache_dir: &Path) -> Result<(), KidoboError> {
+    if remote_cache_dir.exists() {
+        fs::remove_dir_all(remote_cache_dir).map_err(|err| KidoboError::FlushCacheIo {
+            path: remote_cache_dir.to_path_buf(),
+            reason: err.to_string(),
+        })?;
+    }
+
+    fs::create_dir_all(remote_cache_dir).map_err(|err| KidoboError::FlushCacheIo {
+        path: remote_cache_dir.to_path_buf(),
+        reason: err.to_string(),
+    })
+}
+
 fn is_missing_jump_result(result: &CommandResult) -> bool {
     result.status == Some(1)
         && (result.stderr.to_ascii_lowercase().contains("bad rule")
@@ -113,12 +152,15 @@ fn is_missing_jump_result(result: &CommandResult) -> bool {
 mod tests {
     use std::cell::RefCell;
     use std::collections::BTreeMap;
+    use std::fs;
+    use std::path::Path;
 
-    use super::run_flush_with_runner;
+    use super::{clear_remote_cache_dir, run_flush_with_runner};
     use crate::adapters::command_runner::{CommandResult, CommandRunnerError};
     use crate::adapters::ipset::IpsetCommandRunner;
     use crate::adapters::iptables::FirewallCommandRunner;
     use crate::core::config::{Config, IpsetConfig, RemoteConfig, SafeConfig};
+    use tempfile::TempDir;
 
     struct MockRunner {
         invocations: RefCell<Vec<(String, Vec<String>)>>,
@@ -235,8 +277,11 @@ mod tests {
     fn flush_attempts_all_cleanup_steps_with_ipv6_enabled() {
         let config = test_config(true);
         let runner = MockRunner::new(2, 1, false);
+        let temp = TempDir::new().expect("tempdir");
+        let remote_cache_dir = temp.path().join("remote");
+        fs::create_dir_all(&remote_cache_dir).expect("mkdir remote cache");
 
-        run_flush_with_runner(&config, &runner, &runner).expect("flush");
+        run_flush_with_runner(&config, &runner, &runner, &remote_cache_dir).expect("flush");
 
         let invocations = runner.invocations();
 
@@ -286,14 +331,18 @@ mod tests {
                 .iter()
                 .any(|(cmd, args)| cmd == "ipset" && args == &["destroy", "kidobo-v6"])
         );
+        assert!(remote_cache_dir.exists());
     }
 
     #[test]
     fn flush_skips_ipv6_cleanup_when_disabled() {
         let config = test_config(false);
         let runner = MockRunner::new(1, 99, false);
+        let temp = TempDir::new().expect("tempdir");
+        let remote_cache_dir = temp.path().join("remote");
+        fs::create_dir_all(&remote_cache_dir).expect("mkdir remote cache");
 
-        run_flush_with_runner(&config, &runner, &runner).expect("flush");
+        run_flush_with_runner(&config, &runner, &runner, &remote_cache_dir).expect("flush");
 
         let invocations = runner.invocations();
         assert!(invocations.iter().all(|(cmd, _)| cmd != "ip6tables"));
@@ -308,9 +357,12 @@ mod tests {
     fn flush_is_idempotent_under_missing_artifacts() {
         let config = test_config(true);
         let runner = MockRunner::new(0, 0, true);
+        let temp = TempDir::new().expect("tempdir");
+        let remote_cache_dir = temp.path().join("remote");
+        fs::create_dir_all(&remote_cache_dir).expect("mkdir remote cache");
 
-        run_flush_with_runner(&config, &runner, &runner).expect("first flush");
-        run_flush_with_runner(&config, &runner, &runner).expect("second flush");
+        run_flush_with_runner(&config, &runner, &runner, &remote_cache_dir).expect("first flush");
+        run_flush_with_runner(&config, &runner, &runner, &remote_cache_dir).expect("second flush");
 
         let invocations = runner.invocations();
         let destroy_calls = invocations
@@ -322,5 +374,35 @@ mod tests {
             destroy_calls, 4,
             "two sets destroyed per run across two runs"
         );
+    }
+
+    #[test]
+    fn clear_remote_cache_dir_removes_existing_cached_files() {
+        let temp = TempDir::new().expect("tempdir");
+        let remote_cache_dir = temp.path().join("remote");
+        fs::create_dir_all(&remote_cache_dir).expect("mkdir remote");
+        fs::write(remote_cache_dir.join("one.iplist"), "10.0.0.0/24").expect("write iplist");
+        fs::create_dir_all(remote_cache_dir.join("nested")).expect("mkdir nested");
+        fs::write(remote_cache_dir.join("nested/two.raw"), "raw").expect("write raw");
+
+        clear_remote_cache_dir(&remote_cache_dir).expect("clear cache");
+
+        assert!(remote_cache_dir.exists());
+        let entries = fs::read_dir(&remote_cache_dir)
+            .expect("read dir")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect entries");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn clear_remote_cache_dir_creates_missing_directory() {
+        let temp = TempDir::new().expect("tempdir");
+        let remote_cache_dir = temp.path().join("remote");
+        assert!(!Path::new(&remote_cache_dir).exists());
+
+        clear_remote_cache_dir(&remote_cache_dir).expect("clear cache");
+
+        assert!(remote_cache_dir.exists());
     }
 }
