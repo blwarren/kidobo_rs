@@ -6,6 +6,12 @@ The format is based on Keep a Changelog, with one section per release.
 
 ## [Unreleased]
 
+### Changed
+
+- `kidobo lookup` now labels remote matches with the original source URL from
+  cache metadata (instead of hashed cache filenames), improving provenance in
+  offline lookup output.
+
 ## [0.2.0] - 2026-02-16
 
 ### Changed

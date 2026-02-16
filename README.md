@@ -246,6 +246,9 @@ Each match is printed as tab-separated fields:
 <queried-target-ip-or-cidr>    <source-label>    <matched-source-entry>
 ```
 
+For remote cached sources, `<source-label>` is the original source URL from
+cache metadata.
+
 Lookup does not fetch remote data; it uses local and cached sources only.
 
 ## License

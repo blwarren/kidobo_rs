@@ -1,6 +1,8 @@
 use std::ffi::OsStr;
 use std::fs;
+use std::path::{Path, PathBuf};
 
+use serde::Deserialize;
 use thiserror::Error;
 
 use crate::adapters::path::ResolvedPaths;
@@ -45,12 +47,7 @@ pub fn load_lookup_sources(
         remote_files.sort();
 
         for file in remote_files {
-            let file_name = file
-                .file_name()
-                .and_then(OsStr::to_str)
-                .unwrap_or("unknown.iplist")
-                .to_string();
-            let source_label = format!("remote:{file_name}");
+            let source_label = resolve_remote_source_label(&file);
             entries.extend(read_source_file(&file, &source_label)?);
         }
     }
@@ -62,7 +59,7 @@ pub fn load_lookup_sources(
 
 fn collect_remote_cache_files(
     paths: &ResolvedPaths,
-) -> Result<Vec<std::path::PathBuf>, LookupSourceLoadError> {
+) -> Result<Vec<PathBuf>, LookupSourceLoadError> {
     let mut files = Vec::new();
     let dir_iter = fs::read_dir(&paths.remote_cache_dir).map_err(|err| {
         LookupSourceLoadError::CacheDirRead {
@@ -87,7 +84,7 @@ fn collect_remote_cache_files(
 }
 
 fn read_source_file(
-    path: &std::path::Path,
+    path: &Path,
     source_label: &str,
 ) -> Result<Vec<LookupSourceEntry>, LookupSourceLoadError> {
     let contents = fs::read_to_string(path).map_err(|err| LookupSourceLoadError::SourceRead {
@@ -107,6 +104,45 @@ fn read_source_file(
     }
 
     Ok(entries)
+}
+
+#[derive(Debug, Deserialize)]
+struct RemoteSourceMetadata {
+    url: String,
+}
+
+fn resolve_remote_source_label(iplist_path: &Path) -> String {
+    let Some(meta_path) = remote_meta_path_for_iplist(iplist_path) else {
+        return fallback_remote_source_label(iplist_path);
+    };
+
+    let Ok(contents) = fs::read_to_string(meta_path) else {
+        return fallback_remote_source_label(iplist_path);
+    };
+
+    let Ok(metadata) = serde_json::from_str::<RemoteSourceMetadata>(&contents) else {
+        return fallback_remote_source_label(iplist_path);
+    };
+
+    let normalized_url = metadata.url.trim();
+    if normalized_url.is_empty() {
+        return fallback_remote_source_label(iplist_path);
+    }
+
+    normalized_url.to_string()
+}
+
+fn remote_meta_path_for_iplist(iplist_path: &Path) -> Option<PathBuf> {
+    let stem = iplist_path.file_stem()?.to_str()?;
+    Some(iplist_path.with_file_name(format!("{stem}.meta.json")))
+}
+
+fn fallback_remote_source_label(iplist_path: &Path) -> String {
+    let file_name = iplist_path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or("unknown.iplist");
+    format!("remote:{file_name}")
 }
 
 fn parse_lookup_source_line(line: &str) -> Option<(crate::core::network::CanonicalCidr, String)> {
@@ -156,6 +192,11 @@ mod tests {
 
         fs::write(paths.remote_cache_dir.join("a.iplist"), "2001:db8::/64\n")
             .expect("write remote a");
+        fs::write(
+            paths.remote_cache_dir.join("a.meta.json"),
+            r#"{"url":"https://example.com/allowlist.txt"}"#,
+        )
+        .expect("write remote meta");
         fs::write(paths.remote_cache_dir.join("ignore.txt"), "10.0.0.1\n").expect("write ignore");
 
         let entries = load_lookup_sources(&paths).expect("load sources");
@@ -172,12 +213,43 @@ mod tests {
         assert_eq!(
             labels,
             vec![
+                "https://example.com/allowlist.txt",
                 "internal:blocklist",
-                "internal:blocklist",
-                "remote:a.iplist"
+                "internal:blocklist"
             ]
         );
-        assert_eq!(lines, vec!["10.0.0.0/24", "198.51.100.7", "2001:db8::/64"]);
+        assert_eq!(lines, vec!["2001:db8::/64", "10.0.0.0/24", "198.51.100.7"]);
+    }
+
+    #[test]
+    fn remote_source_label_falls_back_to_cache_file_when_metadata_missing() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = test_paths(temp.path());
+
+        fs::create_dir_all(&paths.remote_cache_dir).expect("mkdir remote");
+        fs::write(paths.remote_cache_dir.join("a.iplist"), "2001:db8::/64\n")
+            .expect("write remote a");
+
+        let entries = load_lookup_sources(&paths).expect("load sources");
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].source_label, "remote:a.iplist");
+    }
+
+    #[test]
+    fn remote_source_label_falls_back_to_cache_file_when_metadata_invalid() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = test_paths(temp.path());
+
+        fs::create_dir_all(&paths.remote_cache_dir).expect("mkdir remote");
+        fs::write(paths.remote_cache_dir.join("a.iplist"), "2001:db8::/64\n")
+            .expect("write remote a");
+        fs::write(paths.remote_cache_dir.join("a.meta.json"), "{").expect("write invalid meta");
+
+        let entries = load_lookup_sources(&paths).expect("load sources");
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].source_label, "remote:a.iplist");
     }
 
     #[test]
