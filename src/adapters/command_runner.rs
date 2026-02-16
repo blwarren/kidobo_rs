@@ -215,8 +215,8 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        CommandExecutor, CommandRequest, CommandResult, CommandRunnerError, SudoCommandRunner,
-        SystemCommandExecutor,
+        CommandExecutor, CommandRequest, CommandResult, CommandRunnerError,
+        DEFAULT_COMMAND_TIMEOUT, SudoCommandRunner, SystemCommandExecutor,
     };
 
     struct MockExecutor {
@@ -306,6 +306,12 @@ mod tests {
         assert_eq!(returned, error);
     }
 
+    #[test]
+    fn default_runner_uses_default_timeout() {
+        let runner: SudoCommandRunner<SystemCommandExecutor> = SudoCommandRunner::default();
+        assert_eq!(runner.default_timeout, DEFAULT_COMMAND_TIMEOUT);
+    }
+
     #[cfg(unix)]
     fn run_system_shell(script: &str) -> Result<CommandResult, CommandRunnerError> {
         let executor = SystemCommandExecutor;
@@ -332,5 +338,49 @@ mod tests {
             .expect("command should succeed without pipe blocking");
         assert!(result.success);
         assert!(result.stderr.len() > 64 * 1024);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn system_executor_reports_spawn_errors_with_command_context() {
+        let executor = SystemCommandExecutor;
+        let err = executor
+            .execute(&CommandRequest {
+                program: "kidobo-definitely-missing-command-for-tests".to_string(),
+                args: Vec::new(),
+                timeout: Duration::from_secs(1),
+            })
+            .expect_err("missing binary must fail to spawn");
+
+        match err {
+            CommandRunnerError::Spawn { command, .. } => {
+                assert_eq!(command, "kidobo-definitely-missing-command-for-tests");
+            }
+            _ => panic!("expected spawn error"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn system_executor_reports_timeouts() {
+        let executor = SystemCommandExecutor;
+        let err = executor
+            .execute(&CommandRequest {
+                program: "sh".to_string(),
+                args: vec!["-c".to_string(), "sleep 1".to_string()],
+                timeout: Duration::from_millis(1),
+            })
+            .expect_err("sleep command should time out");
+
+        match err {
+            CommandRunnerError::Timeout {
+                command,
+                timeout_ms,
+            } => {
+                assert!(command.contains("sh -c sleep 1"));
+                assert_eq!(timeout_ms, 1);
+            }
+            _ => panic!("expected timeout error"),
+        }
     }
 }

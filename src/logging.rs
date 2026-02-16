@@ -14,3 +14,22 @@ pub fn init(level: LevelFilter) -> Result<(), KidoboError> {
         reason: err.to_string(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use log::LevelFilter;
+
+    use super::init;
+    use crate::error::KidoboError;
+
+    #[test]
+    fn repeated_init_reports_logger_init_error() {
+        let _ = init(LevelFilter::Off);
+
+        let err = init(LevelFilter::Off).expect_err("second init must fail");
+        match err {
+            KidoboError::LoggerInit { reason } => assert!(!reason.is_empty()),
+            _ => panic!("expected logger init error"),
+        }
+    }
+}

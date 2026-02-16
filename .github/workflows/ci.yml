@@ -81,5 +81,5 @@ jobs:
       - name: Install cargo-llvm-cov
         run: cargo install --locked cargo-llvm-cov
 
-      - name: cargo llvm-cov
-        run: cargo llvm-cov --all-features --fail-under-lines 85
+      - name: coverage gates
+        run: scripts/check-critical-coverage.sh

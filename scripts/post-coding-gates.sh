@@ -30,6 +30,6 @@ cargo +nightly install --locked cargo-udeps
 cargo +nightly udeps --all-targets --all-features
 
 log "running coverage gate"
-cargo llvm-cov --all-features --fail-under-lines 85
+scripts/check-critical-coverage.sh
 
 log "post-coding gates complete"
