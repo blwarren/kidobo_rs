@@ -8,19 +8,17 @@ The format is based on Keep a Changelog, with one section per release.
 
 ## [0.1.3] - 2026-02-16
 
-
 ### Changed
 
 - Release automation now resolves release notes from the tag name
   (`release-notes/<tag>.md`) and supports manual reruns for existing tags via
   `workflow_dispatch`.
 - `kidobo init` now runs `systemctl daemon-reload` and
-  `systemctl enable --now kidobo-sync.timer` automatically when using default
-  system paths (the `KIDOBO_ROOT` sandbox flow still skips `systemctl`).
-
+  `systemctl reset-failed kidobo-sync.service` before
+  `systemctl enable --now kidobo-sync.timer` when using default system paths
+  (the `KIDOBO_ROOT` sandbox flow still skips `systemctl`).
 
 ## [0.1.2] - 2026-02-16
-
 
 ### Changed
 
@@ -39,7 +37,6 @@ The format is based on Keep a Changelog, with one section per release.
   `ipset restore` command failure.
 - Command execution now drains `stdout` and `stderr` concurrently while processes
   run, preventing pipe-buffer deadlocks/timeouts on large command output.
-
 
 ## [0.1.1] - 2026-02-16
 

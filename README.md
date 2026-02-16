@@ -83,6 +83,7 @@ It also creates systemd unit files for periodic sync:
 With default system paths, `init` also runs:
 
 - `systemctl daemon-reload`
+- `systemctl reset-failed kidobo-sync.service`
 - `systemctl enable --now kidobo-sync.timer`
 
 When `KIDOBO_ROOT` is set, unit files are written under

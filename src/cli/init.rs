@@ -274,6 +274,7 @@ fn render_init_summary(summary: &InitSummary) -> String {
 
 fn ensure_systemd_timer_enabled(runner: &dyn InitCommandRunner) -> Result<(), KidoboError> {
     run_required_systemd_command(runner, &["daemon-reload"])?;
+    run_required_systemd_command(runner, &["reset-failed", KIDOBO_SYNC_SERVICE_FILE])?;
     run_required_systemd_command(runner, &["enable", "--now", KIDOBO_SYNC_TIMER_FILE])?;
     Ok(())
 }
@@ -553,17 +554,26 @@ mod tests {
 
     #[test]
     fn ensure_systemd_timer_enabled_runs_required_commands_in_order() {
-        let runner = MockInitCommandRunner::new(vec![Ok(success_result()), Ok(success_result())]);
+        let runner = MockInitCommandRunner::new(vec![
+            Ok(success_result()),
+            Ok(success_result()),
+            Ok(success_result()),
+        ]);
 
         ensure_systemd_timer_enabled(&runner).expect("systemd setup");
 
         let invocations = runner.invocations();
-        assert_eq!(invocations.len(), 2);
+        assert_eq!(invocations.len(), 3);
         assert_eq!(invocations[0].0, "systemctl");
         assert_eq!(invocations[0].1, vec!["daemon-reload"]);
         assert_eq!(invocations[1].0, "systemctl");
         assert_eq!(
             invocations[1].1,
+            vec!["reset-failed", KIDOBO_SYNC_SERVICE_FILE]
+        );
+        assert_eq!(invocations[2].0, "systemctl");
+        assert_eq!(
+            invocations[2].1,
             vec!["enable", "--now", KIDOBO_SYNC_TIMER_FILE]
         );
     }
@@ -571,6 +581,7 @@ mod tests {
     #[test]
     fn ensure_systemd_timer_enabled_surfaces_nonzero_exit() {
         let runner = MockInitCommandRunner::new(vec![
+            Ok(success_result()),
             Ok(success_result()),
             Ok(failed_result(1, "failed to enable unit")),
         ]);
