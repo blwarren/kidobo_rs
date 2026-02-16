@@ -1,13 +1,11 @@
-# kidobo_rs (`kidobo` CLI)
+# kidobo
 
 `kidobo` is a one-shot Linux firewall blocklist manager written in Rust.
 It builds IP/CIDR blocklists from local and remote sources, removes safelisted
 ranges, and updates `ipset` atomically with deterministic `iptables`/`ip6tables`
 wiring.
 
-The crate name is currently `kidobo_rs`; the installed binary is `kidobo`.
-
-## What it can do
+## What it does
 
 - Parse non-strict IP/CIDR source data (invalid lines are ignored).
 - Keep IPv4 and IPv6 processing separate.
@@ -21,7 +19,7 @@ The crate name is currently `kidobo_rs`; the installed binary is `kidobo`.
 ## Requirements
 
 - Linux
-- Rust/Cargo 1.93.1+ (for source builds only)
+- Rust/Cargo 1.93+ (for source builds only)
 - `sudo`
 - `ipset`
 - `iptables`
@@ -225,17 +223,6 @@ Useful environment variables:
 - `KIDOBO_MAX_HTTP_BODY_BYTES`
   - Overrides max remote response body size (default: `33554432` bytes).
 
-Local sandbox example (no system paths):
-
-```bash
-export KIDOBO_ROOT="$PWD/.kidobo-dev"
-kidobo init
-```
-
-No `sudo` is required in this sandbox flow if `KIDOBO_ROOT` is writable.
-If you use systemd with this layout, unit files are generated under
-`$KIDOBO_ROOT/systemd/system`.
-
 ## Commands
 
 ```text
@@ -260,32 +247,6 @@ Each match is printed as tab-separated fields:
 ```
 
 Lookup does not fetch remote data; it uses local and cached sources only.
-
-## Exit Codes
-
-- `0`: success
-- `1`: operational failure
-- `2`: CLI usage error
-- `130`: interrupted by SIGINT
-
-## Release Flow (Maintainers)
-
-Use the version bump script, then tag:
-
-```bash
-scripts/bump-version.sh patch
-scripts/post-coding-gates.sh
-git commit -am "release: cut vX.Y.Z"
-git tag -a vX.Y.Z -m "vX.Y.Z"
-git push origin main
-git push origin vX.Y.Z
-```
-
-Release automation notes:
-
-- `.github/workflows/release.yml` triggers on `v*` tag pushes.
-- Release notes are resolved from `release-notes/<tag>.md` (for example, `release-notes/v0.1.2.md`).
-- If a release job fails after a tag already exists, run the `release` workflow manually (`workflow_dispatch`) with `tag=vX.Y.Z` instead of moving/re-pushing the tag.
 
 ## License
 
