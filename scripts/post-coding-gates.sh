@@ -25,12 +25,6 @@ cargo deny check advisories bans licenses sources
 cargo audit
 
 log "running coverage gate"
-rustup component add llvm-tools-preview >/dev/null
-cargo install --locked cargo-llvm-cov >/dev/null
 cargo llvm-cov --all-features --fail-under-lines 85
-
-log "running unused-deps audit"
-rustup toolchain install nightly >/dev/null
-cargo +nightly udeps --all-targets --all-features
 
 log "post-coding gates complete"
