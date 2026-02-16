@@ -6,6 +6,12 @@ The format is based on Keep a Changelog, with one section per release.
 
 ## [Unreleased]
 
+### Changed
+
+- Release automation now resolves release notes from the tag name
+  (`release-notes/<tag>.md`) and supports manual reruns for existing tags via
+  `workflow_dispatch`.
+
 ## [0.1.2] - 2026-02-16
 
 

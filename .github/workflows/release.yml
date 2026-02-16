@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to release (for example: v0.1.2)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -12,9 +18,13 @@ jobs:
   release:
     name: release
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.93.1
@@ -22,18 +32,37 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
+      - name: Validate release tag format
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "invalid release tag format: ${RELEASE_TAG}"
+            exit 1
+          fi
+
       - name: Validate tag matches Cargo version
         shell: bash
         run: |
           set -euo pipefail
           cargo_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
-          tag_version="${GITHUB_REF_NAME#v}"
+          tag_version="${RELEASE_TAG#v}"
           if [[ -z "${cargo_version}" ]]; then
             echo "unable to parse version from Cargo.toml"
             exit 1
           fi
           if [[ "${cargo_version}" != "${tag_version}" ]]; then
             echo "tag version (${tag_version}) does not match Cargo.toml version (${cargo_version})"
+            exit 1
+          fi
+
+      - name: Validate release notes file exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_notes_path="release-notes/${RELEASE_TAG}.md"
+          if [[ ! -f "${release_notes_path}" ]]; then
+            echo "missing release notes file: ${release_notes_path}"
             exit 1
           fi
 
@@ -44,7 +73,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          archive_root="kidobo-${GITHUB_REF_NAME}-linux-x86_64"
+          archive_root="kidobo-${RELEASE_TAG}-linux-x86_64"
           mkdir -p "${archive_root}"
           install -m 0755 target/release/kidobo "${archive_root}/kidobo"
           cp README.md LICENSE "${archive_root}/"
@@ -54,7 +83,8 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          body_path: release-notes/v0.1.2.md
+          tag_name: ${{ env.RELEASE_TAG }}
+          body_path: release-notes/${{ env.RELEASE_TAG }}.md
           files: |
-            kidobo-${{ github.ref_name }}-linux-x86_64.tar.gz
+            kidobo-${{ env.RELEASE_TAG }}-linux-x86_64.tar.gz
             SHA256SUMS

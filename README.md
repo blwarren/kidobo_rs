@@ -258,6 +258,25 @@ Lookup does not fetch remote data; it uses local and cached sources only.
 - `2`: CLI usage error
 - `130`: interrupted by SIGINT
 
+## Release Flow (Maintainers)
+
+Use the version bump script, then tag:
+
+```bash
+scripts/bump-version.sh patch
+scripts/post-coding-gates.sh
+git commit -am "release: cut vX.Y.Z"
+git tag -a vX.Y.Z -m "vX.Y.Z"
+git push origin main
+git push origin vX.Y.Z
+```
+
+Release automation notes:
+
+- `.github/workflows/release.yml` triggers on `v*` tag pushes.
+- Release notes are resolved from `release-notes/<tag>.md` (for example, `release-notes/v0.1.2.md`).
+- If a release job fails after a tag already exists, run the `release` workflow manually (`workflow_dispatch`) with `tag=vX.Y.Z` instead of moving/re-pushing the tag.
+
 ## License
 
 MIT (see `LICENSE`).

@@ -325,73 +325,6 @@ write_release_notes_file() {
     } >"$output_file"
 }
 
-update_release_workflow_body_path() {
-    local release_notes_path="$1"
-    local temp
-    temp="$(mktemp)"
-
-    awk -v release_notes_path="$release_notes_path" '
-        BEGIN {
-            in_release_step = 0
-            in_with_block = 0
-            inserted = 0
-            updated = 0
-        }
-
-        /^      - name: Create GitHub release$/ {
-            in_release_step = 1
-            in_with_block = 0
-        }
-
-        in_release_step && /^      - name: / && $0 != "      - name: Create GitHub release" {
-            if (in_with_block && !inserted) {
-                print "          body_path: " release_notes_path
-                inserted = 1
-                updated = 1
-            }
-            in_release_step = 0
-            in_with_block = 0
-        }
-
-        in_release_step && /^        with:$/ {
-            in_with_block = 1
-            print
-            next
-        }
-
-        in_release_step && in_with_block && /^          body_path:/ {
-            print "          body_path: " release_notes_path
-            inserted = 1
-            updated = 1
-            next
-        }
-
-        in_release_step && in_with_block && !inserted && /^          files:/ {
-            print "          body_path: " release_notes_path
-            inserted = 1
-            updated = 1
-            print
-            next
-        }
-
-        { print }
-
-        END {
-            if (in_release_step && in_with_block && !inserted) {
-                print "          body_path: " release_notes_path
-                updated = 1
-            }
-
-            if (!updated) {
-                print "failed to update body_path in .github/workflows/release.yml" > "/dev/stderr"
-                exit 11
-            }
-        }
-    ' .github/workflows/release.yml >"$temp"
-
-    mv "$temp" .github/workflows/release.yml
-}
-
 main() {
     local dry_run=0
     local requested=""
@@ -439,7 +372,6 @@ main() {
     ensure_file_exists Cargo.lock
     ensure_file_exists README.md
     ensure_file_exists CHANGELOG.md
-    ensure_file_exists .github/workflows/release.yml
 
     local current_version
     current_version="$(read_package_field version)"
@@ -475,7 +407,6 @@ main() {
             echo "  CHANGELOG.md"
         fi
         echo "  ${release_notes_file}"
-        echo "  .github/workflows/release.yml"
         echo
         echo "dry-run: release notes source: CHANGELOG.md section [${target_version}] or [Unreleased]"
         echo "dry-run: this script does not create or push git tags"
@@ -493,7 +424,6 @@ main() {
         promote_unreleased_to_version_section "$target_version" "$(date +%Y-%m-%d)" CHANGELOG.md
     fi
     write_release_notes_file "$target_version" "$release_notes_body" "release-notes"
-    update_release_workflow_body_path "$release_notes_file"
 
     echo "version updated: ${current_version} -> ${target_version}"
     echo "updated files:"
@@ -504,7 +434,6 @@ main() {
         echo "  CHANGELOG.md"
     fi
     echo "  ${release_notes_file}"
-    echo "  .github/workflows/release.yml"
     echo
     echo "this script does not create or push git tags"
     echo "next steps:"
