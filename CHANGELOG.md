@@ -14,6 +14,22 @@ The format is based on Keep a Changelog, with one section per release.
 - Documentation and maintenance scripts now explicitly use
   `cargo +nightly udeps --all-targets --all-features` for dependency-usage
   checks to match CI behavior.
+- Remote conditional-fetch behavior is now shared through a common adapter
+  helper, reducing duplicated cache revalidation logic between remote feed and
+  GitHub meta loaders.
+- `kidobo sync` remote ingestion now keeps parsed CIDRs from cache fetch results
+  and avoids reparsing normalized `.iplist` text in worker threads.
+- Lookup matching now pre-indexes source CIDR intervals per family, reducing
+  repeated overlap scanning work for multi-target lookups.
+- Sync/carve normalization now removes redundant collapse/sort/merge passes in
+  the core blocklist pipeline while preserving deterministic output ordering.
+- Removed the unused `reqwest` `json` feature from dependency configuration.
+
+### Fixed
+
+- Remote feed metadata cache parse/read failures now degrade gracefully to
+  metadata-free operation, preserving stale `.iplist` fallback behavior instead
+  of hard-failing the source load.
 
 ## [0.2.0] - 2026-02-16
 

@@ -1,0 +1,233 @@
+use log::warn;
+
+use crate::adapters::http_cache::{HttpClient, HttpRequest, HttpResponse};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConditionalFetchOutcome {
+    Network,
+    CacheNotModified,
+    FallbackCache,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConditionalFetchResult {
+    pub outcome: ConditionalFetchOutcome,
+    pub response: Option<HttpResponse>,
+}
+
+pub fn fetch_with_conditional_cache(
+    client: &dyn HttpClient,
+    url: &str,
+    max_body_bytes: usize,
+    etag: Option<String>,
+    last_modified: Option<String>,
+    has_usable_cache: bool,
+    log_subject: &str,
+) -> ConditionalFetchResult {
+    let conditional_request = HttpRequest {
+        url: url.to_string(),
+        if_none_match: etag,
+        if_modified_since: last_modified,
+        max_body_bytes,
+    };
+
+    let response = match client.fetch(conditional_request) {
+        Ok(response) => response,
+        Err(err) => {
+            warn!("{log_subject} fetch failed for {url}: {err}");
+            return ConditionalFetchResult {
+                outcome: ConditionalFetchOutcome::FallbackCache,
+                response: None,
+            };
+        }
+    };
+
+    if response.status != 304 {
+        return ConditionalFetchResult {
+            outcome: ConditionalFetchOutcome::Network,
+            response: Some(response),
+        };
+    }
+
+    if has_usable_cache {
+        return ConditionalFetchResult {
+            outcome: ConditionalFetchOutcome::CacheNotModified,
+            response: None,
+        };
+    }
+
+    let unconditional_request = HttpRequest {
+        url: url.to_string(),
+        if_none_match: None,
+        if_modified_since: None,
+        max_body_bytes,
+    };
+
+    match client.fetch(unconditional_request) {
+        Ok(response) => ConditionalFetchResult {
+            outcome: ConditionalFetchOutcome::Network,
+            response: Some(response),
+        },
+        Err(err) => {
+            warn!("{log_subject} refetch failed for {url} after 304: {err}");
+            ConditionalFetchResult {
+                outcome: ConditionalFetchOutcome::FallbackCache,
+                response: None,
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
+
+    use super::{ConditionalFetchOutcome, ConditionalFetchResult, fetch_with_conditional_cache};
+    use crate::adapters::http_cache::{HttpClient, HttpClientError, HttpRequest, HttpResponse};
+
+    struct MockHttpClient {
+        responses: RefCell<VecDeque<Result<HttpResponse, HttpClientError>>>,
+        requests: RefCell<Vec<HttpRequest>>,
+    }
+
+    impl MockHttpClient {
+        fn new(responses: Vec<Result<HttpResponse, HttpClientError>>) -> Self {
+            Self {
+                responses: RefCell::new(VecDeque::from(responses)),
+                requests: RefCell::new(Vec::new()),
+            }
+        }
+
+        fn requests(&self) -> Vec<HttpRequest> {
+            self.requests.borrow().clone()
+        }
+    }
+
+    impl HttpClient for MockHttpClient {
+        fn fetch(&self, request: HttpRequest) -> Result<HttpResponse, HttpClientError> {
+            self.requests.borrow_mut().push(request);
+            self.responses
+                .borrow_mut()
+                .pop_front()
+                .expect("queued response")
+        }
+    }
+
+    fn unwrap_result(result: ConditionalFetchResult) -> (ConditionalFetchOutcome, HttpResponse) {
+        let response = result.response.expect("response should exist");
+        (result.outcome, response)
+    }
+
+    #[test]
+    fn returns_network_response_for_non_304_status() {
+        let client = MockHttpClient::new(vec![Ok(HttpResponse {
+            status: 200,
+            body: b"10.0.0.1".to_vec(),
+            etag: None,
+            last_modified: None,
+        })]);
+
+        let (outcome, response) = unwrap_result(fetch_with_conditional_cache(
+            &client,
+            "https://example.com/feed.txt",
+            1024,
+            None,
+            None,
+            false,
+            "remote source",
+        ));
+
+        assert_eq!(outcome, ConditionalFetchOutcome::Network);
+        assert_eq!(response.status, 200);
+        assert_eq!(client.requests().len(), 1);
+    }
+
+    #[test]
+    fn returns_cache_not_modified_for_304_with_usable_cache() {
+        let client = MockHttpClient::new(vec![Ok(HttpResponse {
+            status: 304,
+            body: Vec::new(),
+            etag: None,
+            last_modified: None,
+        })]);
+
+        let result = fetch_with_conditional_cache(
+            &client,
+            "https://example.com/feed.txt",
+            1024,
+            Some("etag-1".to_string()),
+            Some("Mon, 01 Jan 2024 00:00:00 GMT".to_string()),
+            true,
+            "remote source",
+        );
+
+        assert_eq!(result.outcome, ConditionalFetchOutcome::CacheNotModified);
+        assert!(result.response.is_none());
+        assert_eq!(client.requests().len(), 1);
+    }
+
+    #[test]
+    fn refetches_unconditionally_for_304_without_cache() {
+        let client = MockHttpClient::new(vec![
+            Ok(HttpResponse {
+                status: 304,
+                body: Vec::new(),
+                etag: None,
+                last_modified: None,
+            }),
+            Ok(HttpResponse {
+                status: 200,
+                body: b"198.51.100.7".to_vec(),
+                etag: None,
+                last_modified: None,
+            }),
+        ]);
+
+        let (outcome, response) = unwrap_result(fetch_with_conditional_cache(
+            &client,
+            "https://example.com/feed.txt",
+            1024,
+            Some("etag-1".to_string()),
+            Some("Mon, 01 Jan 2024 00:00:00 GMT".to_string()),
+            false,
+            "remote source",
+        ));
+
+        assert_eq!(outcome, ConditionalFetchOutcome::Network);
+        assert_eq!(response.status, 200);
+
+        let requests = client.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].if_none_match, None);
+        assert_eq!(requests[1].if_modified_since, None);
+    }
+
+    #[test]
+    fn falls_back_when_refetch_after_304_fails() {
+        let client = MockHttpClient::new(vec![
+            Ok(HttpResponse {
+                status: 304,
+                body: Vec::new(),
+                etag: None,
+                last_modified: None,
+            }),
+            Err(HttpClientError::Request {
+                reason: "offline".to_string(),
+            }),
+        ]);
+
+        let result = fetch_with_conditional_cache(
+            &client,
+            "https://example.com/feed.txt",
+            1024,
+            None,
+            None,
+            false,
+            "remote source",
+        );
+
+        assert_eq!(result.outcome, ConditionalFetchOutcome::FallbackCache);
+        assert!(result.response.is_none());
+    }
+}

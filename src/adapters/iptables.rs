@@ -75,7 +75,7 @@ pub fn ensure_firewall_wiring(
     set_name: &str,
 ) -> Result<(), FirewallError> {
     ensure_chain_exists(runner, family, KIDOBO_CHAIN_NAME)?;
-    remove_all_input_jumps(runner, family, KIDOBO_CHAIN_NAME)?;
+    remove_all_input_jumps_for_chain(runner, family, KIDOBO_CHAIN_NAME)?;
     insert_input_jump_at_top(runner, family, KIDOBO_CHAIN_NAME)?;
     enforce_chain_drop_rule(runner, family, KIDOBO_CHAIN_NAME, set_name)?;
     Ok(())
@@ -108,7 +108,7 @@ fn ensure_chain_exists(
     run_checked(runner, family.binary(), &["-N", chain_name]).map(|_| ())
 }
 
-fn remove_all_input_jumps(
+pub fn remove_all_input_jumps_for_chain(
     runner: &dyn FirewallCommandRunner,
     family: FirewallFamily,
     chain_name: &str,

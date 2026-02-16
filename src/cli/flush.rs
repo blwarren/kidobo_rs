@@ -3,10 +3,12 @@ use std::path::Path;
 
 use log::warn;
 
-use crate::adapters::command_runner::{CommandResult, SudoCommandRunner};
+use crate::adapters::command_runner::SudoCommandRunner;
 use crate::adapters::config::load_config_from_file;
 use crate::adapters::ipset::IpsetCommandRunner;
-use crate::adapters::iptables::{FirewallCommandRunner, KIDOBO_CHAIN_NAME};
+use crate::adapters::iptables::{
+    FirewallCommandRunner, FirewallFamily, KIDOBO_CHAIN_NAME, remove_all_input_jumps_for_chain,
+};
 use crate::adapters::lock::acquire_non_blocking;
 use crate::adapters::path::{PathResolutionInput, resolve_paths, resolve_paths_for_init};
 use crate::core::config::Config;
@@ -38,9 +40,9 @@ pub(crate) fn run_flush_with_runner(
     ipset_runner: &dyn IpsetCommandRunner,
     remote_cache_dir: &Path,
 ) -> Result<(), KidoboError> {
-    cleanup_firewall_family(firewall_runner, "iptables");
+    cleanup_firewall_family(firewall_runner, FirewallFamily::Ipv4);
     if config.ipset.enable_ipv6 {
-        cleanup_firewall_family(firewall_runner, "ip6tables");
+        cleanup_firewall_family(firewall_runner, FirewallFamily::Ipv6);
     }
 
     best_effort_ipset_destroy(ipset_runner, &config.ipset.set_name);
@@ -53,32 +55,24 @@ pub(crate) fn run_flush_with_runner(
     Ok(())
 }
 
-fn cleanup_firewall_family(runner: &dyn FirewallCommandRunner, binary: &str) {
-    remove_all_input_jumps(runner, binary);
+fn cleanup_firewall_family(runner: &dyn FirewallCommandRunner, family: FirewallFamily) {
+    if let Err(err) = remove_all_input_jumps_for_chain(runner, family, KIDOBO_CHAIN_NAME) {
+        let binary = firewall_binary(family);
+        warn!(
+            "best-effort flush command failed: {} -D INPUT -j {} ({})",
+            binary, KIDOBO_CHAIN_NAME, err
+        );
+    }
+
+    let binary = firewall_binary(family);
     best_effort_firewall_command(runner, binary, &["-F", KIDOBO_CHAIN_NAME]);
     best_effort_firewall_command(runner, binary, &["-X", KIDOBO_CHAIN_NAME]);
 }
 
-fn remove_all_input_jumps(runner: &dyn FirewallCommandRunner, binary: &str) {
-    loop {
-        match runner.run(binary, &["-D", "INPUT", "-j", KIDOBO_CHAIN_NAME]) {
-            Ok(result) if result.success => continue,
-            Ok(result) if is_missing_jump_result(&result) => break,
-            Ok(result) => {
-                warn!(
-                    "best-effort flush command failed: {} -D INPUT -j {} (status={:?} stderr={})",
-                    binary, KIDOBO_CHAIN_NAME, result.status, result.stderr
-                );
-                break;
-            }
-            Err(err) => {
-                warn!(
-                    "best-effort flush command execution failed: {} -D INPUT -j {} ({})",
-                    binary, KIDOBO_CHAIN_NAME, err
-                );
-                break;
-            }
-        }
+fn firewall_binary(family: FirewallFamily) -> &'static str {
+    match family {
+        FirewallFamily::Ipv4 => "iptables",
+        FirewallFamily::Ipv6 => "ip6tables",
     }
 }
 
@@ -137,15 +131,6 @@ fn clear_remote_cache_dir(remote_cache_dir: &Path) -> Result<(), KidoboError> {
         path: remote_cache_dir.to_path_buf(),
         reason: err.to_string(),
     })
-}
-
-fn is_missing_jump_result(result: &CommandResult) -> bool {
-    result.status == Some(1)
-        && (result.stderr.to_ascii_lowercase().contains("bad rule")
-            || result
-                .stderr
-                .to_ascii_lowercase()
-                .contains("no chain/target/match by that name"))
 }
 
 #[cfg(test)]

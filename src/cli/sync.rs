@@ -232,12 +232,11 @@ fn fetch_remote_networks_concurrently(
 
                     match fetch_iplist_with_cache(http_client, &url, cache_dir, env) {
                         Ok(cached) => {
-                            let parsed = parse_lines_non_strict(cached.iplist.lines());
-                            if !parsed.is_empty() {
+                            if !cached.networks.is_empty() {
                                 let mut guard = collected
                                     .lock()
                                     .unwrap_or_else(|poisoned| poisoned.into_inner());
-                                guard.extend(parsed);
+                                guard.extend(cached.networks);
                             }
                         }
                         Err(err) => warn!("remote source fetch failed softly for {url}: {err}"),

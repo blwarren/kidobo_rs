@@ -10,7 +10,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::core::network::{CanonicalCidr, parse_ip_cidr_non_strict};
+use crate::adapters::http_fetch::{
+    ConditionalFetchOutcome, ConditionalFetchResult, fetch_with_conditional_cache,
+};
+use crate::core::network::{CanonicalCidr, parse_ip_cidr_non_strict, parse_lines_non_strict};
 
 pub const DEFAULT_MAX_HTTP_BODY_BYTES: usize = 32 * 1024 * 1024;
 pub const ENV_KIDOBO_MAX_HTTP_BODY_BYTES: &str = "KIDOBO_MAX_HTTP_BODY_BYTES";
@@ -45,6 +48,7 @@ pub enum CacheSource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CachedIplist {
     pub iplist: String,
+    pub networks: Vec<CanonicalCidr>,
     pub source: CacheSource,
     pub metadata: Option<RemoteCacheMetadata>,
 }
@@ -227,8 +231,12 @@ pub fn max_http_body_bytes(env: &BTreeMap<String, String>) -> usize {
 }
 
 pub fn normalize_remote_text(raw: &[u8]) -> String {
+    format_normalized_cidrs(&parse_remote_cidrs(raw))
+}
+
+fn parse_remote_cidrs(raw: &[u8]) -> Vec<CanonicalCidr> {
     let text = String::from_utf8_lossy(raw);
-    let mut normalized = Vec::new();
+    let mut parsed = Vec::new();
 
     for line in text.lines() {
         let without_bom = line.trim_start_matches('\u{feff}').trim();
@@ -242,11 +250,24 @@ pub fn normalize_remote_text(raw: &[u8]) -> String {
         };
 
         if let Some(cidr) = parse_ip_cidr_non_strict(token) {
-            normalized.push(canonical_to_string(cidr));
+            parsed.push(cidr);
         }
     }
 
-    normalized.join("\n")
+    parsed
+}
+
+fn parse_cached_iplist(iplist: &str) -> Vec<CanonicalCidr> {
+    parse_lines_non_strict(iplist.lines())
+}
+
+fn format_normalized_cidrs(cidrs: &[CanonicalCidr]) -> String {
+    cidrs
+        .iter()
+        .copied()
+        .map(canonical_to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub fn fetch_iplist_with_cache(
@@ -259,64 +280,55 @@ pub fn fetch_iplist_with_cache(
     let cache_paths = cache_paths_for_url(cache_dir, url);
 
     let cached_iplist = read_optional_iplist(&cache_paths)?;
-    let cached_meta = read_optional_metadata(&cache_paths)?;
+    let cached_networks = cached_iplist.as_deref().map(parse_cached_iplist);
+    let cached_meta = read_optional_metadata_lossy(&cache_paths);
 
-    let conditional_request = HttpRequest {
-        url: url.to_string(),
-        if_none_match: cached_meta.as_ref().and_then(|meta| meta.etag.clone()),
-        if_modified_since: cached_meta
+    let ConditionalFetchResult { outcome, response } = fetch_with_conditional_cache(
+        client,
+        url,
+        max_bytes,
+        cached_meta.as_ref().and_then(|meta| meta.etag.clone()),
+        cached_meta
             .as_ref()
             .and_then(|meta| meta.last_modified.clone()),
-        max_body_bytes: max_bytes,
-    };
+        cached_networks.is_some(),
+        "remote source",
+    );
 
-    let response = match client.fetch(conditional_request) {
-        Ok(response) => response,
-        Err(err) => {
-            warn!("remote fetch failed for {url}: {err}");
-            return Ok(cache_fallback(cached_iplist, cached_meta));
-        }
-    };
-
-    if response.status == 304 {
-        if let Some(iplist) = cached_iplist {
-            return Ok(CachedIplist {
-                iplist,
-                source: CacheSource::CacheNotModified,
-                metadata: cached_meta,
-            });
-        }
-
-        let unconditional = HttpRequest {
-            url: url.to_string(),
-            if_none_match: None,
-            if_modified_since: None,
-            max_body_bytes: max_bytes,
-        };
-
-        let response = match client.fetch(unconditional) {
-            Ok(response) => response,
-            Err(err) => {
-                warn!("remote refetch failed for {url} after 304 without cache: {err}");
+    match (outcome, response) {
+        (ConditionalFetchOutcome::CacheNotModified, _) => {
+            if let Some(iplist) = cached_iplist {
                 return Ok(CachedIplist {
-                    iplist: String::new(),
-                    source: CacheSource::Empty,
-                    metadata: None,
+                    iplist,
+                    networks: cached_networks.unwrap_or_default(),
+                    source: CacheSource::CacheNotModified,
+                    metadata: cached_meta,
                 });
             }
-        };
-
-        return handle_network_response(response, url, &cache_paths, max_bytes, None, None);
+            Ok(CachedIplist {
+                iplist: String::new(),
+                networks: Vec::new(),
+                source: CacheSource::Empty,
+                metadata: None,
+            })
+        }
+        (ConditionalFetchOutcome::FallbackCache, _) => {
+            Ok(cache_fallback(cached_iplist, cached_networks, cached_meta))
+        }
+        (ConditionalFetchOutcome::Network, Some(response)) => handle_network_response(
+            response,
+            url,
+            &cache_paths,
+            max_bytes,
+            cached_iplist,
+            cached_networks,
+            cached_meta,
+        ),
+        (ConditionalFetchOutcome::Network, None) => {
+            warn!("remote fetch returned network outcome without response for {url}");
+            Ok(cache_fallback(cached_iplist, cached_networks, cached_meta))
+        }
     }
-
-    handle_network_response(
-        response,
-        url,
-        &cache_paths,
-        max_bytes,
-        cached_iplist,
-        cached_meta,
-    )
 }
 
 fn handle_network_response(
@@ -325,6 +337,7 @@ fn handle_network_response(
     cache_paths: &CachePaths,
     max_bytes: usize,
     cached_iplist: Option<String>,
+    cached_networks: Option<Vec<CanonicalCidr>>,
     cached_meta: Option<RemoteCacheMetadata>,
 ) -> Result<CachedIplist, HttpCacheError> {
     if !(200..300).contains(&response.status) {
@@ -332,7 +345,7 @@ fn handle_network_response(
             "remote fetch failed for {url}: unexpected status {}",
             response.status
         );
-        return Ok(cache_fallback(cached_iplist, cached_meta));
+        return Ok(cache_fallback(cached_iplist, cached_networks, cached_meta));
     }
 
     if response.body.len() > max_bytes {
@@ -341,10 +354,11 @@ fn handle_network_response(
             response.body.len(),
             max_bytes
         );
-        return Ok(cache_fallback(cached_iplist, cached_meta));
+        return Ok(cache_fallback(cached_iplist, cached_networks, cached_meta));
     }
 
-    let normalized = normalize_remote_text(&response.body);
+    let networks = parse_remote_cidrs(&response.body);
+    let normalized = format_normalized_cidrs(&networks);
     let metadata = RemoteCacheMetadata {
         url: url.to_string(),
         etag: response.etag,
@@ -357,6 +371,7 @@ fn handle_network_response(
 
     Ok(CachedIplist {
         iplist: normalized,
+        networks,
         source: CacheSource::Network,
         metadata: Some(metadata),
     })
@@ -435,12 +450,27 @@ fn read_optional_metadata(
     Ok(Some(metadata))
 }
 
+fn read_optional_metadata_lossy(paths: &CachePaths) -> Option<RemoteCacheMetadata> {
+    match read_optional_metadata(paths) {
+        Ok(metadata) => metadata,
+        Err(err) => {
+            warn!(
+                "failed to read remote metadata cache {}: {err}",
+                paths.meta_path.display()
+            );
+            None
+        }
+    }
+}
+
 fn cache_fallback(
     cached_iplist: Option<String>,
+    cached_networks: Option<Vec<CanonicalCidr>>,
     cached_meta: Option<RemoteCacheMetadata>,
 ) -> CachedIplist {
     if let Some(iplist) = cached_iplist {
         CachedIplist {
+            networks: cached_networks.unwrap_or_else(|| parse_cached_iplist(&iplist)),
             iplist,
             source: CacheSource::FallbackCache,
             metadata: cached_meta,
@@ -448,6 +478,7 @@ fn cache_fallback(
     } else {
         CachedIplist {
             iplist: String::new(),
+            networks: Vec::new(),
             source: CacheSource::Empty,
             metadata: cached_meta,
         }
@@ -611,6 +642,7 @@ mod tests {
         let result =
             fetch_iplist_with_cache(&client, url, cache_dir, &BTreeMap::new()).expect("fetch");
         assert_eq!(result.source, CacheSource::CacheNotModified);
+        assert_eq!(result.networks.len(), 1);
 
         let requests = client.requests();
         assert_eq!(requests.len(), 1);
@@ -646,6 +678,7 @@ mod tests {
             fetch_iplist_with_cache(&client, url, cache_dir, &BTreeMap::new()).expect("fetch");
         assert_eq!(result.source, CacheSource::Network);
         assert_eq!(result.iplist, "198.51.100.7/32");
+        assert_eq!(result.networks.len(), 1);
 
         let requests = client.requests();
         assert_eq!(requests.len(), 2);
@@ -676,6 +709,35 @@ mod tests {
             fetch_iplist_with_cache(&client, url, cache_dir, &BTreeMap::new()).expect("fetch");
         assert_eq!(result.source, CacheSource::FallbackCache);
         assert_eq!(result.iplist, "10.0.0.0/24\n");
+        assert_eq!(result.networks.len(), 1);
+    }
+
+    #[test]
+    fn invalid_metadata_cache_does_not_block_stale_iplist_fallback() {
+        let temp = TempDir::new().expect("tempdir");
+        let cache_dir = temp.path();
+        let url = "https://example.com/feed.txt";
+        let paths = cache_paths_for_url(cache_dir, url);
+
+        fs::create_dir_all(cache_dir).expect("mkdir");
+        fs::write(&paths.iplist_path, "10.0.0.0/24\n").expect("write cache");
+        fs::write(&paths.meta_path, "{invalid-json").expect("write invalid metadata");
+
+        let client = MockHttpClient::new(vec![Err(HttpClientError::Request {
+            reason: "offline".to_string(),
+        })]);
+
+        let result =
+            fetch_iplist_with_cache(&client, url, cache_dir, &BTreeMap::new()).expect("fetch");
+
+        assert_eq!(result.source, CacheSource::FallbackCache);
+        assert_eq!(result.iplist, "10.0.0.0/24\n");
+        assert_eq!(result.networks.len(), 1);
+
+        let requests = client.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].if_none_match, None);
+        assert_eq!(requests[0].if_modified_since, None);
     }
 
     #[test]
@@ -697,6 +759,7 @@ mod tests {
         let result = fetch_iplist_with_cache(&client, url, cache_dir, &env).expect("fetch");
         assert_eq!(result.source, CacheSource::Empty);
         assert!(result.iplist.is_empty());
+        assert!(result.networks.is_empty());
     }
 
     #[test]

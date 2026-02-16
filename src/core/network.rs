@@ -190,14 +190,14 @@ pub fn collapse_ipv4(cidrs: &[Ipv4Cidr]) -> Vec<Ipv4Cidr> {
     let deduped = dedup_ipv4(cidrs.to_vec());
     let intervals: Vec<IntervalU32> = deduped.into_iter().map(IntervalU32::from).collect();
     let merged = merge_intervals_u32(&intervals);
-    intervals_to_ipv4_cidrs(&merged)
+    intervals_to_ipv4_cidrs_from_merged(&merged)
 }
 
 pub fn collapse_ipv6(cidrs: &[Ipv6Cidr]) -> Vec<Ipv6Cidr> {
     let deduped = dedup_ipv6(cidrs.to_vec());
     let intervals: Vec<IntervalU128> = deduped.into_iter().map(IntervalU128::from).collect();
     let merged = merge_intervals_u128(&intervals);
-    intervals_to_ipv6_cidrs(&merged)
+    intervals_to_ipv6_cidrs_from_merged(&merged)
 }
 
 pub fn ipv4_to_interval(cidr: Ipv4Cidr) -> IntervalU32 {
@@ -334,9 +334,18 @@ pub fn subtract_safelist_ipv6(candidates: &[Ipv6Cidr], safelist: &[Ipv6Cidr]) ->
 
 pub fn intervals_to_ipv4_cidrs(intervals: &[IntervalU32]) -> Vec<Ipv4Cidr> {
     let merged = merge_intervals_u32(intervals);
+    intervals_to_ipv4_cidrs_from_merged(&merged)
+}
+
+pub fn intervals_to_ipv6_cidrs(intervals: &[IntervalU128]) -> Vec<Ipv6Cidr> {
+    let merged = merge_intervals_u128(intervals);
+    intervals_to_ipv6_cidrs_from_merged(&merged)
+}
+
+fn intervals_to_ipv4_cidrs_from_merged(intervals: &[IntervalU32]) -> Vec<Ipv4Cidr> {
     let mut out = Vec::new();
 
-    for interval in merged {
+    for interval in intervals {
         let mut start = interval.start;
 
         while start <= interval.end {
@@ -359,11 +368,10 @@ pub fn intervals_to_ipv4_cidrs(intervals: &[IntervalU32]) -> Vec<Ipv4Cidr> {
     out
 }
 
-pub fn intervals_to_ipv6_cidrs(intervals: &[IntervalU128]) -> Vec<Ipv6Cidr> {
-    let merged = merge_intervals_u128(intervals);
+fn intervals_to_ipv6_cidrs_from_merged(intervals: &[IntervalU128]) -> Vec<Ipv6Cidr> {
     let mut out = Vec::new();
 
-    for interval in merged {
+    for interval in intervals {
         let mut start = interval.start;
 
         while start <= interval.end {

@@ -1,6 +1,6 @@
 use crate::core::network::{
-    CanonicalCidr, Ipv4Cidr, Ipv6Cidr, collapse_ipv4, collapse_ipv6, split_by_family,
-    subtract_safelist_ipv4, subtract_safelist_ipv6,
+    CanonicalCidr, Ipv4Cidr, Ipv6Cidr, split_by_family, subtract_safelist_ipv4,
+    subtract_safelist_ipv6,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -17,21 +17,13 @@ pub fn compute_effective_blocklists(
     let candidate_family = split_by_family(candidates);
     let safelist_family = split_by_family(safelist);
 
-    let carved_v4 = subtract_safelist_ipv4(&candidate_family.ipv4, &safelist_family.ipv4);
-    let mut effective_v4 = collapse_ipv4(&carved_v4);
-    effective_v4.sort_unstable();
+    let effective_v4 = subtract_safelist_ipv4(&candidate_family.ipv4, &safelist_family.ipv4);
 
-    let mut effective_v6 = if enable_ipv6 {
-        let carved_v6 = subtract_safelist_ipv6(&candidate_family.ipv6, &safelist_family.ipv6);
-        let mut collapsed_v6 = collapse_ipv6(&carved_v6);
-        collapsed_v6.sort_unstable();
-        collapsed_v6
+    let effective_v6 = if enable_ipv6 {
+        subtract_safelist_ipv6(&candidate_family.ipv6, &safelist_family.ipv6)
     } else {
         Vec::new()
     };
-
-    effective_v4.dedup();
-    effective_v6.dedup();
 
     EffectiveBlocklists {
         ipv4: effective_v4,
