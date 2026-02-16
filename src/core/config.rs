@@ -122,15 +122,28 @@ impl Config {
 
 fn parse_ipset(raw: RawIpsetConfig) -> Result<IpsetConfig, ConfigError> {
     let set_name = required_non_empty(raw.set_name, "ipset.set_name")?;
+    validate_ipset_set_name(&set_name, "ipset.set_name")?;
 
     let set_name_v6 = match raw.set_name_v6 {
-        Some(value) => non_empty(value, "ipset.set_name_v6")?,
-        None => format!("{set_name}-v6"),
+        Some(value) => {
+            let parsed = non_empty(value, "ipset.set_name_v6")?;
+            validate_ipset_set_name(&parsed, "ipset.set_name_v6")?;
+            parsed
+        }
+        None => {
+            let derived = format!("{set_name}-v6");
+            validate_ipset_set_name(&derived, "ipset.set_name_v6")?;
+            derived
+        }
     };
 
     let enable_ipv6 = raw.enable_ipv6.unwrap_or(true);
     let set_type = match raw.set_type {
-        Some(value) => non_empty(value, "ipset.set_type")?,
+        Some(value) => {
+            let parsed = non_empty(value, "ipset.set_type")?;
+            validate_ipset_set_type(&parsed)?;
+            parsed
+        }
         None => DEFAULT_IPSET_TYPE.to_string(),
     };
 
@@ -244,6 +257,40 @@ fn bounded_u32(value: i64, field: &'static str, min: u32, max: u32) -> Result<u3
     }
 
     Ok(value as u32)
+}
+
+fn validate_ipset_set_name(value: &str, field: &'static str) -> Result<(), ConfigError> {
+    if value.len() > 31 {
+        return Err(ConfigError::InvalidField {
+            field,
+            reason: "must be 31 characters or fewer".to_string(),
+        });
+    }
+
+    if !value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+    {
+        return Err(ConfigError::InvalidField {
+            field,
+            reason: "must contain only [A-Za-z0-9_.-]".to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+fn validate_ipset_set_type(value: &str) -> Result<(), ConfigError> {
+    if !value.bytes().all(|byte| {
+        byte.is_ascii_alphanumeric() || matches!(byte, b':' | b',' | b'_' | b'-' | b'.')
+    }) {
+        return Err(ConfigError::InvalidField {
+            field: "ipset.set_type",
+            reason: "must contain only [A-Za-z0-9:,_-.]".to_string(),
+        });
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -373,6 +420,52 @@ mod tests {
             ConfigError::InvalidField {
                 field: "ipset.timeout",
                 reason: format!("must be between {} and {}", 0, u32::MAX),
+            }
+        );
+    }
+
+    #[test]
+    fn set_name_rejects_whitespace_and_overlength_values() {
+        let err = Config::from_toml_str("[ipset]\nset_name='kidobo bad'\n").expect_err("must fail");
+        assert_eq!(
+            err,
+            ConfigError::InvalidField {
+                field: "ipset.set_name",
+                reason: "must contain only [A-Za-z0-9_.-]".to_string(),
+            }
+        );
+
+        let err =
+            Config::from_toml_str("[ipset]\nset_name='kidobo-name-that-is-way-too-long-12345'\n")
+                .expect_err("must fail");
+        assert_eq!(
+            err,
+            ConfigError::InvalidField {
+                field: "ipset.set_name",
+                reason: "must be 31 characters or fewer".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn set_type_rejects_whitespace_and_control_characters() {
+        let err = Config::from_toml_str("[ipset]\nset_name='kidobo'\nset_type='hash: net'\n")
+            .expect_err("must fail");
+        assert_eq!(
+            err,
+            ConfigError::InvalidField {
+                field: "ipset.set_type",
+                reason: "must contain only [A-Za-z0-9:,_-.]".to_string(),
+            }
+        );
+
+        let err = Config::from_toml_str("[ipset]\nset_name='kidobo'\nset_type='hash:net\\nadd'\n")
+            .expect_err("must fail");
+        assert_eq!(
+            err,
+            ConfigError::InvalidField {
+                field: "ipset.set_type",
+                reason: "must contain only [A-Za-z0-9:,_-.]".to_string(),
             }
         );
     }

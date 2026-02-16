@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use log::warn;
@@ -72,12 +73,15 @@ pub trait HttpClient {
 
 #[derive(Debug, Clone)]
 pub struct ReqwestHttpClient {
+    client: reqwest::blocking::Client,
     user_agent: String,
 }
 
 impl Default for ReqwestHttpClient {
     fn default() -> Self {
+        let client = reqwest::blocking::Client::new();
         Self {
+            client,
             user_agent: format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
         }
     }
@@ -85,57 +89,76 @@ impl Default for ReqwestHttpClient {
 
 impl ReqwestHttpClient {
     pub fn new(user_agent: String) -> Self {
-        Self { user_agent }
+        Self {
+            client: reqwest::blocking::Client::new(),
+            user_agent,
+        }
     }
 }
 
 impl HttpClient for ReqwestHttpClient {
     fn fetch(&self, request: HttpRequest) -> Result<HttpResponse, HttpClientError> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
+        let mut builder = self
+            .client
+            .get(&request.url)
+            .header(USER_AGENT, &self.user_agent);
+
+        if let Some(etag) = &request.if_none_match {
+            builder = builder.header(IF_NONE_MATCH, etag);
+        }
+        if let Some(last_modified) = &request.if_modified_since {
+            builder = builder.header(IF_MODIFIED_SINCE, last_modified);
+        }
+
+        let mut response = builder.send().map_err(|err| HttpClientError::Request {
+            reason: err.to_string(),
+        })?;
+
+        let status = response.status().as_u16();
+        let headers = response.headers().clone();
+        let body = read_response_body_capped(&mut response, request.max_body_bytes)?;
+
+        Ok(HttpResponse {
+            status,
+            body,
+            etag: header_to_string(&headers, ETAG),
+            last_modified: header_to_string(&headers, LAST_MODIFIED),
+        })
+    }
+}
+
+fn read_response_body_capped(
+    response: &mut reqwest::blocking::Response,
+    max_body_bytes: usize,
+) -> Result<Vec<u8>, HttpClientError> {
+    let mut out = Vec::new();
+    let mut chunk = [0_u8; 8192];
+
+    loop {
+        let read = response
+            .read(&mut chunk)
             .map_err(|err| HttpClientError::Request {
                 reason: err.to_string(),
             })?;
 
-        runtime.block_on(async {
-            let client = reqwest::Client::new();
+        if read == 0 {
+            break;
+        }
 
-            let mut builder = client
-                .get(&request.url)
-                .header(USER_AGENT, &self.user_agent);
+        if out
+            .len()
+            .checked_add(read)
+            .is_none_or(|next| next > max_body_bytes)
+        {
+            return Err(HttpClientError::Request {
+                reason: format!("response body exceeds max {max_body_bytes} bytes"),
+            });
+        }
 
-            if let Some(etag) = &request.if_none_match {
-                builder = builder.header(IF_NONE_MATCH, etag);
-            }
-            if let Some(last_modified) = &request.if_modified_since {
-                builder = builder.header(IF_MODIFIED_SINCE, last_modified);
-            }
-
-            let response = builder
-                .send()
-                .await
-                .map_err(|err| HttpClientError::Request {
-                    reason: err.to_string(),
-                })?;
-
-            let status = response.status().as_u16();
-            let headers = response.headers().clone();
-            let body = response
-                .bytes()
-                .await
-                .map_err(|err| HttpClientError::Request {
-                    reason: err.to_string(),
-                })?;
-
-            Ok(HttpResponse {
-                status,
-                body: body.to_vec(),
-                etag: header_to_string(&headers, ETAG),
-                last_modified: header_to_string(&headers, LAST_MODIFIED),
-            })
-        })
+        out.extend_from_slice(&chunk[..read]);
     }
+
+    Ok(out)
 }
 
 #[derive(Debug, Error)]
@@ -442,14 +465,17 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::{BTreeMap, VecDeque};
     use std::fs;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::path::{Path, PathBuf};
+    use std::thread;
 
     use tempfile::TempDir;
 
     use super::{
         CacheSource, HttpClient, HttpClientError, HttpRequest, HttpResponse, RemoteCacheMetadata,
-        cache_paths_for_url, fetch_iplist_with_cache, max_http_body_bytes, normalize_remote_text,
-        url_hash_prefix,
+        ReqwestHttpClient, cache_paths_for_url, fetch_iplist_with_cache, max_http_body_bytes,
+        normalize_remote_text, url_hash_prefix,
     };
 
     struct MockHttpClient {
@@ -650,5 +676,45 @@ mod tests {
         let result = fetch_iplist_with_cache(&client, url, cache_dir, &env).expect("fetch");
         assert_eq!(result.source, CacheSource::Empty);
         assert!(result.iplist.is_empty());
+    }
+
+    #[test]
+    fn reqwest_http_client_enforces_max_body_bytes_while_reading() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let addr = listener.local_addr().expect("listener addr");
+
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept");
+            let mut request_buf = [0_u8; 1024];
+            let _ = socket.read(&mut request_buf).expect("read request");
+
+            let body = b"0123456789";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            socket
+                .write_all(response.as_bytes())
+                .and_then(|_| socket.write_all(body))
+                .expect("write response");
+        });
+
+        let client = ReqwestHttpClient::default();
+        let err = client
+            .fetch(HttpRequest {
+                url: format!("http://{addr}/feed"),
+                if_none_match: None,
+                if_modified_since: None,
+                max_body_bytes: 4,
+            })
+            .expect_err("oversized body should fail");
+
+        match err {
+            HttpClientError::Request { reason } => {
+                assert!(reason.contains("exceeds max"));
+            }
+        }
+
+        server.join().expect("server thread");
     }
 }

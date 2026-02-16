@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![deny(clippy::disallowed_methods)]
 
 pub mod adapters;
 pub mod cli;

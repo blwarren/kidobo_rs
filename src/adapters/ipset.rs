@@ -1,5 +1,6 @@
 use std::env;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::PathBuf;
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -56,6 +57,9 @@ pub enum IpsetError {
 
     #[error("failed to write ipset restore script {path}: {reason}")]
     WriteRestoreScript { path: PathBuf, reason: String },
+
+    #[error("failed to create ipset restore script {path}: {reason}")]
+    CreateRestoreScript { path: PathBuf, reason: String },
 }
 
 pub trait IpsetCommandRunner {
@@ -174,12 +178,14 @@ pub fn execute_ipset_restore(
     runner: &dyn IpsetCommandRunner,
     script: &str,
 ) -> Result<(), IpsetError> {
-    let path = restore_script_path();
-
-    fs::write(&path, script).map_err(|err| IpsetError::WriteRestoreScript {
-        path: path.clone(),
-        reason: err.to_string(),
-    })?;
+    let (mut file, path) = create_restore_script_file()?;
+    file.write_all(script.as_bytes())
+        .and_then(|_| file.flush())
+        .map_err(|err| IpsetError::WriteRestoreScript {
+            path: path.clone(),
+            reason: err.to_string(),
+        })?;
+    drop(file);
 
     let path_string = path.display().to_string();
     let restore_result = run_checked(runner, "ipset", &["restore", "-file", &path_string]);
@@ -253,6 +259,37 @@ fn is_missing_set_result(result: &CommandResult) -> bool {
 
 fn restore_script_path() -> PathBuf {
     env::temp_dir().join(format!("kidobo-ipset-{}.restore", random_hex_suffix(12)))
+}
+
+fn create_restore_script_file() -> Result<(std::fs::File, PathBuf), IpsetError> {
+    for _ in 0..16 {
+        let path = restore_script_path();
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+
+        match options.open(&path) {
+            Ok(file) => return Ok((file, path)),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => {
+                return Err(IpsetError::CreateRestoreScript {
+                    path,
+                    reason: err.to_string(),
+                });
+            }
+        }
+    }
+
+    let path = restore_script_path();
+    Err(IpsetError::CreateRestoreScript {
+        path,
+        reason: "failed to create a unique temporary restore script path".to_string(),
+    })
 }
 
 fn truncate_to_max_bytes(input: &str, max_bytes: usize) -> &str {
@@ -475,5 +512,21 @@ mod tests {
         let invocations = runner.invocations();
         assert_eq!(invocations.len(), 3);
         assert_eq!(invocations[2].1[0], "destroy");
+    }
+
+    #[test]
+    fn create_restore_script_file_uses_restrictive_permissions() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let (file, path) = super::create_restore_script_file().expect("create temp script");
+            drop(file);
+
+            let mode = fs::metadata(&path).expect("metadata").permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+
+            fs::remove_file(path).expect("cleanup");
+        }
     }
 }

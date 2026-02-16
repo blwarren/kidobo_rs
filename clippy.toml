@@ -1,0 +1,4 @@
+disallowed-methods = [
+  { path = "reqwest::Response::bytes", reason = "Use bounded streaming reads to enforce body-size caps." },
+  { path = "reqwest::blocking::Response::bytes", reason = "Use bounded streaming reads to enforce body-size caps." }
+]
