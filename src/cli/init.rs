@@ -2,6 +2,9 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::adapters::command_runner::{
+    CommandExecutor, CommandResult, CommandRunnerError, SudoCommandRunner,
+};
 use crate::adapters::path::{
     ENV_KIDOBO_ROOT, PathResolutionInput, ResolvedPaths, resolve_paths_for_init,
 };
@@ -63,6 +66,31 @@ impl InitSummary {
     }
 }
 
+trait InitCommandRunner {
+    fn run(&self, command: &str, args: &[&str]) -> Result<CommandResult, CommandRunnerError>;
+}
+
+impl<E: CommandExecutor> InitCommandRunner for SudoCommandRunner<E> {
+    fn run(&self, command: &str, args: &[&str]) -> Result<CommandResult, CommandRunnerError> {
+        SudoCommandRunner::run(self, command, args)
+    }
+}
+
+#[cfg(test)]
+struct NoopInitCommandRunner;
+
+#[cfg(test)]
+impl InitCommandRunner for NoopInitCommandRunner {
+    fn run(&self, _command: &str, _args: &[&str]) -> Result<CommandResult, CommandRunnerError> {
+        Ok(CommandResult {
+            status: Some(0),
+            success: true,
+            stdout: String::new(),
+            stderr: String::new(),
+        })
+    }
+}
+
 #[allow(clippy::print_stdout)]
 pub fn run_init_command() -> Result<(), KidoboError> {
     let path_input = PathResolutionInput::from_process(None)?;
@@ -70,7 +98,13 @@ pub fn run_init_command() -> Result<(), KidoboError> {
     let executable_path =
         env::current_exe().unwrap_or_else(|_| PathBuf::from(DEFAULT_KIDOBO_BINARY_PATH));
     let kido_root_override = path_input.env.get(ENV_KIDOBO_ROOT).map(PathBuf::from);
-    let summary = run_init_with_context(&paths, &executable_path, kido_root_override.as_deref())?;
+    let sudo_runner = SudoCommandRunner::default();
+    let summary = run_init_with_context(
+        &paths,
+        &executable_path,
+        kido_root_override.as_deref(),
+        &sudo_runner,
+    )?;
     print_init_summary(&summary);
     Ok(())
 }
@@ -83,15 +117,25 @@ pub(crate) fn run_init_with_paths(paths: &ResolvedPaths) -> Result<(), KidoboErr
 
 #[cfg(test)]
 fn run_init_with_paths_with_summary(paths: &ResolvedPaths) -> Result<InitSummary, KidoboError> {
-    let executable_path = PathBuf::from(DEFAULT_KIDOBO_BINARY_PATH);
     let kido_root_override = infer_kido_root_override(paths);
-    run_init_with_context(paths, &executable_path, kido_root_override.as_deref())
+    run_init_with_paths_and_runner(paths, &NoopInitCommandRunner, kido_root_override.as_deref())
+}
+
+#[cfg(test)]
+fn run_init_with_paths_and_runner(
+    paths: &ResolvedPaths,
+    runner: &dyn InitCommandRunner,
+    kido_root_override: Option<&Path>,
+) -> Result<InitSummary, KidoboError> {
+    let executable_path = PathBuf::from(DEFAULT_KIDOBO_BINARY_PATH);
+    run_init_with_context(paths, &executable_path, kido_root_override, runner)
 }
 
 fn run_init_with_context(
     paths: &ResolvedPaths,
     executable_path: &Path,
     kido_root_override: Option<&Path>,
+    runner: &dyn InitCommandRunner,
 ) -> Result<InitSummary, KidoboError> {
     let mut summary = InitSummary::default();
     let systemd_dir = resolve_systemd_dir(kido_root_override);
@@ -129,6 +173,10 @@ fn run_init_with_context(
         &systemd_timer,
         ensure_file_if_missing(&systemd_timer, DEFAULT_SYSTEMD_TIMER_TEMPLATE)?,
     );
+
+    if kido_root_override.is_none() {
+        ensure_systemd_timer_enabled(runner)?;
+    }
 
     Ok(summary)
 }
@@ -224,6 +272,41 @@ fn render_init_summary(summary: &InitSummary) -> String {
     output
 }
 
+fn ensure_systemd_timer_enabled(runner: &dyn InitCommandRunner) -> Result<(), KidoboError> {
+    run_required_systemd_command(runner, &["daemon-reload"])?;
+    run_required_systemd_command(runner, &["enable", "--now", KIDOBO_SYNC_TIMER_FILE])?;
+    Ok(())
+}
+
+fn run_required_systemd_command(
+    runner: &dyn InitCommandRunner,
+    args: &[&str],
+) -> Result<(), KidoboError> {
+    let command = format!("systemctl {}", args.join(" "));
+    let result = runner
+        .run("systemctl", args)
+        .map_err(|err| KidoboError::InitSystemd {
+            command: command.clone(),
+            reason: err.to_string(),
+        })?;
+
+    if result.success {
+        return Ok(());
+    }
+
+    let stderr = result.stderr.trim();
+    let stdout = result.stdout.trim();
+    let reason = if !stderr.is_empty() {
+        format!("status={:?} stderr={stderr}", result.status)
+    } else if !stdout.is_empty() {
+        format!("status={:?} stdout={stdout}", result.status)
+    } else {
+        format!("status={:?}", result.status)
+    };
+
+    Err(KidoboError::InitSystemd { command, reason })
+}
+
 fn ensure_dir(path: &Path) -> Result<ProvisionState, KidoboError> {
     let existed = path.exists();
     fs::create_dir_all(path).map_err(|err| KidoboError::InitIo {
@@ -257,18 +340,72 @@ fn ensure_file_if_missing(path: &Path, contents: &str) -> Result<ProvisionState,
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
     use std::fs;
     use std::path::{Path, PathBuf};
 
     use tempfile::TempDir;
 
     use super::{
-        DEFAULT_BLOCKLIST_TEMPLATE, DEFAULT_CONFIG_TEMPLATE, DEFAULT_SYSTEMD_DIR,
-        DEFAULT_SYSTEMD_TIMER_TEMPLATE, KIDOBO_SYNC_SERVICE_FILE, KIDOBO_SYNC_TIMER_FILE,
-        build_systemd_service_template, infer_kido_root_override, render_init_summary,
-        resolve_systemd_dir, run_init_with_paths, run_init_with_paths_with_summary,
+        CommandResult, CommandRunnerError, DEFAULT_BLOCKLIST_TEMPLATE, DEFAULT_CONFIG_TEMPLATE,
+        DEFAULT_SYSTEMD_DIR, DEFAULT_SYSTEMD_TIMER_TEMPLATE, InitCommandRunner,
+        KIDOBO_SYNC_SERVICE_FILE, KIDOBO_SYNC_TIMER_FILE, build_systemd_service_template,
+        ensure_systemd_timer_enabled, infer_kido_root_override, render_init_summary,
+        resolve_systemd_dir, run_init_with_paths, run_init_with_paths_and_runner,
+        run_init_with_paths_with_summary,
     };
     use crate::adapters::path::ResolvedPaths;
+    use crate::error::KidoboError;
+
+    struct MockInitCommandRunner {
+        responses: RefCell<VecDeque<Result<CommandResult, CommandRunnerError>>>,
+        invocations: RefCell<Vec<(String, Vec<String>)>>,
+    }
+
+    impl MockInitCommandRunner {
+        fn new(responses: Vec<Result<CommandResult, CommandRunnerError>>) -> Self {
+            Self {
+                responses: RefCell::new(VecDeque::from(responses)),
+                invocations: RefCell::new(Vec::new()),
+            }
+        }
+
+        fn invocations(&self) -> Vec<(String, Vec<String>)> {
+            self.invocations.borrow().clone()
+        }
+    }
+
+    impl InitCommandRunner for MockInitCommandRunner {
+        fn run(&self, command: &str, args: &[&str]) -> Result<CommandResult, CommandRunnerError> {
+            self.invocations.borrow_mut().push((
+                command.to_string(),
+                args.iter().map(|value| (*value).to_string()).collect(),
+            ));
+            self.responses
+                .borrow_mut()
+                .pop_front()
+                .expect("queued response")
+        }
+    }
+
+    fn success_result() -> CommandResult {
+        CommandResult {
+            status: Some(0),
+            success: true,
+            stdout: String::new(),
+            stderr: String::new(),
+        }
+    }
+
+    fn failed_result(status: i32, stderr: &str) -> CommandResult {
+        CommandResult {
+            status: Some(status),
+            success: false,
+            stdout: String::new(),
+            stderr: stderr.to_string(),
+        }
+    }
 
     fn test_paths(root: &Path) -> ResolvedPaths {
         ResolvedPaths {
@@ -402,6 +539,71 @@ mod tests {
         assert!(rendered.starts_with("init completed: created=9 unchanged=0\n"));
         assert!(rendered.contains(&format!("created: {}\n", paths.config_dir.display())));
         assert!(rendered.contains(&format!("created: {}\n", paths.config_file.display())));
+    }
+
+    #[test]
+    fn init_skips_systemctl_when_kidobo_root_is_set() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = test_paths(temp.path());
+        let runner = MockInitCommandRunner::new(Vec::new());
+
+        run_init_with_paths_and_runner(&paths, &runner, Some(temp.path())).expect("init");
+        assert!(runner.invocations().is_empty());
+    }
+
+    #[test]
+    fn ensure_systemd_timer_enabled_runs_required_commands_in_order() {
+        let runner = MockInitCommandRunner::new(vec![Ok(success_result()), Ok(success_result())]);
+
+        ensure_systemd_timer_enabled(&runner).expect("systemd setup");
+
+        let invocations = runner.invocations();
+        assert_eq!(invocations.len(), 2);
+        assert_eq!(invocations[0].0, "systemctl");
+        assert_eq!(invocations[0].1, vec!["daemon-reload"]);
+        assert_eq!(invocations[1].0, "systemctl");
+        assert_eq!(
+            invocations[1].1,
+            vec!["enable", "--now", KIDOBO_SYNC_TIMER_FILE]
+        );
+    }
+
+    #[test]
+    fn ensure_systemd_timer_enabled_surfaces_nonzero_exit() {
+        let runner = MockInitCommandRunner::new(vec![
+            Ok(success_result()),
+            Ok(failed_result(1, "failed to enable unit")),
+        ]);
+
+        let err = ensure_systemd_timer_enabled(&runner).expect_err("must fail");
+        match err {
+            KidoboError::InitSystemd { command, reason } => {
+                assert_eq!(
+                    command,
+                    format!("systemctl enable --now {KIDOBO_SYNC_TIMER_FILE}")
+                );
+                assert!(reason.contains("status=Some(1)"));
+                assert!(reason.contains("failed to enable unit"));
+            }
+            _ => panic!("unexpected error variant"),
+        }
+    }
+
+    #[test]
+    fn ensure_systemd_timer_enabled_surfaces_runner_errors() {
+        let runner = MockInitCommandRunner::new(vec![Err(CommandRunnerError::Spawn {
+            command: "sudo systemctl daemon-reload".to_string(),
+            reason: "command not found".to_string(),
+        })]);
+
+        let err = ensure_systemd_timer_enabled(&runner).expect_err("must fail");
+        match err {
+            KidoboError::InitSystemd { command, reason } => {
+                assert_eq!(command, "systemctl daemon-reload");
+                assert!(reason.contains("command not found"));
+            }
+            _ => panic!("unexpected error variant"),
+        }
     }
 
     #[test]

@@ -80,8 +80,13 @@ It also creates systemd unit files for periodic sync:
 - `/etc/systemd/system/kidobo-sync.service`
 - `/etc/systemd/system/kidobo-sync.timer`
 
-When `KIDOBO_ROOT` is set, those unit files are written under
-`$KIDOBO_ROOT/systemd/system/` instead.
+With default system paths, `init` also runs:
+
+- `systemctl daemon-reload`
+- `systemctl enable --now kidobo-sync.timer`
+
+When `KIDOBO_ROOT` is set, unit files are written under
+`$KIDOBO_ROOT/systemd/system/` instead, and `systemctl` commands are skipped.
 
 ### 2. Edit config
 
@@ -125,7 +130,7 @@ sudo kidobo doctor
 sudo kidobo sync
 ```
 
-### 6. Enable periodic sync (optional)
+### 6. Enable periodic sync manually (optional)
 
 ```bash
 sudo systemctl daemon-reload

@@ -11,6 +11,9 @@ The format is based on Keep a Changelog, with one section per release.
 - Release automation now resolves release notes from the tag name
   (`release-notes/<tag>.md`) and supports manual reruns for existing tags via
   `workflow_dispatch`.
+- `kidobo init` now runs `systemctl daemon-reload` and
+  `systemctl enable --now kidobo-sync.timer` automatically when using default
+  system paths (the `KIDOBO_ROOT` sandbox flow still skips `systemctl`).
 
 ## [0.1.2] - 2026-02-16
 

@@ -40,6 +40,9 @@ pub enum KidoboError {
     #[error("initialization I/O failed for {path}: {reason}")]
     InitIo { path: PathBuf, reason: String },
 
+    #[error("systemd setup failed during init for `{command}`: {reason}")]
+    InitSystemd { command: String, reason: String },
+
     #[error("failed to read config file {path}: {reason}")]
     ConfigRead { path: PathBuf, reason: String },
 
