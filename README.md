@@ -33,6 +33,9 @@ run commands through `sudo -n ...` and therefore require non-interactive
 privilege (for example NOPASSWD sudo policy) or execution as a context where
 `sudo -n` succeeds.
 
+With default system paths (`/etc/kidobo`, `/var/lib/kidobo`, `/var/cache/kidobo`),
+`init`, `doctor`, `sync`, and `flush` are typically run with `sudo`.
+
 ## Install
 
 Install from crates.io (recommended once published):
@@ -67,7 +70,7 @@ cargo build --release --locked
 ### 1. Initialize files
 
 ```bash
-kidobo init
+sudo kidobo init
 ```
 
 This creates missing directories/files and does not overwrite existing config
@@ -79,6 +82,12 @@ Default config path:
 
 ```text
 /etc/kidobo/config.toml
+```
+
+Example:
+
+```bash
+sudoedit /etc/kidobo/config.toml
 ```
 
 Minimal generated template:
@@ -99,7 +108,7 @@ urls = []
 ### 3. Run environment checks
 
 ```bash
-kidobo doctor
+sudo kidobo doctor
 ```
 
 `doctor` prints JSON and exits non-zero if required checks fail.
@@ -107,7 +116,7 @@ kidobo doctor
 ### 4. Apply blocklist
 
 ```bash
-kidobo sync
+sudo kidobo sync
 ```
 
 ### 5. Query matches
@@ -133,6 +142,9 @@ export KIDOBO_ROOT="$PWD/.kidobo-dev"
 kidobo init
 ```
 
+No `sudo` is required in this sandboxed flow as long as `KIDOBO_ROOT` points to
+a user-writable location.
+
 This relocates config/data/cache under:
 
 ```text
@@ -152,6 +164,9 @@ Note: `sync` and `flush` still operate on real firewall/ipset state and need
 working `sudo -n` permissions.
 
 ## Commands
+
+Command surface (invocation may still require `sudo` depending on path and
+permission context):
 
 ```text
 kidobo init
@@ -233,8 +248,8 @@ Invalid or missing required config causes failure.
 2. Acquire non-blocking lock
 3. Ensure ipset sets and firewall wiring exist
 4. Load internal blocklist + remote feeds + safelist inputs
-5. Deduplicate/collapse per family
-6. Subtract safelist ranges
+5. Subtract safelist ranges
+6. Deduplicate/collapse per family
 7. Atomic `ipset restore` + `swap`
 8. Best-effort temp set cleanup
 9. Log source and final counts
@@ -334,6 +349,7 @@ CI workflows:
 
 - `.github/workflows/ci.yml`
 - `.github/workflows/udeps-audit.yml`
+- `.github/workflows/release.yml`
 
 ## License
 
