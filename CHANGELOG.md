@@ -17,6 +17,8 @@ The format is based on Keep a Changelog, with one section per release.
 - `kidobo sync` now fails early with a clear message when effective IPv4/IPv6
   entries exceed configured `ipset.maxelem`, instead of relying only on a later
   `ipset restore` command failure.
+- Command execution now drains `stdout` and `stderr` concurrently while processes
+  run, preventing pipe-buffer deadlocks/timeouts on large command output.
 
 ## [0.1.1] - 2026-02-16
 

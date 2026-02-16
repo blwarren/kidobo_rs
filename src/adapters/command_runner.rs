@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -57,29 +58,44 @@ impl CommandExecutor for SystemCommandExecutor {
                 reason: err.to_string(),
             })?;
 
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| CommandRunnerError::Output {
+                command: command.clone(),
+                reason: "stdout pipe was not available".to_string(),
+            })?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| CommandRunnerError::Output {
+                command: command.clone(),
+                reason: "stderr pipe was not available".to_string(),
+            })?;
+
+        let stdout_reader = spawn_output_reader(stdout);
+        let stderr_reader = spawn_output_reader(stderr);
+
         let started = Instant::now();
         loop {
             match child.try_wait() {
-                Ok(Some(_status)) => {
-                    let output =
-                        child
-                            .wait_with_output()
-                            .map_err(|err| CommandRunnerError::Output {
-                                command: command.clone(),
-                                reason: err.to_string(),
-                            })?;
+                Ok(Some(status)) => {
+                    let stdout = join_output_reader(stdout_reader, &command)?;
+                    let stderr = join_output_reader(stderr_reader, &command)?;
 
                     return Ok(CommandResult {
-                        status: output.status.code(),
-                        success: output.status.success(),
-                        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-                        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                        status: status.code(),
+                        success: status.success(),
+                        stdout: String::from_utf8_lossy(&stdout).to_string(),
+                        stderr: String::from_utf8_lossy(&stderr).to_string(),
                     });
                 }
                 Ok(None) => {
                     if started.elapsed() >= request.timeout {
                         let _ = child.kill();
                         let _ = child.wait();
+                        best_effort_join_output_reader(stdout_reader);
+                        best_effort_join_output_reader(stderr_reader);
 
                         return Err(CommandRunnerError::Timeout {
                             command,
@@ -92,6 +108,8 @@ impl CommandExecutor for SystemCommandExecutor {
                 Err(err) => {
                     let _ = child.kill();
                     let _ = child.wait();
+                    best_effort_join_output_reader(stdout_reader);
+                    best_effort_join_output_reader(stderr_reader);
 
                     return Err(CommandRunnerError::Poll {
                         command,
@@ -101,6 +119,36 @@ impl CommandExecutor for SystemCommandExecutor {
             }
         }
     }
+}
+
+fn spawn_output_reader<R>(mut reader: R) -> thread::JoinHandle<std::io::Result<Vec<u8>>>
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    })
+}
+
+fn join_output_reader(
+    handle: thread::JoinHandle<std::io::Result<Vec<u8>>>,
+    command: &str,
+) -> Result<Vec<u8>, CommandRunnerError> {
+    let result = handle.join().map_err(|_| CommandRunnerError::Output {
+        command: command.to_string(),
+        reason: "output reader thread panicked".to_string(),
+    })?;
+
+    result.map_err(|err| CommandRunnerError::Output {
+        command: command.to_string(),
+        reason: err.to_string(),
+    })
+}
+
+fn best_effort_join_output_reader(handle: thread::JoinHandle<std::io::Result<Vec<u8>>>) {
+    let _ = handle.join();
 }
 
 #[derive(Debug)]
@@ -168,6 +216,7 @@ mod tests {
 
     use super::{
         CommandExecutor, CommandRequest, CommandResult, CommandRunnerError, SudoCommandRunner,
+        SystemCommandExecutor,
     };
 
     struct MockExecutor {
@@ -255,5 +304,33 @@ mod tests {
             .run("ipset", &["list", "kidobo"])
             .expect_err("must fail");
         assert_eq!(returned, error);
+    }
+
+    #[cfg(unix)]
+    fn run_system_shell(script: &str) -> Result<CommandResult, CommandRunnerError> {
+        let executor = SystemCommandExecutor;
+        executor.execute(&CommandRequest {
+            program: "sh".to_string(),
+            args: vec!["-c".to_string(), script.to_string()],
+            timeout: Duration::from_secs(10),
+        })
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn system_executor_drains_large_stdout_without_timeout() {
+        let result = run_system_shell("yes kidobo | head -n 70000")
+            .expect("command should succeed without pipe blocking");
+        assert!(result.success);
+        assert!(result.stdout.len() > 64 * 1024);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn system_executor_drains_large_stderr_without_timeout() {
+        let result = run_system_shell("yes kidobo | head -n 70000 1>&2")
+            .expect("command should succeed without pipe blocking");
+        assert!(result.success);
+        assert!(result.stderr.len() > 64 * 1024);
     }
 }
