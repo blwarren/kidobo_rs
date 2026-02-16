@@ -6,6 +6,9 @@ The format is based on Keep a Changelog, with one section per release.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-02-16
+
+
 ### Changed
 
 - Logs are now emitted in a plain `level=<LEVEL> msg=<text>` format without
@@ -23,6 +26,7 @@ The format is based on Keep a Changelog, with one section per release.
   `ipset restore` command failure.
 - Command execution now drains `stdout` and `stderr` concurrently while processes
   run, preventing pipe-buffer deadlocks/timeouts on large command output.
+
 
 ## [0.1.1] - 2026-02-16
 
