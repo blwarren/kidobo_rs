@@ -11,6 +11,10 @@ The format is based on Keep a Changelog, with one section per release.
 - Logs are now emitted in a plain `level=<LEVEL> msg=<text>` format without
   ANSI styling or duplicated timestamps, which is easier to read in systemd
   journal output.
+- Added configurable remote HTTP request timeout via `remote.timeout_secs`
+  (default `30`, range `[1, 3600]`).
+- `kidobo init` now prints a deterministic summary of created and unchanged
+  paths on successful completion.
 
 ### Fixed
 

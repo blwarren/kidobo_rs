@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use log::warn;
 use reqwest::header::{ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED, USER_AGENT};
@@ -13,6 +14,9 @@ use crate::core::network::{CanonicalCidr, parse_ip_cidr_non_strict};
 
 pub const DEFAULT_MAX_HTTP_BODY_BYTES: usize = 32 * 1024 * 1024;
 pub const ENV_KIDOBO_MAX_HTTP_BODY_BYTES: &str = "KIDOBO_MAX_HTTP_BODY_BYTES";
+pub const DEFAULT_HTTP_REQUEST_TIMEOUT_SECS: u64 = 30;
+const DEFAULT_HTTP_REQUEST_TIMEOUT: Duration =
+    Duration::from_secs(DEFAULT_HTTP_REQUEST_TIMEOUT_SECS);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CachePaths {
@@ -75,23 +79,29 @@ pub trait HttpClient {
 pub struct ReqwestHttpClient {
     client: reqwest::blocking::Client,
     user_agent: String,
+    request_timeout: Duration,
 }
 
 impl Default for ReqwestHttpClient {
     fn default() -> Self {
-        let client = reqwest::blocking::Client::new();
-        Self {
-            client,
-            user_agent: format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
-        }
+        Self::with_timeout(DEFAULT_HTTP_REQUEST_TIMEOUT)
     }
 }
 
 impl ReqwestHttpClient {
     pub fn new(user_agent: String) -> Self {
+        Self::new_with_timeout(user_agent, DEFAULT_HTTP_REQUEST_TIMEOUT)
+    }
+
+    pub fn with_timeout(request_timeout: Duration) -> Self {
+        Self::new_with_timeout(default_user_agent(), request_timeout)
+    }
+
+    fn new_with_timeout(user_agent: String, request_timeout: Duration) -> Self {
         Self {
             client: reqwest::blocking::Client::new(),
             user_agent,
+            request_timeout,
         }
     }
 }
@@ -101,7 +111,8 @@ impl HttpClient for ReqwestHttpClient {
         let mut builder = self
             .client
             .get(&request.url)
-            .header(USER_AGENT, &self.user_agent);
+            .header(USER_AGENT, &self.user_agent)
+            .timeout(self.request_timeout);
 
         if let Some(etag) = &request.if_none_match {
             builder = builder.header(IF_NONE_MATCH, etag);
@@ -125,6 +136,10 @@ impl HttpClient for ReqwestHttpClient {
             last_modified: header_to_string(&headers, LAST_MODIFIED),
         })
     }
+}
+
+fn default_user_agent() -> String {
+    format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
 }
 
 fn read_response_body_capped(
@@ -474,6 +489,7 @@ mod tests {
     use std::net::TcpListener;
     use std::path::{Path, PathBuf};
     use std::thread;
+    use std::time::Duration;
 
     use tempfile::TempDir;
 
@@ -721,5 +737,11 @@ mod tests {
         }
 
         server.join().expect("server thread");
+    }
+
+    #[test]
+    fn reqwest_http_client_timeout_can_be_overridden() {
+        let client = ReqwestHttpClient::with_timeout(Duration::from_secs(7));
+        assert_eq!(client.request_timeout, Duration::from_secs(7));
     }
 }

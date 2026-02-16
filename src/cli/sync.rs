@@ -3,6 +3,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use log::{error, info, warn};
 
@@ -36,7 +37,8 @@ pub fn run_sync_command() -> Result<(), KidoboError> {
 
     let _lock = acquire_non_blocking(&paths.lock_file)?;
 
-    let http_client = ReqwestHttpClient::default();
+    let http_client =
+        ReqwestHttpClient::with_timeout(Duration::from_secs(u64::from(config.remote.timeout_secs)));
     let sudo_runner = SudoCommandRunner::default();
 
     let summary = run_sync_with_dependencies(
@@ -524,7 +526,10 @@ mod tests {
                 github_meta_url: "https://api.github.com/meta".to_string(),
                 github_meta_categories: None,
             },
-            remote: RemoteConfig { urls },
+            remote: RemoteConfig {
+                urls,
+                timeout_secs: 30,
+            },
         }
     }
 
@@ -545,7 +550,10 @@ mod tests {
                 github_meta_url: "https://api.github.com/meta".to_string(),
                 github_meta_categories: None,
             },
-            remote: RemoteConfig { urls },
+            remote: RemoteConfig {
+                urls,
+                timeout_secs: 30,
+            },
         }
     }
 

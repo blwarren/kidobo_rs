@@ -17,6 +17,7 @@ github_meta_url = "https://api.github.com/meta"
 # github_meta_categories = ["api", "git", "hooks", "packages"]
 
 [remote]
+timeout_secs = 30
 urls = []
 "#;
 
@@ -41,17 +42,47 @@ Unit=kidobo-sync.service
 WantedBy=timers.target
 "#;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProvisionState {
+    Created,
+    Unchanged,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct InitSummary {
+    created: Vec<PathBuf>,
+    unchanged: Vec<PathBuf>,
+}
+
+impl InitSummary {
+    fn record(&mut self, path: &Path, state: ProvisionState) {
+        match state {
+            ProvisionState::Created => self.created.push(path.to_path_buf()),
+            ProvisionState::Unchanged => self.unchanged.push(path.to_path_buf()),
+        }
+    }
+}
+
+#[allow(clippy::print_stdout)]
 pub fn run_init_command() -> Result<(), KidoboError> {
     let path_input = PathResolutionInput::from_process(None)?;
     let paths = resolve_paths_for_init(&path_input)?;
     let executable_path =
         env::current_exe().unwrap_or_else(|_| PathBuf::from(DEFAULT_KIDOBO_BINARY_PATH));
     let kido_root_override = path_input.env.get(ENV_KIDOBO_ROOT).map(PathBuf::from);
-    run_init_with_context(&paths, &executable_path, kido_root_override.as_deref())
+    let summary = run_init_with_context(&paths, &executable_path, kido_root_override.as_deref())?;
+    print_init_summary(&summary);
+    Ok(())
 }
 
 #[cfg(test)]
 pub(crate) fn run_init_with_paths(paths: &ResolvedPaths) -> Result<(), KidoboError> {
+    let _ = run_init_with_paths_with_summary(paths)?;
+    Ok(())
+}
+
+#[cfg(test)]
+fn run_init_with_paths_with_summary(paths: &ResolvedPaths) -> Result<InitSummary, KidoboError> {
     let executable_path = PathBuf::from(DEFAULT_KIDOBO_BINARY_PATH);
     let kido_root_override = infer_kido_root_override(paths);
     run_init_with_context(paths, &executable_path, kido_root_override.as_deref())
@@ -61,26 +92,45 @@ fn run_init_with_context(
     paths: &ResolvedPaths,
     executable_path: &Path,
     kido_root_override: Option<&Path>,
-) -> Result<(), KidoboError> {
+) -> Result<InitSummary, KidoboError> {
+    let mut summary = InitSummary::default();
     let systemd_dir = resolve_systemd_dir(kido_root_override);
     let systemd_service = systemd_dir.join(KIDOBO_SYNC_SERVICE_FILE);
     let systemd_timer = systemd_dir.join(KIDOBO_SYNC_TIMER_FILE);
 
-    ensure_dir(&paths.config_dir)?;
-    ensure_dir(&paths.data_dir)?;
-    ensure_dir(&paths.remote_cache_dir)?;
-    ensure_dir(&systemd_dir)?;
+    summary.record(&paths.config_dir, ensure_dir(&paths.config_dir)?);
+    summary.record(&paths.data_dir, ensure_dir(&paths.data_dir)?);
+    summary.record(
+        &paths.remote_cache_dir,
+        ensure_dir(&paths.remote_cache_dir)?,
+    );
+    summary.record(&systemd_dir, ensure_dir(&systemd_dir)?);
 
-    ensure_file_if_missing(&paths.config_file, DEFAULT_CONFIG_TEMPLATE)?;
-    ensure_file_if_missing(&paths.blocklist_file, DEFAULT_BLOCKLIST_TEMPLATE)?;
-    ensure_file_if_missing(&paths.lock_file, "")?;
-    ensure_file_if_missing(
+    summary.record(
+        &paths.config_file,
+        ensure_file_if_missing(&paths.config_file, DEFAULT_CONFIG_TEMPLATE)?,
+    );
+    summary.record(
+        &paths.blocklist_file,
+        ensure_file_if_missing(&paths.blocklist_file, DEFAULT_BLOCKLIST_TEMPLATE)?,
+    );
+    summary.record(
+        &paths.lock_file,
+        ensure_file_if_missing(&paths.lock_file, "")?,
+    );
+    summary.record(
         &systemd_service,
-        &build_systemd_service_template(executable_path, kido_root_override),
-    )?;
-    ensure_file_if_missing(&systemd_timer, DEFAULT_SYSTEMD_TIMER_TEMPLATE)?;
+        ensure_file_if_missing(
+            &systemd_service,
+            &build_systemd_service_template(executable_path, kido_root_override),
+        )?,
+    );
+    summary.record(
+        &systemd_timer,
+        ensure_file_if_missing(&systemd_timer, DEFAULT_SYSTEMD_TIMER_TEMPLATE)?,
+    );
 
-    Ok(())
+    Ok(summary)
 }
 
 fn resolve_systemd_dir(kido_root_override: Option<&Path>) -> PathBuf {
@@ -154,16 +204,43 @@ fn escape_systemd_value(value: &str) -> String {
     escaped
 }
 
-fn ensure_dir(path: &Path) -> Result<(), KidoboError> {
+#[allow(clippy::print_stdout)]
+fn print_init_summary(summary: &InitSummary) {
+    print!("{}", render_init_summary(summary));
+}
+
+fn render_init_summary(summary: &InitSummary) -> String {
+    let mut output = format!(
+        "init completed: created={} unchanged={}\n",
+        summary.created.len(),
+        summary.unchanged.len()
+    );
+    for path in &summary.created {
+        output.push_str(&format!("created: {}\n", path.display()));
+    }
+    for path in &summary.unchanged {
+        output.push_str(&format!("unchanged: {}\n", path.display()));
+    }
+    output
+}
+
+fn ensure_dir(path: &Path) -> Result<ProvisionState, KidoboError> {
+    let existed = path.exists();
     fs::create_dir_all(path).map_err(|err| KidoboError::InitIo {
         path: path.to_path_buf(),
         reason: err.to_string(),
-    })
+    })?;
+
+    if existed {
+        Ok(ProvisionState::Unchanged)
+    } else {
+        Ok(ProvisionState::Created)
+    }
 }
 
-fn ensure_file_if_missing(path: &Path, contents: &str) -> Result<(), KidoboError> {
+fn ensure_file_if_missing(path: &Path, contents: &str) -> Result<ProvisionState, KidoboError> {
     if path.exists() {
-        return Ok(());
+        return Ok(ProvisionState::Unchanged);
     }
 
     if let Some(parent) = path.parent() {
@@ -173,7 +250,9 @@ fn ensure_file_if_missing(path: &Path, contents: &str) -> Result<(), KidoboError
     fs::write(path, contents).map_err(|err| KidoboError::InitIo {
         path: path.to_path_buf(),
         reason: err.to_string(),
-    })
+    })?;
+
+    Ok(ProvisionState::Created)
 }
 
 #[cfg(test)]
@@ -186,8 +265,8 @@ mod tests {
     use super::{
         DEFAULT_BLOCKLIST_TEMPLATE, DEFAULT_CONFIG_TEMPLATE, DEFAULT_SYSTEMD_DIR,
         DEFAULT_SYSTEMD_TIMER_TEMPLATE, KIDOBO_SYNC_SERVICE_FILE, KIDOBO_SYNC_TIMER_FILE,
-        build_systemd_service_template, infer_kido_root_override, resolve_systemd_dir,
-        run_init_with_paths,
+        build_systemd_service_template, infer_kido_root_override, render_init_summary,
+        resolve_systemd_dir, run_init_with_paths, run_init_with_paths_with_summary,
     };
     use crate::adapters::path::ResolvedPaths;
 
@@ -290,6 +369,39 @@ mod tests {
             fs::read_to_string(systemd_dir.join(KIDOBO_SYNC_TIMER_FILE)).expect("timer"),
             DEFAULT_SYSTEMD_TIMER_TEMPLATE
         );
+    }
+
+    #[test]
+    fn init_summary_tracks_created_vs_unchanged_paths() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = test_paths(temp.path());
+
+        let first = run_init_with_paths_with_summary(&paths).expect("first init");
+        assert_eq!(first.created.len(), 9);
+        assert!(first.unchanged.is_empty());
+        assert!(first.created.contains(&paths.config_dir));
+        assert!(first.created.contains(&paths.config_file));
+        assert!(first.created.contains(&paths.remote_cache_dir));
+
+        let second = run_init_with_paths_with_summary(&paths).expect("second init");
+        assert!(second.created.is_empty());
+        assert_eq!(second.unchanged.len(), 9);
+        assert!(second.unchanged.contains(&paths.config_dir));
+        assert!(second.unchanged.contains(&paths.config_file));
+        assert!(second.unchanged.contains(&paths.remote_cache_dir));
+    }
+
+    #[test]
+    fn init_summary_render_is_deterministic() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = test_paths(temp.path());
+
+        let first = run_init_with_paths_with_summary(&paths).expect("first init");
+        let rendered = render_init_summary(&first);
+
+        assert!(rendered.starts_with("init completed: created=9 unchanged=0\n"));
+        assert!(rendered.contains(&format!("created: {}\n", paths.config_dir.display())));
+        assert!(rendered.contains(&format!("created: {}\n", paths.config_file.display())));
     }
 
     #[test]

@@ -5,6 +5,7 @@ pub const DEFAULT_IPSET_TYPE: &str = "hash:net";
 pub const DEFAULT_HASHSIZE: u32 = 65_536;
 pub const DEFAULT_MAXELEM: u32 = 500_000;
 pub const DEFAULT_TIMEOUT: u32 = 0;
+pub const DEFAULT_REMOTE_TIMEOUT_SECS: u32 = 30;
 pub const DEFAULT_INCLUDE_GITHUB_META: bool = true;
 pub const DEFAULT_GITHUB_META_CATEGORIES: [&str; 4] = ["api", "git", "hooks", "packages"];
 pub const DEFAULT_GITHUB_META_URL: &str = "https://api.github.com/meta";
@@ -35,9 +36,19 @@ pub struct SafeConfig {
     pub github_meta_categories: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteConfig {
     pub urls: Vec<String>,
+    pub timeout_secs: u32,
+}
+
+impl Default for RemoteConfig {
+    fn default() -> Self {
+        Self {
+            urls: Vec::new(),
+            timeout_secs: DEFAULT_REMOTE_TIMEOUT_SECS,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,6 +109,7 @@ struct RawSafeConfig {
 #[derive(Debug, Deserialize, Default)]
 struct RawRemoteConfig {
     urls: Option<Vec<String>>,
+    timeout_secs: Option<i64>,
 }
 
 impl Config {
@@ -236,7 +248,15 @@ fn parse_remote(raw: RawRemoteConfig) -> Result<RemoteConfig, ConfigError> {
         }
     }
 
-    Ok(RemoteConfig { urls })
+    let timeout_secs = bounded_u32(
+        raw.timeout_secs
+            .unwrap_or(i64::from(DEFAULT_REMOTE_TIMEOUT_SECS)),
+        "remote.timeout_secs",
+        1,
+        3600,
+    )?;
+
+    Ok(RemoteConfig { urls, timeout_secs })
 }
 
 fn required_non_empty(value: Option<String>, field: &'static str) -> Result<String, ConfigError> {
@@ -321,8 +341,8 @@ fn validate_http_url(value: &str, field: &'static str) -> Result<(), ConfigError
 mod tests {
     use super::{
         Config, ConfigError, DEFAULT_GITHUB_META_CATEGORIES, DEFAULT_GITHUB_META_URL,
-        DEFAULT_HASHSIZE, DEFAULT_IPSET_TYPE, DEFAULT_MAXELEM, DEFAULT_TIMEOUT,
-        GithubMetaCategoryMode,
+        DEFAULT_HASHSIZE, DEFAULT_IPSET_TYPE, DEFAULT_MAXELEM, DEFAULT_REMOTE_TIMEOUT_SECS,
+        DEFAULT_TIMEOUT, GithubMetaCategoryMode,
     };
 
     #[test]
@@ -348,6 +368,7 @@ mod tests {
             ["api", "git", "hooks", "packages"]
         );
         assert_eq!(config.remote.urls, Vec::<String>::new());
+        assert_eq!(config.remote.timeout_secs, DEFAULT_REMOTE_TIMEOUT_SECS);
     }
 
     #[test]
@@ -529,6 +550,38 @@ mod tests {
             ConfigError::InvalidField {
                 field: "remote.urls",
                 reason: "value must not be empty".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn remote_timeout_secs_can_be_overridden() {
+        let config =
+            Config::from_toml_str("[ipset]\nset_name='kidobo'\n[remote]\ntimeout_secs=45\n")
+                .expect("parse");
+        assert_eq!(config.remote.timeout_secs, 45);
+    }
+
+    #[test]
+    fn remote_timeout_secs_must_be_within_allowed_range() {
+        let err = Config::from_toml_str("[ipset]\nset_name='kidobo'\n[remote]\ntimeout_secs=0\n")
+            .expect_err("must fail");
+        assert_eq!(
+            err,
+            ConfigError::InvalidField {
+                field: "remote.timeout_secs",
+                reason: "must be between 1 and 3600".to_string(),
+            }
+        );
+
+        let err =
+            Config::from_toml_str("[ipset]\nset_name='kidobo'\n[remote]\ntimeout_secs=3601\n")
+                .expect_err("must fail");
+        assert_eq!(
+            err,
+            ConfigError::InvalidField {
+                field: "remote.timeout_secs",
+                reason: "must be between 1 and 3600".to_string(),
             }
         );
     }

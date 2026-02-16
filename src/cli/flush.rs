@@ -224,7 +224,10 @@ mod tests {
                 github_meta_url: "https://api.github.com/meta".to_string(),
                 github_meta_categories: None,
             },
-            remote: RemoteConfig { urls: Vec::new() },
+            remote: RemoteConfig {
+                urls: Vec::new(),
+                timeout_secs: 30,
+            },
         }
     }
 

@@ -74,7 +74,8 @@ sudo kidobo init
 ```
 
 This creates missing directories/files and does not overwrite existing config
-or blocklist files. It also creates systemd unit files for periodic sync:
+or blocklist files. `init` prints a summary of created vs unchanged artifacts.
+It also creates systemd unit files for periodic sync:
 
 - `/etc/systemd/system/kidobo-sync.service`
 - `/etc/systemd/system/kidobo-sync.timer`
@@ -165,6 +166,7 @@ github_meta_url = "https://api.github.com/meta"
 # github_meta_categories = ["api", "git", "hooks", "packages"]
 
 [remote]
+timeout_secs = 30
 urls = []
 ```
 
@@ -184,6 +186,7 @@ Key fields:
     - `[]`: all categories
     - explicit list: only those categories
 - `[remote]`
+  - `timeout_secs` request timeout for each remote HTTP fetch (default `30`, range `[1, 3600]`)
   - `urls` list of remote feed URLs
 
 Invalid or missing required config causes command failure.
