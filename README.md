@@ -38,6 +38,9 @@ With default system paths (`/etc/kidobo`, `/var/lib/kidobo`, `/var/cache/kidobo`
 
 ## Install
 
+GitHub release artifacts are currently published for Linux x86_64 only.
+For other platforms/architectures, install from source with Cargo.
+
 Install from crates.io (recommended once published):
 
 ```bash
@@ -345,11 +348,26 @@ cargo llvm-cov --all-features --fail-under-lines 85
 cargo +nightly udeps --all-targets --all-features
 ```
 
+Bump version references:
+
+```bash
+scripts/bump-version.sh patch
+# or: scripts/bump-version.sh minor
+# or: scripts/bump-version.sh major
+# or: scripts/bump-version.sh 0.2.0
+```
+
+This updates `Cargo.toml`, the root package version entry in `Cargo.lock`, and
+the GitHub release example tag in `README.md`. After that, push a matching tag
+(`v<version>`) to trigger release artifact creation.
+
 CI workflows:
 
 - `.github/workflows/ci.yml`
 - `.github/workflows/udeps-audit.yml`
 - `.github/workflows/release.yml`
+
+All GitHub workflows currently run on `ubuntu-latest`.
 
 ## License
 
