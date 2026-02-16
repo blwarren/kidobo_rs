@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+TXN_ACTIVE=0
+TXN_BACKUP_DIR=""
+TXN_FILES=()
+TXN_EXISTED=()
+
 usage() {
     cat <<'EOF'
 Usage:
@@ -170,8 +175,8 @@ update_readme_release_example() {
 
     awk -v new_tag_version="$new_tag_version" '
         BEGIN { updated = 0 }
-        /^version="v[^"]+"$/ && !updated {
-            $0 = "version=\"" new_tag_version "\""
+        /install\.sh/ && /--version[[:space:]]+v[0-9A-Za-z][0-9A-Za-z.-]*/ && !updated {
+            sub(/--version[[:space:]]+v[0-9A-Za-z][0-9A-Za-z.-]*/, "--version " new_tag_version)
             updated = 1
         }
         { print }
@@ -325,6 +330,69 @@ write_release_notes_file() {
     } >"$output_file"
 }
 
+transaction_begin() {
+    local file_path
+
+    TXN_BACKUP_DIR="$(mktemp -d)"
+    TXN_ACTIVE=1
+    TXN_FILES=()
+    TXN_EXISTED=()
+
+    for file_path in "$@"; do
+        TXN_FILES+=("$file_path")
+        if [[ -f "$file_path" ]]; then
+            TXN_EXISTED+=("1")
+            mkdir -p "$TXN_BACKUP_DIR/$(dirname "$file_path")"
+            cp -- "$file_path" "$TXN_BACKUP_DIR/$file_path"
+        else
+            TXN_EXISTED+=("0")
+        fi
+    done
+
+    trap 'transaction_on_exit $?' EXIT
+}
+
+transaction_cleanup() {
+    if [[ -n "$TXN_BACKUP_DIR" && -d "$TXN_BACKUP_DIR" ]]; then
+        rm -rf -- "$TXN_BACKUP_DIR"
+    fi
+    TXN_ACTIVE=0
+    TXN_BACKUP_DIR=""
+    TXN_FILES=()
+    TXN_EXISTED=()
+}
+
+transaction_rollback() {
+    local idx file_path existed_flag
+    for idx in "${!TXN_FILES[@]}"; do
+        file_path="${TXN_FILES[$idx]}"
+        existed_flag="${TXN_EXISTED[$idx]}"
+        if [[ "$existed_flag" == "1" ]]; then
+            mkdir -p "$(dirname "$file_path")"
+            cp -- "$TXN_BACKUP_DIR/$file_path" "$file_path"
+        else
+            rm -f -- "$file_path"
+        fi
+    done
+    transaction_cleanup
+}
+
+transaction_on_exit() {
+    local status="$1"
+
+    if [[ "$TXN_ACTIVE" -ne 1 ]]; then
+        return
+    fi
+
+    if [[ "$status" -eq 0 ]]; then
+        transaction_cleanup
+        return
+    fi
+
+    transaction_rollback
+    echo "bump-version: rolled back file changes after failure" >&2
+}
+
 main() {
     local dry_run=0
     local requested=""
@@ -416,6 +484,12 @@ main() {
         echo "dry-run: no files were modified"
         exit 0
     fi
+
+    local txn_files=("Cargo.toml" "Cargo.lock" "README.md" "$release_notes_file")
+    if [[ "$changelog_needs_promotion" -eq 1 ]]; then
+        txn_files+=("CHANGELOG.md")
+    fi
+    transaction_begin "${txn_files[@]}"
 
     update_cargo_toml_version "$target_version"
     update_cargo_lock_root_version "$package_name" "$target_version"

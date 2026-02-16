@@ -6,6 +6,8 @@ The format is based on Keep a Changelog, with one section per release.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-02-16
+
 ### Changed
 
 - `kidobo init` now runs `systemctl daemon-reload` and
