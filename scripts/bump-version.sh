@@ -478,6 +478,10 @@ main() {
         echo "  .github/workflows/release.yml"
         echo
         echo "dry-run: release notes source: CHANGELOG.md section [${target_version}] or [Unreleased]"
+        echo "dry-run: this script does not create or push git tags"
+        echo "dry-run: after commit, run:"
+        echo "  git tag -a v${target_version} -m \"v${target_version}\""
+        echo "  git push origin v${target_version}"
         echo "dry-run: no files were modified"
         exit 0
     fi
@@ -502,10 +506,13 @@ main() {
     echo "  ${release_notes_file}"
     echo "  .github/workflows/release.yml"
     echo
+    echo "this script does not create or push git tags"
     echo "next steps:"
     echo "  1) run validation gates"
     echo "  2) commit changes"
-    echo "  3) push matching tag: v${target_version}"
+    echo "  3) run tag commands:"
+    echo "     git tag -a v${target_version} -m \"v${target_version}\""
+    echo "     git push origin v${target_version}"
 }
 
 main "$@"
