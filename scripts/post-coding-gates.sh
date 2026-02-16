@@ -33,4 +33,3 @@ log "running coverage gate"
 cargo llvm-cov --all-features --fail-under-lines 85
 
 log "post-coding gates complete"
-log "periodic maintenance gate (run separately): cargo +nightly udeps --all-targets --all-features"
