@@ -11,6 +11,9 @@ The format is based on Keep a Changelog, with one section per release.
 - `kidobo lookup` now labels remote matches with the original source URL from
   cache metadata (instead of hashed cache filenames), improving provenance in
   offline lookup output.
+- Documentation and maintenance scripts now explicitly use
+  `cargo +nightly udeps --all-targets --all-features` for dependency-usage
+  checks to match CI behavior.
 
 ## [0.2.0] - 2026-02-16
 

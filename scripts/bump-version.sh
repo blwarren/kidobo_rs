@@ -479,6 +479,8 @@ main() {
         echo "dry-run: release notes source: CHANGELOG.md section [${target_version}] or [Unreleased]"
         echo "dry-run: this script does not create or push git tags"
         echo "dry-run: after commit, run:"
+        echo "  scripts/post-coding-gates.sh"
+        echo "  cargo +nightly udeps --all-targets --all-features"
         echo "  git tag -a v${target_version} -m \"v${target_version}\""
         echo "  git push origin v${target_version}"
         echo "dry-run: no files were modified"
@@ -511,9 +513,10 @@ main() {
     echo
     echo "this script does not create or push git tags"
     echo "next steps:"
-    echo "  1) run validation gates"
-    echo "  2) commit changes"
-    echo "  3) run tag commands:"
+    echo "  1) run validation gates: scripts/post-coding-gates.sh"
+    echo "  2) run periodic gate: cargo +nightly udeps --all-targets --all-features"
+    echo "  3) commit changes"
+    echo "  4) run tag commands:"
     echo "     git tag -a v${target_version} -m \"v${target_version}\""
     echo "     git push origin v${target_version}"
 }

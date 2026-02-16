@@ -61,6 +61,12 @@ cargo build --release --locked
 ./target/release/kidobo --help
 ```
 
+Periodic maintenance check (matches CI `udeps-audit` workflow):
+
+```bash
+cargo +nightly udeps --all-targets --all-features
+```
+
 ## Quick Start
 
 ### 1. Initialize files
