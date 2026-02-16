@@ -6,8 +6,19 @@ The format is based on Keep a Changelog, with one section per release.
 
 ## [Unreleased]
 
-## [0.1.1] - 2026-02-16
+### Changed
 
+- Logs are now emitted in a plain `level=<LEVEL> msg=<text>` format without
+  ANSI styling or duplicated timestamps, which is easier to read in systemd
+  journal output.
+
+### Fixed
+
+- `kidobo sync` now fails early with a clear message when effective IPv4/IPv6
+  entries exceed configured `ipset.maxelem`, instead of relying only on a later
+  `ipset restore` command failure.
+
+## [0.1.1] - 2026-02-16
 
 ### Added
 
@@ -27,7 +38,6 @@ The format is based on Keep a Changelog, with one section per release.
 
 - Config validation now rejects invalid `safe.github_meta_url` values that do
   not start with `http://` or `https://`.
-
 
 ## [0.1.0] - 2026-02-16
 

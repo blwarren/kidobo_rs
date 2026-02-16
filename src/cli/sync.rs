@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use log::{info, warn};
+use log::{error, info, warn};
 
 use crate::adapters::command_runner::SudoCommandRunner;
 use crate::adapters::config::load_config_from_file;
@@ -115,8 +115,10 @@ pub(crate) fn run_sync_with_dependencies(
     let ipv6_entries: Vec<String> = effective.ipv6.iter().map(ToString::to_string).collect();
 
     if config.ipset.enable_ipv6 {
+        ensure_within_maxelem(&ipv6_spec, ipv6_entries.len())?;
         atomic_replace_ipset(ipset_runner, &ipv6_spec, &ipv6_entries)?;
     }
+    ensure_within_maxelem(&ipv4_spec, ipv4_entries.len())?;
     atomic_replace_ipset(ipset_runner, &ipv4_spec, &ipv4_entries)?;
 
     info!(
@@ -155,6 +157,29 @@ fn ipv6_set_spec(config: &Config) -> IpsetSetSpec {
         maxelem: config.ipset.maxelem,
         timeout: config.ipset.timeout,
     }
+}
+
+fn ensure_within_maxelem(spec: &IpsetSetSpec, entries: usize) -> Result<(), KidoboError> {
+    if entries <= spec.maxelem as usize {
+        return Ok(());
+    }
+
+    let family = match spec.family {
+        IpsetFamily::Inet => "ipv4",
+        IpsetFamily::Inet6 => "ipv6",
+    };
+
+    error!(
+        "sync blocked: effective entry count exceeds maxelem: family={} set_name={} entries={} maxelem={}",
+        family, spec.set_name, entries, spec.maxelem
+    );
+
+    Err(KidoboError::IpsetCapacityExceeded {
+        family,
+        set_name: spec.set_name.clone(),
+        entries,
+        maxelem: spec.maxelem,
+    })
 }
 
 fn load_internal_blocklist(path: &Path) -> Result<Vec<CanonicalCidr>, KidoboError> {
@@ -245,14 +270,16 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        MAX_REMOTE_FETCH_WORKERS, fetch_remote_networks_concurrently, run_sync_with_dependencies,
+        MAX_REMOTE_FETCH_WORKERS, ensure_within_maxelem, fetch_remote_networks_concurrently,
+        run_sync_with_dependencies,
     };
     use crate::adapters::command_runner::{CommandResult, CommandRunnerError};
     use crate::adapters::http_cache::{HttpClient, HttpClientError, HttpRequest, HttpResponse};
-    use crate::adapters::ipset::IpsetCommandRunner;
+    use crate::adapters::ipset::{IpsetCommandRunner, IpsetFamily, IpsetSetSpec};
     use crate::adapters::iptables::FirewallCommandRunner;
     use crate::adapters::path::ResolvedPaths;
     use crate::core::config::{Config, IpsetConfig, RemoteConfig, SafeConfig};
+    use crate::error::KidoboError;
 
     struct MockHttpClient {
         responses: Mutex<BTreeMap<String, VecDeque<Result<HttpResponse, HttpClientError>>>>,
@@ -749,5 +776,57 @@ mod tests {
                 .iter()
                 .all(|entry| !entry.starts_with("cmd:ip6tables"))
         );
+    }
+
+    #[test]
+    fn sync_fails_early_with_clear_error_when_effective_entries_exceed_maxelem() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = test_paths(temp.path());
+
+        fs::create_dir_all(paths.blocklist_file.parent().expect("parent")).expect("mkdir data");
+        fs::create_dir_all(&paths.remote_cache_dir).expect("mkdir cache");
+        fs::write(&paths.blocklist_file, "10.0.0.0/24\n198.51.100.7\n").expect("write blocklist");
+
+        let mut config = test_config_with_ipv6(Vec::new(), false);
+        config.ipset.maxelem = 1;
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let http_client = MockHttpClient::new(BTreeMap::new(), events, 0);
+        let runner = MockCommandRunner::new(Arc::new(Mutex::new(Vec::new())));
+
+        let err = run_sync_with_dependencies(
+            &paths,
+            &config,
+            &BTreeMap::new(),
+            &http_client,
+            &runner,
+            &runner,
+        )
+        .expect_err("sync must fail");
+
+        assert!(matches!(
+            err,
+            KidoboError::IpsetCapacityExceeded {
+                family: "ipv4",
+                ref set_name,
+                entries: 2,
+                maxelem: 1
+            } if set_name == "kidobo"
+        ));
+        assert!(runner.swap_targets().is_empty());
+    }
+
+    #[test]
+    fn ensure_within_maxelem_allows_equal_entry_count() {
+        let spec = IpsetSetSpec {
+            set_name: "kidobo".to_string(),
+            set_type: "hash:net".to_string(),
+            family: IpsetFamily::Inet,
+            hashsize: 65536,
+            maxelem: 2,
+            timeout: 0,
+        };
+
+        ensure_within_maxelem(&spec, 2).expect("must pass");
     }
 }

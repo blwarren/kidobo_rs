@@ -46,6 +46,16 @@ pub enum KidoboError {
     #[error("failed to read blocklist file {path}: {reason}")]
     BlocklistRead { path: PathBuf, reason: String },
 
+    #[error(
+        "effective entry count exceeds ipset maxelem for {family} set `{set_name}`: entries={entries} maxelem={maxelem}"
+    )]
+    IpsetCapacityExceeded {
+        family: &'static str,
+        set_name: String,
+        entries: usize,
+        maxelem: u32,
+    },
+
     #[error("config parse/validation failed: {source}")]
     ConfigParse {
         #[from]
