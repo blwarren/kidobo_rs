@@ -17,17 +17,15 @@ pub fn compute_effective_blocklists(
     let candidate_family = split_by_family(candidates);
     let safelist_family = split_by_family(safelist);
 
-    let collapsed_v4 = collapse_ipv4(&candidate_family.ipv4);
-    let collapsed_safe_v4 = collapse_ipv4(&safelist_family.ipv4);
-    let mut effective_v4 = subtract_safelist_ipv4(&collapsed_v4, &collapsed_safe_v4);
+    let carved_v4 = subtract_safelist_ipv4(&candidate_family.ipv4, &safelist_family.ipv4);
+    let mut effective_v4 = collapse_ipv4(&carved_v4);
     effective_v4.sort_unstable();
 
     let mut effective_v6 = if enable_ipv6 {
-        let collapsed_v6 = collapse_ipv6(&candidate_family.ipv6);
-        let collapsed_safe_v6 = collapse_ipv6(&safelist_family.ipv6);
-        let mut carved_v6 = subtract_safelist_ipv6(&collapsed_v6, &collapsed_safe_v6);
-        carved_v6.sort_unstable();
-        carved_v6
+        let carved_v6 = subtract_safelist_ipv6(&candidate_family.ipv6, &safelist_family.ipv6);
+        let mut collapsed_v6 = collapse_ipv6(&carved_v6);
+        collapsed_v6.sort_unstable();
+        collapsed_v6
     } else {
         Vec::new()
     };
