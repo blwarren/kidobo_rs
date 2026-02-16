@@ -47,7 +47,7 @@ cargo install --locked --bin kidobo kidobo_rs
 Install a prebuilt Linux x86_64 binary from GitHub Releases:
 
 ```bash
-version="v0.1.2"
+version="v0.1.3"
 archive="kidobo-${version}-linux-x86_64.tar.gz"
 base_url="https://github.com/blwarren/kidobo_rs/releases/download/${version}"
 

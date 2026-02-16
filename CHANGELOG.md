@@ -6,6 +6,9 @@ The format is based on Keep a Changelog, with one section per release.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-02-16
+
+
 ### Changed
 
 - Release automation now resolves release notes from the tag name
@@ -14,6 +17,7 @@ The format is based on Keep a Changelog, with one section per release.
 - `kidobo init` now runs `systemctl daemon-reload` and
   `systemctl enable --now kidobo-sync.timer` automatically when using default
   system paths (the `KIDOBO_ROOT` sandbox flow still skips `systemctl`).
+
 
 ## [0.1.2] - 2026-02-16
 
