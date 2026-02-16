@@ -155,7 +155,12 @@ fn read_response_body_capped(
             });
         }
 
-        out.extend_from_slice(&chunk[..read]);
+        let Some(slice) = chunk.get(..read) else {
+            return Err(HttpClientError::Request {
+                reason: "internal read exceeded chunk size".to_string(),
+            });
+        };
+        out.extend_from_slice(slice);
     }
 
     Ok(out)

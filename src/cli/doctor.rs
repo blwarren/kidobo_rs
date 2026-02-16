@@ -91,6 +91,7 @@ impl<E: CommandExecutor> SudoProbeRunner for SudoCommandRunner<E> {
     }
 }
 
+#[allow(clippy::print_stdout)]
 pub fn run_doctor_command() -> Result<(), KidoboError> {
     let path_input = PathResolutionInput::from_process(None)?;
     let binary_locator = SystemBinaryLocator;

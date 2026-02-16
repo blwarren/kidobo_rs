@@ -243,9 +243,13 @@ pub fn merge_intervals_u32(intervals: &[IntervalU32]) -> Vec<IntervalU32> {
     sorted.sort_unstable();
 
     let mut merged = Vec::with_capacity(sorted.len());
-    let mut current = sorted[0];
+    let mut iter = sorted.into_iter();
+    let mut current = match iter.next() {
+        Some(first) => first,
+        None => return Vec::new(),
+    };
 
-    for interval in sorted.into_iter().skip(1) {
+    for interval in iter {
         if interval.start <= current.end.saturating_add(1) {
             current.end = current.end.max(interval.end);
         } else {
@@ -267,9 +271,13 @@ pub fn merge_intervals_u128(intervals: &[IntervalU128]) -> Vec<IntervalU128> {
     sorted.sort_unstable();
 
     let mut merged = Vec::with_capacity(sorted.len());
-    let mut current = sorted[0];
+    let mut iter = sorted.into_iter();
+    let mut current = match iter.next() {
+        Some(first) => first,
+        None => return Vec::new(),
+    };
 
-    for interval in sorted.into_iter().skip(1) {
+    for interval in iter {
         if interval.start <= current.end.saturating_add(1) {
             current.end = current.end.max(interval.end);
         } else {
@@ -392,23 +400,28 @@ fn subtract_intervals_u32(base: &[IntervalU32], carve: &[IntervalU32]) -> Vec<In
     let mut carve_idx = 0_usize;
 
     for base_interval in base {
-        while carve_idx < carve.len() && carve[carve_idx].end < base_interval.start {
+        while carve
+            .get(carve_idx)
+            .is_some_and(|interval| interval.end < base_interval.start)
+        {
             carve_idx += 1;
         }
 
         let mut fragments = vec![base_interval];
-        let mut idx = carve_idx;
-
-        while idx < carve.len() && carve[idx].start <= base_interval.end {
+        for carve_interval in carve
+            .iter()
+            .copied()
+            .skip(carve_idx)
+            .take_while(|interval| interval.start <= base_interval.end)
+        {
             let mut next_fragments = Vec::new();
             for fragment in fragments {
-                next_fragments.extend(subtract_one_u32(fragment, carve[idx]));
+                next_fragments.extend(subtract_one_u32(fragment, carve_interval));
             }
             fragments = next_fragments;
             if fragments.is_empty() {
                 break;
             }
-            idx += 1;
         }
 
         result.extend(fragments);
@@ -432,23 +445,28 @@ fn subtract_intervals_u128(base: &[IntervalU128], carve: &[IntervalU128]) -> Vec
     let mut carve_idx = 0_usize;
 
     for base_interval in base {
-        while carve_idx < carve.len() && carve[carve_idx].end < base_interval.start {
+        while carve
+            .get(carve_idx)
+            .is_some_and(|interval| interval.end < base_interval.start)
+        {
             carve_idx += 1;
         }
 
         let mut fragments = vec![base_interval];
-        let mut idx = carve_idx;
-
-        while idx < carve.len() && carve[idx].start <= base_interval.end {
+        for carve_interval in carve
+            .iter()
+            .copied()
+            .skip(carve_idx)
+            .take_while(|interval| interval.start <= base_interval.end)
+        {
             let mut next_fragments = Vec::new();
             for fragment in fragments {
-                next_fragments.extend(subtract_one_u128(fragment, carve[idx]));
+                next_fragments.extend(subtract_one_u128(fragment, carve_interval));
             }
             fragments = next_fragments;
             if fragments.is_empty() {
                 break;
             }
-            idx += 1;
         }
 
         result.extend(fragments);

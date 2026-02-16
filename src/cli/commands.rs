@@ -22,6 +22,7 @@ pub fn dispatch(command: Command) -> Result<(), KidoboError> {
     }
 }
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 fn run_lookup_command(ip: Option<String>, file: Option<PathBuf>) -> Result<(), KidoboError> {
     let targets = collect_lookup_targets(ip, file)?;
 

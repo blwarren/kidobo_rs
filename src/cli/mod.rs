@@ -13,6 +13,7 @@ use clap::error::ErrorKind;
 
 use crate::error::KidoboError;
 
+#[allow(clippy::print_stderr)]
 pub fn run() -> ExitCode {
     if let Err(err) = interrupt::install_handler() {
         eprintln!("{err}");
