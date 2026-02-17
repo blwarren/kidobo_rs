@@ -472,13 +472,13 @@ mod tests {
                     stdout: String::new(),
                     stderr: "The set with the given name does not exist".to_string(),
                 },
-                ("iptables", Some("-S")) | ("ip6tables", Some("-S")) => CommandResult {
+                ("iptables" | "ip6tables", Some("-S")) => CommandResult {
                     status: Some(1),
                     success: false,
                     stdout: String::new(),
                     stderr: "No chain/target/match by that name".to_string(),
                 },
-                ("iptables", Some("-D")) | ("ip6tables", Some("-D")) => CommandResult {
+                ("iptables" | "ip6tables", Some("-D")) => CommandResult {
                     status: Some(1),
                     success: false,
                     stdout: String::new(),

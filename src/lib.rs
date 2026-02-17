@@ -9,8 +9,7 @@
     clippy::missing_errors_doc,
     clippy::single_match_else,
     clippy::struct_field_names,
-    clippy::unreadable_literal,
-    clippy::unnested_or_patterns
+    clippy::unreadable_literal
 )]
 #![cfg_attr(
     not(test),
