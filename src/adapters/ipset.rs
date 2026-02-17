@@ -170,7 +170,8 @@ pub fn build_restore_script(
     );
 
     for entry in sorted_entries {
-        let _ = std::fmt::Write::write_fmt(&mut script, format_args!("add {temp_set_name} {entry}\n"));
+        let _ =
+            std::fmt::Write::write_fmt(&mut script, format_args!("add {temp_set_name} {entry}\n"));
     }
 
     let _ = std::fmt::Write::write_fmt(

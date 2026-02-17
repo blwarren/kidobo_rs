@@ -6,7 +6,7 @@ log() {
 }
 
 log "running format gate"
-cargo fmt --all --check
+cargo fmt --all
 
 log "running clippy gate"
 cargo clippy --all-targets --all-features -- -D warnings

@@ -100,9 +100,7 @@ fn best_effort_ipset_destroy(runner: &dyn IpsetCommandRunner, set_name: &str) {
             set_name, result.status, result.stderr
         ),
         Err(err) => {
-            warn!(
-                "best-effort flush command execution failed: ipset destroy {set_name} ({err})"
-            );
+            warn!("best-effort flush command execution failed: ipset destroy {set_name} ({err})");
         }
     }
 }
