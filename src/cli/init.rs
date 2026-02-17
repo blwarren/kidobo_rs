@@ -47,6 +47,9 @@ Unit=kidobo-sync.service
 WantedBy=timers.target
 "#;
 
+#[cfg(test)]
+const INIT_FILE_READ_LIMIT: usize = 256 * 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProvisionState {
     Created,
@@ -356,12 +359,13 @@ mod tests {
 
     use super::{
         CommandResult, CommandRunnerError, DEFAULT_BLOCKLIST_TEMPLATE, DEFAULT_CONFIG_TEMPLATE,
-        DEFAULT_SYSTEMD_DIR, DEFAULT_SYSTEMD_TIMER_TEMPLATE, InitCommandRunner,
-        KIDOBO_SYNC_SERVICE_FILE, KIDOBO_SYNC_TIMER_FILE, build_systemd_service_template,
-        ensure_systemd_timer_enabled, infer_kido_root_override, render_init_summary,
-        resolve_systemd_dir, run_init_with_paths, run_init_with_paths_and_runner,
-        run_init_with_paths_with_summary,
+        DEFAULT_SYSTEMD_DIR, DEFAULT_SYSTEMD_TIMER_TEMPLATE, INIT_FILE_READ_LIMIT,
+        InitCommandRunner, KIDOBO_SYNC_SERVICE_FILE, KIDOBO_SYNC_TIMER_FILE,
+        build_systemd_service_template, ensure_systemd_timer_enabled, infer_kido_root_override,
+        render_init_summary, resolve_systemd_dir, run_init_with_paths,
+        run_init_with_paths_and_runner, run_init_with_paths_with_summary,
     };
+    use crate::adapters::limited_io::read_to_string_with_limit;
     use crate::adapters::path::ResolvedPaths;
     use crate::error::KidoboError;
 
@@ -441,18 +445,21 @@ mod tests {
         assert!(paths.remote_cache_dir.exists());
         assert!(paths.lock_file.exists());
 
-        let config = fs::read_to_string(&paths.config_file).expect("config");
+        let config =
+            read_to_string_with_limit(&paths.config_file, INIT_FILE_READ_LIMIT).expect("config");
         assert_eq!(config, DEFAULT_CONFIG_TEMPLATE);
 
-        let blocklist = fs::read_to_string(&paths.blocklist_file).expect("blocklist");
+        let blocklist = read_to_string_with_limit(&paths.blocklist_file, INIT_FILE_READ_LIMIT)
+            .expect("blocklist");
         assert_eq!(blocklist, DEFAULT_BLOCKLIST_TEMPLATE);
 
-        let service = fs::read_to_string(service_file).expect("service");
+        let service =
+            read_to_string_with_limit(&service_file, INIT_FILE_READ_LIMIT).expect("service");
         let expected_service =
             build_systemd_service_template(Path::new("/usr/local/bin/kidobo"), Some(temp.path()));
         assert_eq!(service, expected_service);
 
-        let timer = fs::read_to_string(timer_file).expect("timer");
+        let timer = read_to_string_with_limit(&timer_file, INIT_FILE_READ_LIMIT).expect("timer");
         assert_eq!(timer, DEFAULT_SYSTEMD_TIMER_TEMPLATE);
     }
 
@@ -476,19 +483,23 @@ mod tests {
 
         run_init_with_paths(&paths).expect("init");
 
-        let config = fs::read_to_string(&paths.config_file).expect("config");
+        let config =
+            read_to_string_with_limit(&paths.config_file, INIT_FILE_READ_LIMIT).expect("config");
         assert_eq!(config, "custom-config");
 
-        let blocklist = fs::read_to_string(&paths.blocklist_file).expect("blocklist");
+        let blocklist = read_to_string_with_limit(&paths.blocklist_file, INIT_FILE_READ_LIMIT)
+            .expect("blocklist");
         assert_eq!(blocklist, "custom-blocklist");
 
-        let lock_file = fs::read_to_string(&paths.lock_file).expect("lock");
+        let lock_file =
+            read_to_string_with_limit(&paths.lock_file, INIT_FILE_READ_LIMIT).expect("lock");
         assert_eq!(lock_file, "custom-lock");
 
-        let service = fs::read_to_string(service_file).expect("service");
+        let service =
+            read_to_string_with_limit(&service_file, INIT_FILE_READ_LIMIT).expect("service");
         assert_eq!(service, "custom-service");
 
-        let timer = fs::read_to_string(timer_file).expect("timer");
+        let timer = read_to_string_with_limit(&timer_file, INIT_FILE_READ_LIMIT).expect("timer");
         assert_eq!(timer, "custom-timer");
     }
 
@@ -502,15 +513,20 @@ mod tests {
         run_init_with_paths(&paths).expect("second");
 
         assert_eq!(
-            fs::read_to_string(&paths.config_file).expect("config"),
+            read_to_string_with_limit(&paths.config_file, INIT_FILE_READ_LIMIT).expect("config"),
             DEFAULT_CONFIG_TEMPLATE
         );
         assert_eq!(
-            fs::read_to_string(&paths.blocklist_file).expect("blocklist"),
+            read_to_string_with_limit(&paths.blocklist_file, INIT_FILE_READ_LIMIT)
+                .expect("blocklist"),
             DEFAULT_BLOCKLIST_TEMPLATE
         );
         assert_eq!(
-            fs::read_to_string(systemd_dir.join(KIDOBO_SYNC_TIMER_FILE)).expect("timer"),
+            read_to_string_with_limit(
+                systemd_dir.join(KIDOBO_SYNC_TIMER_FILE).as_ref(),
+                INIT_FILE_READ_LIMIT
+            )
+            .expect("timer"),
             DEFAULT_SYSTEMD_TIMER_TEMPLATE
         );
     }

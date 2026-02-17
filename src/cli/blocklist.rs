@@ -3,12 +3,15 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
 
+use crate::adapters::limited_io::read_to_string_with_limit;
 use crate::adapters::path::{PathResolutionInput, resolve_paths};
 use crate::core::network::{
     CanonicalCidr, IntervalU32, IntervalU128, collapse_ipv4, collapse_ipv6, ipv4_to_interval,
     ipv6_to_interval, parse_ip_cidr_non_strict, split_by_family,
 };
 use crate::error::KidoboError;
+
+const BLOCKLIST_READ_LIMIT: usize = 16 * 1024 * 1024;
 
 #[allow(clippy::print_stdout, clippy::print_stderr)]
 pub fn run_ban_command(target: &str) -> Result<(), KidoboError> {
@@ -218,9 +221,11 @@ pub fn normalize_local_blocklist(path: &Path) -> Result<(), KidoboError> {
         return Ok(());
     }
 
-    let original = fs::read_to_string(path).map_err(|err| KidoboError::BlocklistRead {
-        path: path.to_path_buf(),
-        reason: err.to_string(),
+    let original = read_to_string_with_limit(path, BLOCKLIST_READ_LIMIT).map_err(|err| {
+        KidoboError::BlocklistRead {
+            path: path.to_path_buf(),
+            reason: err.to_string(),
+        }
     })?;
 
     let normalized = canonicalize_blocklist(&original);
@@ -354,9 +359,11 @@ impl BlocklistFile {
             });
         }
 
-        let contents = fs::read_to_string(path).map_err(|err| KidoboError::BlocklistRead {
-            path: path.to_path_buf(),
-            reason: err.to_string(),
+        let contents = read_to_string_with_limit(path, BLOCKLIST_READ_LIMIT).map_err(|err| {
+            KidoboError::BlocklistRead {
+                path: path.to_path_buf(),
+                reason: err.to_string(),
+            }
         })?;
 
         let lines = contents.lines().map(BlocklistLine::new).collect::<Vec<_>>();
@@ -448,10 +455,11 @@ mod tests {
     };
 
     use super::{
-        BanOutcome, BlocklistFile, KidoboError, append_blocklist_entry, apply_unban_plan,
-        ban_target_in_file, build_unban_plan, ensure_blocklist_parent, normalize_local_blocklist,
-        parse_blocklist_target, write_blocklist_lines,
+        BLOCKLIST_READ_LIMIT, BanOutcome, BlocklistFile, KidoboError, append_blocklist_entry,
+        apply_unban_plan, ban_target_in_file, build_unban_plan, ensure_blocklist_parent,
+        normalize_local_blocklist, parse_blocklist_target, write_blocklist_lines,
     };
+    use crate::adapters::limited_io::read_to_string_with_limit;
 
     fn write_temp_file(temp: &TempDir, contents: &str) -> PathBuf {
         let path = temp.path().join("blocklist.txt");
@@ -467,7 +475,7 @@ mod tests {
         let outcome = ban_target_in_file(&path, "203.0.113.0/24").expect("ban");
         assert_eq!(outcome, BanOutcome::Added("203.0.113.0/24".into()));
 
-        let contents = fs::read_to_string(&path).expect("read");
+        let contents = read_to_string_with_limit(&path, BLOCKLIST_READ_LIMIT).expect("read");
         assert_eq!(contents, "203.0.113.0/24\n");
     }
 
@@ -480,7 +488,7 @@ mod tests {
         let outcome = ban_target_in_file(&path, "203.0.113.0/24").expect("ban");
         assert_eq!(outcome, BanOutcome::AlreadyPresent("203.0.113.0/24".into()));
 
-        let contents = fs::read_to_string(&path).expect("read");
+        let contents = read_to_string_with_limit(&path, BLOCKLIST_READ_LIMIT).expect("read");
         assert_eq!(contents, "203.0.113.0/24\n");
     }
 
@@ -494,7 +502,7 @@ mod tests {
         let result = apply_unban_plan(&path, &plan).expect("apply");
 
         assert_eq!(result.total(), 1);
-        let contents = fs::read_to_string(&path).expect("read");
+        let contents = read_to_string_with_limit(&path, BLOCKLIST_READ_LIMIT).expect("read");
         assert_eq!(contents, "203.0.113.0/24\n");
         assert_eq!(plan.partial_matches.len(), 0);
         assert_eq!(plan.exact_indexes.len(), 1);
@@ -512,7 +520,7 @@ mod tests {
         let result = apply_unban_plan(&path, &plan).expect("apply");
 
         assert_eq!(result.removed_partial, 1);
-        let contents = fs::read_to_string(&path).expect("read");
+        let contents = read_to_string_with_limit(&path, BLOCKLIST_READ_LIMIT).expect("read");
         assert!(contents.is_empty());
     }
 
@@ -588,12 +596,19 @@ mod tests {
         let path = temp.path().join("blocklist.txt");
 
         append_blocklist_entry(&path, "203.0.113.0/24", false, false).expect("append");
-        assert_eq!(fs::read_to_string(&path).unwrap(), "203.0.113.0/24\n");
+        assert_eq!(
+            read_to_string_with_limit(&path, BLOCKLIST_READ_LIMIT)
+                .expect("read")
+                .as_str(),
+            "203.0.113.0/24\n"
+        );
 
         fs::write(&path, "203.0.113.0/24").expect("write no newline");
         append_blocklist_entry(&path, "198.51.100.0/24", true, false).expect("append2");
         assert_eq!(
-            fs::read_to_string(&path).unwrap(),
+            read_to_string_with_limit(&path, BLOCKLIST_READ_LIMIT)
+                .expect("read")
+                .as_str(),
             "203.0.113.0/24\n198.51.100.0/24\n"
         );
     }
@@ -604,10 +619,19 @@ mod tests {
         let path = temp.path().join("blocklist.txt");
 
         write_blocklist_lines(&path, &[String::from("a"), String::from("b")]).expect("write");
-        assert_eq!(fs::read_to_string(&path).unwrap(), "a\nb\n");
+        assert_eq!(
+            read_to_string_with_limit(&path, BLOCKLIST_READ_LIMIT)
+                .expect("read")
+                .as_str(),
+            "a\nb\n"
+        );
 
         write_blocklist_lines(&path, &[] as &[String]).expect("write empty");
-        assert!(fs::read_to_string(&path).unwrap().is_empty());
+        assert!(
+            read_to_string_with_limit(&path, BLOCKLIST_READ_LIMIT)
+                .expect("read")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -623,7 +647,9 @@ mod tests {
         normalize_local_blocklist(&path).expect("normalize");
 
         assert_eq!(
-            fs::read_to_string(&path).unwrap(),
+            read_to_string_with_limit(&path, BLOCKLIST_READ_LIMIT)
+                .expect("read")
+                .as_str(),
             "# top comment\n\n203.0.113.0/24\n2001:db8::/64\n"
         );
     }
@@ -650,13 +676,20 @@ mod tests {
         let result = apply_unban_plan(&path, &plan).expect("apply_no_change");
         assert_eq!(result.total(), 0);
         assert_eq!(
-            fs::read_to_string(&path).unwrap(),
+            read_to_string_with_limit(&path, BLOCKLIST_READ_LIMIT)
+                .expect("read")
+                .as_str(),
             "203.0.113.0/24\n10.0.0.0/24\n"
         );
 
         plan.remove_partial = true;
         let removal = apply_unban_plan(&path, &plan).expect("apply_remove");
         assert_eq!(removal.removed_partial, 1);
-        assert_eq!(fs::read_to_string(&path).unwrap(), "10.0.0.0/24\n");
+        assert_eq!(
+            read_to_string_with_limit(&path, BLOCKLIST_READ_LIMIT)
+                .expect("read")
+                .as_str(),
+            "10.0.0.0/24\n"
+        );
     }
 }

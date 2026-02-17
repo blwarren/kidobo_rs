@@ -5,9 +5,13 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use thiserror::Error;
 
+use crate::adapters::limited_io::read_to_string_with_limit;
 use crate::adapters::path::ResolvedPaths;
 use crate::core::lookup::LookupSourceEntry;
 use crate::core::network::parse_ip_cidr_non_strict;
+
+const SOURCE_FILE_READ_LIMIT: usize = 16 * 1024 * 1024;
+const REMOTE_META_READ_LIMIT: usize = 256 * 1024;
 
 #[derive(Debug, Error)]
 pub enum LookupSourceLoadError {
@@ -87,9 +91,11 @@ fn read_source_file(
     path: &Path,
     source_label: &str,
 ) -> Result<Vec<LookupSourceEntry>, LookupSourceLoadError> {
-    let contents = fs::read_to_string(path).map_err(|err| LookupSourceLoadError::SourceRead {
-        path: path.to_path_buf(),
-        reason: err.to_string(),
+    let contents = read_to_string_with_limit(path, SOURCE_FILE_READ_LIMIT).map_err(|err| {
+        LookupSourceLoadError::SourceRead {
+            path: path.to_path_buf(),
+            reason: err.to_string(),
+        }
     })?;
 
     let mut entries = Vec::new();
@@ -116,7 +122,7 @@ fn resolve_remote_source_label(iplist_path: &Path) -> String {
         return fallback_remote_source_label(iplist_path);
     };
 
-    let Ok(contents) = fs::read_to_string(meta_path) else {
+    let Ok(contents) = read_to_string_with_limit(&meta_path, REMOTE_META_READ_LIMIT) else {
         return fallback_remote_source_label(iplist_path);
     };
 

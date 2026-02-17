@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, VecDeque};
-use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -17,6 +16,7 @@ use crate::adapters::ipset::{
 use crate::adapters::iptables::{
     ChainAction, FirewallCommandRunner, ensure_firewall_wiring_for_families,
 };
+use crate::adapters::limited_io::read_to_string_with_limit;
 use crate::adapters::lock::acquire_non_blocking;
 use crate::adapters::path::{PathResolutionInput, ResolvedPaths, resolve_paths};
 use crate::cli::blocklist::normalize_local_blocklist;
@@ -26,6 +26,9 @@ use crate::core::sync::compute_effective_blocklists;
 use crate::error::KidoboError;
 
 const MAX_REMOTE_FETCH_WORKERS: usize = 5;
+const BLOCKLIST_READ_LIMIT: usize = 16 * 1024 * 1024;
+#[cfg(test)]
+const RESTORE_SCRIPT_READ_LIMIT: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SyncSummary {
@@ -200,9 +203,11 @@ fn load_internal_blocklist(path: &Path) -> Result<Vec<CanonicalCidr>, KidoboErro
         return Ok(Vec::new());
     }
 
-    let contents = fs::read_to_string(path).map_err(|err| KidoboError::BlocklistRead {
-        path: path.to_path_buf(),
-        reason: err.to_string(),
+    let contents = read_to_string_with_limit(path, BLOCKLIST_READ_LIMIT).map_err(|err| {
+        KidoboError::BlocklistRead {
+            path: path.to_path_buf(),
+            reason: err.to_string(),
+        }
     })?;
 
     Ok(parse_lines_non_strict(contents.lines()))
@@ -282,8 +287,8 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        MAX_REMOTE_FETCH_WORKERS, ensure_within_maxelem, fetch_remote_networks_concurrently,
-        run_sync_with_dependencies,
+        MAX_REMOTE_FETCH_WORKERS, RESTORE_SCRIPT_READ_LIMIT, ensure_within_maxelem,
+        fetch_remote_networks_concurrently, read_to_string_with_limit, run_sync_with_dependencies,
     };
     use crate::adapters::command_runner::{CommandResult, CommandRunnerError};
     use crate::adapters::http_cache::{HttpClient, HttpClientError, HttpRequest, HttpResponse};
@@ -448,7 +453,9 @@ mod tests {
             }
 
             if command == "ipset" && args.first() == Some(&"restore") && args.len() == 3 {
-                let script = fs::read_to_string(args[2]).expect("restore script readable");
+                let script =
+                    read_to_string_with_limit(Path::new(args[2]), RESTORE_SCRIPT_READ_LIMIT)
+                        .expect("restore script readable");
                 self.restore_scripts
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())

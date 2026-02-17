@@ -1,8 +1,10 @@
-use std::fs;
 use std::path::Path;
 
+use crate::adapters::limited_io::read_to_string_with_limit;
 use crate::core::config::Config;
 use crate::error::KidoboError;
+
+const CONFIG_READ_LIMIT: usize = 64 * 1024;
 
 pub fn load_config_from_file(path: &Path) -> Result<Config, KidoboError> {
     if !path.exists() {
@@ -11,9 +13,11 @@ pub fn load_config_from_file(path: &Path) -> Result<Config, KidoboError> {
         });
     }
 
-    let contents = fs::read_to_string(path).map_err(|err| KidoboError::ConfigRead {
-        path: path.to_path_buf(),
-        reason: err.to_string(),
+    let contents = read_to_string_with_limit(path, CONFIG_READ_LIMIT).map_err(|err| {
+        KidoboError::ConfigRead {
+            path: path.to_path_buf(),
+            reason: err.to_string(),
+        }
     })?;
 
     Config::from_toml_str(&contents).map_err(KidoboError::from)

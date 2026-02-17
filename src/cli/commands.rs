@@ -1,7 +1,7 @@
-use std::fs;
 use std::path::PathBuf;
 
 use crate::adapters::config::load_config_from_file;
+use crate::adapters::limited_io::read_to_string_with_limit;
 use crate::adapters::lookup_sources::load_lookup_sources;
 use crate::adapters::path::{PathResolutionInput, resolve_paths};
 use crate::cli::args::Command;
@@ -12,6 +12,8 @@ use crate::cli::init::run_init_command;
 use crate::cli::sync::run_sync_command;
 use crate::core::lookup::run_lookup;
 use crate::error::KidoboError;
+
+const LOOKUP_TARGET_READ_LIMIT: usize = 2 * 1024 * 1024;
 
 pub fn dispatch(command: Command) -> Result<(), KidoboError> {
     match command {
@@ -69,9 +71,11 @@ fn collect_lookup_targets(
 }
 
 fn read_target_lines(path: &std::path::Path) -> Result<Vec<String>, KidoboError> {
-    let contents = fs::read_to_string(path).map_err(|err| KidoboError::LookupTargetFileRead {
-        path: path.to_path_buf(),
-        reason: err.to_string(),
+    let contents = read_to_string_with_limit(path, LOOKUP_TARGET_READ_LIMIT).map_err(|err| {
+        KidoboError::LookupTargetFileRead {
+            path: path.to_path_buf(),
+            reason: err.to_string(),
+        }
     })?;
 
     Ok(contents.lines().map(ToString::to_string).collect())

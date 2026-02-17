@@ -13,6 +13,7 @@ use thiserror::Error;
 use crate::adapters::http_fetch::{
     ConditionalFetchOutcome, ConditionalFetchResult, fetch_with_conditional_cache,
 };
+use crate::adapters::limited_io::read_to_string_with_limit;
 use crate::core::network::{CanonicalCidr, parse_ip_cidr_non_strict, parse_lines_non_strict};
 
 pub const DEFAULT_MAX_HTTP_BODY_BYTES: usize = 32 * 1024 * 1024;
@@ -20,6 +21,8 @@ pub const ENV_KIDOBO_MAX_HTTP_BODY_BYTES: &str = "KIDOBO_MAX_HTTP_BODY_BYTES";
 pub const DEFAULT_HTTP_REQUEST_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_HTTP_REQUEST_TIMEOUT: Duration =
     Duration::from_secs(DEFAULT_HTTP_REQUEST_TIMEOUT_SECS);
+const MAX_IPLIST_READ_BYTES: usize = 16 * 1024 * 1024;
+const MAX_METADATA_READ_BYTES: usize = 512 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CachePaths {
@@ -420,9 +423,11 @@ fn read_optional_iplist(paths: &CachePaths) -> Result<Option<String>, HttpCacheE
     }
 
     let iplist =
-        fs::read_to_string(&paths.iplist_path).map_err(|err| HttpCacheError::ReadIplist {
-            path: paths.iplist_path.clone(),
-            reason: err.to_string(),
+        read_to_string_with_limit(&paths.iplist_path, MAX_IPLIST_READ_BYTES).map_err(|err| {
+            HttpCacheError::ReadIplist {
+                path: paths.iplist_path.clone(),
+                reason: err.to_string(),
+            }
         })?;
 
     Ok(Some(iplist))
@@ -436,9 +441,11 @@ fn read_optional_metadata(
     }
 
     let contents =
-        fs::read_to_string(&paths.meta_path).map_err(|err| HttpCacheError::ReadMetadata {
-            path: paths.meta_path.clone(),
-            reason: err.to_string(),
+        read_to_string_with_limit(&paths.meta_path, MAX_METADATA_READ_BYTES).map_err(|err| {
+            HttpCacheError::ReadMetadata {
+                path: paths.meta_path.clone(),
+                reason: err.to_string(),
+            }
         })?;
 
     let metadata =

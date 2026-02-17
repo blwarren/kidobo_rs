@@ -14,6 +14,8 @@ use crate::adapters::command_runner::{
 };
 
 const IPSET_NAME_MAX_LEN: usize = 31;
+#[cfg(test)]
+const RESTORE_SCRIPT_READ_LIMIT: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IpsetFamily {
@@ -334,10 +336,11 @@ mod tests {
     use std::fs;
 
     use super::{
-        IpsetCommandRunner, IpsetError, IpsetFamily, IpsetSetSpec, atomic_replace_ipset,
-        build_restore_script, generate_temp_set_name, ipset_exists,
+        IpsetCommandRunner, IpsetError, IpsetFamily, IpsetSetSpec, RESTORE_SCRIPT_READ_LIMIT,
+        atomic_replace_ipset, build_restore_script, generate_temp_set_name, ipset_exists,
     };
     use crate::adapters::command_runner::{CommandResult, CommandRunnerError};
+    use crate::adapters::limited_io::read_to_string_with_limit;
 
     struct MockRunner {
         responses: RefCell<VecDeque<Result<CommandResult, CommandRunnerError>>>,
@@ -371,7 +374,11 @@ mod tests {
             ));
 
             if command == "ipset" && args.first() == Some(&"restore") && args.len() == 3 {
-                let script = fs::read_to_string(args[2]).expect("restore script readable");
+                let script = read_to_string_with_limit(
+                    std::path::Path::new(args[2]),
+                    RESTORE_SCRIPT_READ_LIMIT,
+                )
+                .expect("restore script readable");
                 self.restore_scripts.borrow_mut().push(script);
             }
 

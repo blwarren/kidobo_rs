@@ -12,12 +12,19 @@ use crate::adapters::http_cache::{HttpClient, HttpResponse, max_http_body_bytes}
 use crate::adapters::http_fetch::{
     ConditionalFetchOutcome, ConditionalFetchResult, fetch_with_conditional_cache,
 };
+use crate::adapters::limited_io::read_bytes_with_limit;
 use crate::core::config::{DEFAULT_GITHUB_META_CATEGORIES, GithubMetaCategoryMode};
 use crate::core::network::{CanonicalCidr, parse_ip_cidr_non_strict};
 
 const GITHUB_META_RAW_CACHE_FILE: &str = "github-meta.raw.json";
 const GITHUB_META_META_CACHE_FILE: &str = "github-meta.meta.json";
 const GITHUB_META_CATEGORY_CACHE_FILE: &str = "github-meta.categories.json";
+
+const GITHUB_META_CACHE_READ_LIMIT: usize = 8 * 1024 * 1024;
+#[cfg(test)]
+const GITHUB_META_META_READ_LIMIT: usize = 512 * 1024;
+#[cfg(test)]
+const GITHUB_META_CATEGORY_READ_LIMIT: usize = 256 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GithubMetaCacheMetadata {
@@ -398,7 +405,7 @@ fn read_optional_bytes(path: &Path) -> Option<Vec<u8>> {
         return None;
     }
 
-    match fs::read(path) {
+    match read_bytes_with_limit(path, GITHUB_META_CACHE_READ_LIMIT) {
         Ok(contents) => Some(contents),
         Err(err) => {
             warn!(
@@ -506,11 +513,13 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        GITHUB_META_CATEGORY_CACHE_FILE, GITHUB_META_META_CACHE_FILE, GITHUB_META_RAW_CACHE_FILE,
+        GITHUB_META_CATEGORY_CACHE_FILE, GITHUB_META_CATEGORY_READ_LIMIT,
+        GITHUB_META_META_CACHE_FILE, GITHUB_META_META_READ_LIMIT, GITHUB_META_RAW_CACHE_FILE,
         GithubMetaCacheMetadata, GithubMetaCategorySidecar, GithubMetaLoadResult, GithubMetaSource,
         load_github_meta_safelist,
     };
     use crate::adapters::http_cache::{HttpClient, HttpClientError, HttpRequest, HttpResponse};
+    use crate::adapters::limited_io::read_bytes_with_limit;
     use crate::core::config::GithubMetaCategoryMode;
     use crate::core::network::{CanonicalCidr, Ipv4Cidr, Ipv6Cidr};
 
@@ -684,13 +693,21 @@ mod tests {
         .expect("load");
 
         let metadata: GithubMetaCacheMetadata = serde_json::from_slice(
-            &fs::read(temp.path().join(GITHUB_META_META_CACHE_FILE)).expect("read metadata"),
+            &read_bytes_with_limit(
+                &temp.path().join(GITHUB_META_META_CACHE_FILE),
+                GITHUB_META_META_READ_LIMIT,
+            )
+            .expect("read metadata"),
         )
         .expect("metadata json");
         assert_eq!(metadata.url, TEST_GITHUB_META_URL);
 
         let sidecar: GithubMetaCategorySidecar = serde_json::from_slice(
-            &fs::read(temp.path().join(GITHUB_META_CATEGORY_CACHE_FILE)).expect("read sidecar"),
+            &read_bytes_with_limit(
+                &temp.path().join(GITHUB_META_CATEGORY_CACHE_FILE),
+                GITHUB_META_CATEGORY_READ_LIMIT,
+            )
+            .expect("read sidecar"),
         )
         .expect("sidecar json");
         assert_eq!(sidecar.mode, "selected");
