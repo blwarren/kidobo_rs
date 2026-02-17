@@ -8,7 +8,6 @@ The format is based on Keep a Changelog, with one section per release.
 
 ## [0.2.1] - 2026-02-17
 
-
 ### Changed
 
 - `kidobo lookup` now labels remote matches with the original source URL from
@@ -35,7 +34,6 @@ The format is based on Keep a Changelog, with one section per release.
   of hard-failing the source load.
 - `kidobo` now exits with code `130` when `SIGINT` is received during command
   execution (after the current command step returns), not only before dispatch.
-
 
 ## [0.2.0] - 2026-02-16
 
