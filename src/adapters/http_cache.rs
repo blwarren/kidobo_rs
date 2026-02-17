@@ -504,8 +504,23 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex_lower(&digest)
 }
 
+fn lower_hex_nibble(value: u8) -> char {
+    match value {
+        0..=9 => char::from(b'0' + value),
+        10..=15 => char::from(b'a' + (value - 10)),
+        _ => '0',
+    }
+}
+
 fn hex_lower(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    let mut output = String::with_capacity(bytes.len() * 2);
+
+    for byte in bytes {
+        output.push(lower_hex_nibble(byte >> 4));
+        output.push(lower_hex_nibble(byte & 0x0f));
+    }
+
+    output
 }
 
 fn header_to_string(

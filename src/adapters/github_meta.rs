@@ -499,9 +499,24 @@ where
     unique.into_iter().collect()
 }
 
+fn lower_hex_nibble(value: u8) -> char {
+    match value {
+        0..=9 => char::from(b'0' + value),
+        10..=15 => char::from(b'a' + (value - 10)),
+        _ => '0',
+    }
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
-    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+    let mut output = String::with_capacity(digest.len() * 2);
+
+    for byte in digest {
+        output.push(lower_hex_nibble(byte >> 4));
+        output.push(lower_hex_nibble(byte & 0x0f));
+    }
+
+    output
 }
 
 #[cfg(test)]
