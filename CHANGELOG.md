@@ -1,19 +1,21 @@
 # Changelog
 
-All notable changes to this project should be documented in this file.
-
-The format is based on Keep a Changelog, with one section per release.
-
 ## [Unreleased]
+
+## [0.3.0] - 2026-02-17
+
+
+### Added
+
+- Added configurable firewall chain action via `ipset.chain_action` with
+  allowed values `DROP` (default) and `REJECT` for kidobo chain rules.
 
 ### Fixed
 
 - Path resolution no longer hard-fails when the process current directory is
   unavailable unless repo config fallback is explicitly enabled. This allows
-  `kidobo init` and other default-path flows to run deterministically from
-  stale/deleted working directories.
-- Added configurable firewall chain action via `ipset.chain_action` with
-  allowed values `DROP` (default) and `REJECT` for kidobo chain rules.
+  `kidobo init` and other default-path flows to run deterministically.
+
 
 ## [0.2.1] - 2026-02-17
 
