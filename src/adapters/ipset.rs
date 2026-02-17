@@ -156,7 +156,7 @@ pub fn build_restore_script(
     sorted_entries.dedup();
 
     let mut script = String::new();
-    std::fmt::Write::write_fmt(
+    let _ = std::fmt::Write::write_fmt(
         &mut script,
         format_args!(
             "create {} {} family {} hashsize {} maxelem {} timeout {}\n",
@@ -167,22 +167,16 @@ pub fn build_restore_script(
             spec.maxelem,
             spec.timeout
         ),
-    )
-    .expect("restore script formatting");
+    );
 
     for entry in sorted_entries {
-        std::fmt::Write::write_fmt(
-            &mut script,
-            format_args!("add {temp_set_name} {entry}\n"),
-        )
-        .expect("restore script formatting");
+        let _ = std::fmt::Write::write_fmt(&mut script, format_args!("add {temp_set_name} {entry}\n"));
     }
 
-    std::fmt::Write::write_fmt(
+    let _ = std::fmt::Write::write_fmt(
         &mut script,
         format_args!("swap {temp_set_name} {}\n", spec.set_name),
-    )
-    .expect("restore script formatting");
+    );
     script
 }
 
@@ -326,8 +320,7 @@ fn random_hex_suffix(length: usize) -> String {
 
     let mut hex = String::with_capacity(digest.len() * 2);
     for byte in digest {
-        std::fmt::Write::write_fmt(&mut hex, format_args!("{byte:02x}"))
-            .expect("hex formatting");
+        let _ = std::fmt::Write::write_fmt(&mut hex, format_args!("{byte:02x}"));
     }
 
     hex[..length.min(hex.len())].to_string()

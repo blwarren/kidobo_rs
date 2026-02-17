@@ -128,7 +128,9 @@ pub(crate) fn run_sync_with_dependencies(
     ensure_within_maxelem(&ipv4_spec, ipv4_entries.len())?;
     atomic_replace_ipset(ipset_runner, &ipv4_spec, &ipv4_entries)?;
 
-    info!("sync source counts: internal={internal_count} remote={remote_count} safelist={safelist_count}");
+    info!(
+        "sync source counts: internal={internal_count} remote={remote_count} safelist={safelist_count}"
+    );
     info!(
         "sync final ipset counts: ipv4={pv4} ipv6={pv6}",
         pv4 = ipv4_entries.len(),

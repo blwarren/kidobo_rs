@@ -361,12 +361,12 @@ fn intervals_to_ipv4_cidrs_from_merged(intervals: &[IntervalU32]) -> Vec<Ipv4Cid
                 break;
             }
 
-            let size = 1_u64 << (32_u32 - u32::from(prefix));
-            let next = u64::from(start) + size;
-            if next > u64::from(u32::MAX) {
+            let host_bits = 32_u32 - u32::from(prefix);
+            let increment = 1_u32 << host_bits;
+            if start > u32::MAX - increment {
                 break;
             }
-            start = u32::try_from(next).expect("next within ipv4 range");
+            start += increment;
         }
     }
 
@@ -584,7 +584,7 @@ fn is_aligned_u32(start: u32, prefix: u8) -> bool {
     }
 
     let host_bits = 32_u32 - u32::from(prefix);
-    let host_mask = ((1_u64 << host_bits) - 1) as u32;
+    let host_mask = (1_u32 << host_bits) - 1;
     (start & host_mask) == 0
 }
 
@@ -603,7 +603,8 @@ fn block_end_u32(start: u32, prefix: u8) -> u32 {
         u32::MAX
     } else {
         let host_bits = 32_u32 - u32::from(prefix);
-        start.saturating_add(((1_u64 << host_bits) - 1) as u32)
+        let increment = (1_u32 << host_bits) - 1;
+        start.saturating_add(increment)
     }
 }
 

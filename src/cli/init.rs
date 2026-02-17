@@ -1,6 +1,6 @@
 use std::env;
-use std::fs;
 use std::fmt::Write;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::adapters::command_runner::{
@@ -225,21 +225,19 @@ Type=oneshot\n",
 
     if let Some(root) = kido_root_override {
         let root_value = root.to_string_lossy();
-        writeln!(
+        let _ = writeln!(
             &mut output,
             "Environment=\"KIDOBO_ROOT={}\"",
             escape_systemd_value(root_value.as_ref())
-        )
-        .expect("systemd template formatting");
+        );
     }
 
     let executable = executable_path.to_string_lossy();
-    writeln!(
+    let _ = writeln!(
         &mut output,
         "ExecStart=\"{}\" sync",
         escape_systemd_value(executable.as_ref())
-    )
-    .expect("systemd template formatting");
+    );
 
     output
 }
@@ -265,18 +263,17 @@ fn print_init_summary(summary: &InitSummary) {
 
 fn render_init_summary(summary: &InitSummary) -> String {
     let mut output = String::new();
-    writeln!(
+    let _ = writeln!(
         &mut output,
         "init completed: created={} unchanged={}",
         summary.created.len(),
         summary.unchanged.len()
-    )
-    .expect("summary formatting");
+    );
     for path in &summary.created {
-        writeln!(&mut output, "created: {}", path.display()).expect("summary formatting");
+        let _ = writeln!(&mut output, "created: {}", path.display());
     }
     for path in &summary.unchanged {
-        writeln!(&mut output, "unchanged: {}", path.display()).expect("summary formatting");
+        let _ = writeln!(&mut output, "unchanged: {}", path.display());
     }
     output
 }

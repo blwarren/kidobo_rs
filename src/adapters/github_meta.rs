@@ -574,7 +574,7 @@ mod tests {
             &client,
             temp.path(),
             TEST_GITHUB_META_URL,
-            GithubMetaCategoryMode::Default,
+            &GithubMetaCategoryMode::Default,
             &BTreeMap::new(),
         )
         .expect("load");
@@ -618,7 +618,7 @@ mod tests {
             &client,
             temp.path(),
             TEST_GITHUB_META_URL,
-            GithubMetaCategoryMode::Explicit(vec!["hooks".to_string()]),
+            &GithubMetaCategoryMode::Explicit(vec!["hooks".to_string()]),
             &BTreeMap::new(),
         )
         .expect("load");
@@ -648,7 +648,7 @@ mod tests {
             &client,
             temp.path(),
             TEST_GITHUB_META_URL,
-            GithubMetaCategoryMode::All,
+            &GithubMetaCategoryMode::All,
             &BTreeMap::new(),
         )
         .expect("load");
@@ -678,7 +678,7 @@ mod tests {
             &client,
             temp.path(),
             TEST_GITHUB_META_URL,
-            GithubMetaCategoryMode::Explicit(vec!["hooks".to_string()]),
+            &GithubMetaCategoryMode::Explicit(vec!["hooks".to_string()]),
             &BTreeMap::new(),
         )
         .expect("load");
@@ -730,7 +730,7 @@ mod tests {
             &client,
             temp.path(),
             TEST_GITHUB_META_URL,
-            GithubMetaCategoryMode::Default,
+            &GithubMetaCategoryMode::Default,
             &BTreeMap::new(),
         )
         .expect("load");
@@ -756,7 +756,7 @@ mod tests {
             &client,
             temp.path(),
             TEST_GITHUB_META_URL,
-            GithubMetaCategoryMode::Default,
+            &GithubMetaCategoryMode::Default,
             &BTreeMap::new(),
         )
         .expect("load");
@@ -813,7 +813,7 @@ mod tests {
             &client,
             temp.path(),
             TEST_GITHUB_META_URL,
-            GithubMetaCategoryMode::Default,
+            &GithubMetaCategoryMode::Default,
             &BTreeMap::new(),
         )
         .expect("load");
@@ -845,7 +845,7 @@ mod tests {
             &client,
             temp.path(),
             TEST_GITHUB_META_URL,
-            GithubMetaCategoryMode::Default,
+            &GithubMetaCategoryMode::Default,
             &BTreeMap::new(),
         )
         .expect("load");

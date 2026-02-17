@@ -58,9 +58,7 @@ pub(crate) fn run_flush_with_runner(
 fn cleanup_firewall_family(runner: &dyn FirewallCommandRunner, family: FirewallFamily) {
     if let Err(err) = remove_all_input_jumps_for_chain(runner, family, KIDOBO_CHAIN_NAME) {
         let binary = firewall_binary(family);
-        warn!(
-            "best-effort flush command failed: {binary} -D INPUT -j {KIDOBO_CHAIN_NAME} ({err})"
-        );
+        warn!("best-effort flush command failed: {binary} -D INPUT -j {KIDOBO_CHAIN_NAME} ({err})");
     }
 
     let binary = firewall_binary(family);
@@ -101,9 +99,11 @@ fn best_effort_ipset_destroy(runner: &dyn IpsetCommandRunner, set_name: &str) {
             "best-effort flush command failed: ipset destroy {} (status={:?} stderr={})",
             set_name, result.status, result.stderr
         ),
-        Err(err) => warn!(
-            "best-effort flush command execution failed: ipset destroy {set_name} ({err})"
-        ),
+        Err(err) => {
+            warn!(
+                "best-effort flush command execution failed: ipset destroy {set_name} ({err})"
+            );
+        }
     }
 }
 
