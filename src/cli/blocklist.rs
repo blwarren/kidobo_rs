@@ -356,10 +356,23 @@ impl UnbanResult {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::PathBuf;
 
     use tempfile::TempDir;
 
-    use super::{BanOutcome, apply_unban_plan, ban_target_in_file, build_unban_plan};
+    use crate::core::network::parse_ip_cidr_non_strict;
+
+    use super::{
+        BanOutcome, BlocklistFile, KidoboError, append_blocklist_entry, apply_unban_plan,
+        ban_target_in_file, build_unban_plan, canonical_contains, ensure_blocklist_parent,
+        parse_blocklist_target, write_blocklist_lines,
+    };
+
+    fn write_temp_file(temp: &TempDir, contents: &str) -> PathBuf {
+        let path = temp.path().join("blocklist.txt");
+        fs::write(&path, contents).expect("write temp");
+        path
+    }
 
     #[test]
     fn ban_appends_entry_when_missing() {
@@ -416,5 +429,102 @@ mod tests {
         assert_eq!(result.removed_partial, 1);
         let contents = fs::read_to_string(&path).expect("read");
         assert!(contents.is_empty());
+    }
+
+    #[test]
+    fn canonical_contains_detects_ipv4_and_ipv6_crop() {
+        let supernet_v4 = parse_ip_cidr_non_strict("203.0.113.0/24").expect("parse");
+        let host_v4 = parse_ip_cidr_non_strict("203.0.113.7").expect("parse");
+        assert!(canonical_contains(&supernet_v4, &host_v4));
+
+        let supernet_v6 = parse_ip_cidr_non_strict("2001:db8::/64").expect("parse");
+        let host_v6 = parse_ip_cidr_non_strict("2001:db8::1").expect("parse");
+        assert!(canonical_contains(&supernet_v6, &host_v6));
+
+        let mismatch = parse_ip_cidr_non_strict("203.0.113.7").expect("parse");
+        let mismatch_v6 = parse_ip_cidr_non_strict("2001:db8::1").expect("parse");
+        assert!(!canonical_contains(&mismatch, &mismatch_v6));
+    }
+
+    #[test]
+    fn parse_blocklist_target_errors_on_invalid_input() {
+        let err = parse_blocklist_target("not-an-ip").expect_err("expected error");
+        if let KidoboError::BlocklistTargetParse { input } = err {
+            assert_eq!(input, "not-an-ip");
+        } else {
+            panic!("unexpected error variant");
+        }
+    }
+
+    #[test]
+    fn blocklist_file_loads_metadata_and_contains_entries() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = write_temp_file(&temp, "203.0.113.0/24\n\n# comment\n2001:db8::/64\n");
+        let blocklist = BlocklistFile::load(&path).expect("load");
+
+        assert_eq!(blocklist.lines.len(), 4);
+        assert!(blocklist.contains("2001:db8::/64"));
+        assert!(blocklist.has_content);
+        assert!(blocklist.trailing_newline);
+    }
+
+    #[test]
+    fn append_blocklist_entry_handles_newline_states() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("blocklist.txt");
+
+        append_blocklist_entry(&path, "203.0.113.0/24", false, false).expect("append");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "203.0.113.0/24\n");
+
+        fs::write(&path, "203.0.113.0/24").expect("write no newline");
+        append_blocklist_entry(&path, "198.51.100.0/24", true, false).expect("append2");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "203.0.113.0/24\n198.51.100.0/24\n"
+        );
+    }
+
+    #[test]
+    fn write_blocklist_lines_creates_newline_and_can_clear() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("blocklist.txt");
+
+        write_blocklist_lines(&path, &[String::from("a"), String::from("b")]).expect("write");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "a\nb\n");
+
+        write_blocklist_lines(&path, &[] as &[String]).expect("write empty");
+        assert!(fs::read_to_string(&path).unwrap().is_empty());
+    }
+
+    #[test]
+    fn ensure_blocklist_parent_creates_directories_recursively() {
+        let temp = TempDir::new().expect("tempdir");
+        let nested = temp.path().join("nested/deeper/blocklist.txt");
+        ensure_blocklist_parent(&nested).expect("ensure");
+        assert!(nested.parent().unwrap().exists());
+    }
+
+    #[test]
+    fn build_plan_with_partial_matches_respects_remove_partial_flag() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("blocklist.txt");
+        fs::write(&path, "203.0.113.0/24\n10.0.0.0/24\n").expect("write");
+
+        let mut plan = build_unban_plan(&path, "203.0.113.7").expect("plan");
+        assert!(plan.exact_indexes.is_empty());
+        assert_eq!(plan.partial_matches.len(), 1);
+        assert_eq!(plan.total_removal(), 0);
+
+        let result = apply_unban_plan(&path, &plan).expect("apply_no_change");
+        assert_eq!(result.total(), 0);
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "203.0.113.0/24\n10.0.0.0/24\n"
+        );
+
+        plan.remove_partial = true;
+        let removal = apply_unban_plan(&path, &plan).expect("apply_remove");
+        assert_eq!(removal.removed_partial, 1);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "10.0.0.0/24\n");
     }
 }
