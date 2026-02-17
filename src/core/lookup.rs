@@ -208,12 +208,9 @@ pub fn run_lookup(targets: &[String], sources: &[LookupSourceEntry]) -> LookupRe
     let v6_index = IntervalIndexV6::from_sources(sources);
 
     for target in targets {
-        let parsed = match parse_target_strict(target) {
-            Ok(parsed) => parsed,
-            Err(_) => {
-                report.invalid_targets.push(target.clone());
-                continue;
-            }
+        let Ok(parsed) = parse_target_strict(target) else {
+            report.invalid_targets.push(target.clone());
+            continue;
         };
 
         match parsed {

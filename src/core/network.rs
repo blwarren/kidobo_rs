@@ -249,9 +249,8 @@ pub fn merge_intervals_u32(intervals: &[IntervalU32]) -> Vec<IntervalU32> {
 
     let mut merged = Vec::with_capacity(sorted.len());
     let mut iter = sorted.into_iter();
-    let mut current = match iter.next() {
-        Some(first) => first,
-        None => return Vec::new(),
+    let Some(mut current) = iter.next() else {
+        return Vec::new();
     };
 
     for interval in iter {
@@ -277,9 +276,8 @@ pub fn merge_intervals_u128(intervals: &[IntervalU128]) -> Vec<IntervalU128> {
 
     let mut merged = Vec::with_capacity(sorted.len());
     let mut iter = sorted.into_iter();
-    let mut current = match iter.next() {
-        Some(first) => first,
-        None => return Vec::new(),
+    let Some(mut current) = iter.next() else {
+        return Vec::new();
     };
 
     for interval in iter {

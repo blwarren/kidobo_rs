@@ -247,9 +247,8 @@ fn parse_remote_cidrs(raw: &[u8]) -> Vec<CanonicalCidr> {
             continue;
         }
 
-        let token = match without_bom.split_whitespace().next() {
-            Some(token) => token,
-            None => continue,
+        let Some(token) = without_bom.split_whitespace().next() else {
+            continue;
         };
 
         if let Some(cidr) = parse_ip_cidr_non_strict(token) {

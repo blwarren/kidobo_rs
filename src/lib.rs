@@ -3,7 +3,6 @@
 #![deny(clippy::all)]
 #![warn(clippy::pedantic)]
 #![allow(
-    clippy::manual_let_else,
     clippy::match_same_arms,
     clippy::must_use_candidate,
     clippy::needless_raw_string_hashes,
