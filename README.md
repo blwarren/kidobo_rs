@@ -119,7 +119,18 @@ Example:
 echo "203.0.113.0/24" | sudo tee -a /var/lib/kidobo/blocklist.txt
 ```
 
-### 4. Check the environment
+### 4. Manage blocklist entries from the CLI
+
+```bash
+sudo kidobo ban 203.0.113.7
+sudo kidobo unban 203.0.113.0/24
+```
+
+`kidobo ban` normalizes the input, avoids duplicates, and appends the canonical IP/CIDR to the local blocklist file, creating missing directories if necessary.
+
+`kidobo unban` removes matching entries; if the argument is part of a larger CIDR, the command lists the partial matches and prompts for confirmation before deleting them. Use `--yes` to auto-approve removal of those partial matches in automation scripts. Every ban/unban change still requires `sudo kidobo sync` to push updates into the firewall state.
+
+### 5. Check the environment
 
 ```bash
 sudo kidobo doctor
@@ -127,27 +138,27 @@ sudo kidobo doctor
 
 `doctor` prints a JSON report and exits non-zero if required checks fail.
 
-### 5. Apply blocklists
+### 6. Apply blocklists
 
 ```bash
 sudo kidobo sync
 ```
 
-### 6. Enable periodic sync manually (optional)
+### 7. Enable periodic sync manually (optional)
 
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now kidobo-sync.timer
 ```
 
-### 7. Check whether an IP would match
+### 8. Check whether an IP would match
 
 ```bash
 kidobo lookup 203.0.113.7
 kidobo lookup --file targets.txt
 ```
 
-### 8. Remove Kidobo firewall/ipset artifacts (optional)
+### 9. Remove Kidobo firewall/ipset artifacts (optional)
 
 ```bash
 sudo kidobo flush

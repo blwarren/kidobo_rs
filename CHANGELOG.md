@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added interactive `kidobo ban` / `kidobo unban` commands to manage the local
+  blocklist file (with `--yes` to auto-remove partial matches) so operators
+  can modify the list without editing files manually.
+
 ## [0.3.0] - 2026-02-17
 
 

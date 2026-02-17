@@ -5,6 +5,7 @@ use crate::adapters::config::load_config_from_file;
 use crate::adapters::lookup_sources::load_lookup_sources;
 use crate::adapters::path::{PathResolutionInput, resolve_paths};
 use crate::cli::args::Command;
+use crate::cli::blocklist::{run_ban_command, run_unban_command};
 use crate::cli::doctor::run_doctor_command;
 use crate::cli::flush::run_flush_command;
 use crate::cli::init::run_init_command;
@@ -19,6 +20,8 @@ pub fn dispatch(command: Command) -> Result<(), KidoboError> {
         Command::Sync => run_sync_command(),
         Command::Flush { cache_only } => run_flush_command(cache_only),
         Command::Lookup { ip, file } => run_lookup_command(ip, file),
+        Command::Ban { target } => run_ban_command(target),
+        Command::Unban { target, yes } => run_unban_command(target, yes),
     }
 }
 

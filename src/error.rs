@@ -49,6 +49,15 @@ pub enum KidoboError {
     #[error("failed to read blocklist file {path}: {reason}")]
     BlocklistRead { path: PathBuf, reason: String },
 
+    #[error("failed to write blocklist file {path}: {reason}")]
+    BlocklistWrite { path: PathBuf, reason: String },
+
+    #[error("failed to parse blocklist target {input}")]
+    BlocklistTargetParse { input: String },
+
+    #[error("blocklist prompt failed: {reason}")]
+    BlocklistPrompt { reason: String },
+
     #[error("failed to clear remote cache at {path}: {reason}")]
     FlushCacheIo { path: PathBuf, reason: String },
 

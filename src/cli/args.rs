@@ -47,6 +47,17 @@ pub enum Command {
         #[arg(long = "cache-only")]
         cache_only: bool,
     },
+    Ban {
+        #[arg(value_name = "ip|cidr")]
+        target: String,
+    },
+    Unban {
+        #[arg(value_name = "ip|cidr")]
+        target: String,
+
+        #[arg(long)]
+        yes: bool,
+    },
     Lookup {
         #[arg(
             value_name = "ip",
@@ -85,6 +96,28 @@ mod tests {
         let cli = Cli::try_parse_from(["kidobo", "flush", "--cache-only"]).expect("flush parse");
         match cli.command {
             Command::Flush { cache_only } => assert!(cache_only),
+            _ => panic!("unexpected command variant"),
+        }
+    }
+
+    #[test]
+    fn ban_command_parses_target() {
+        let cli = Cli::try_parse_from(["kidobo", "ban", "203.0.113.7"]).expect("ban parse");
+        match cli.command {
+            Command::Ban { target } => assert_eq!(target, "203.0.113.7"),
+            _ => panic!("unexpected command variant"),
+        }
+    }
+
+    #[test]
+    fn unban_command_parses_yes_flag() {
+        let cli = Cli::try_parse_from(["kidobo", "unban", "203.0.113.0/24", "--yes"])
+            .expect("unban parse");
+        match cli.command {
+            Command::Unban { target, yes } => {
+                assert_eq!(target, "203.0.113.0/24");
+                assert!(yes);
+            }
             _ => panic!("unexpected command variant"),
         }
     }

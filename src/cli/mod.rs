@@ -1,4 +1,5 @@
 mod args;
+mod blocklist;
 mod commands;
 mod doctor;
 mod flush;

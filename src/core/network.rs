@@ -17,6 +17,15 @@ impl CanonicalCidr {
     }
 }
 
+impl std::fmt::Display for CanonicalCidr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CanonicalCidr::V4(cidr) => write!(f, "{cidr}"),
+            CanonicalCidr::V6(cidr) => write!(f, "{cidr}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Ipv4Cidr {
     network: u32,
