@@ -101,7 +101,7 @@ pub(crate) fn run_sync_with_dependencies(
             http_client,
             &paths.remote_cache_dir,
             &config.safe.github_meta_url,
-            config.safe.github_meta_category_mode(),
+            &config.safe.github_meta_category_mode(),
             env,
         ) {
             Ok(github) => safelist.extend(github.networks),
@@ -128,14 +128,11 @@ pub(crate) fn run_sync_with_dependencies(
     ensure_within_maxelem(&ipv4_spec, ipv4_entries.len())?;
     atomic_replace_ipset(ipset_runner, &ipv4_spec, &ipv4_entries)?;
 
+    info!("sync source counts: internal={internal_count} remote={remote_count} safelist={safelist_count}");
     info!(
-        "sync source counts: internal={} remote={} safelist={}",
-        internal_count, remote_count, safelist_count
-    );
-    info!(
-        "sync final ipset counts: ipv4={} ipv6={}",
-        ipv4_entries.len(),
-        ipv6_entries.len()
+        "sync final ipset counts: ipv4={pv4} ipv6={pv6}",
+        pv4 = ipv4_entries.len(),
+        pv6 = ipv6_entries.len()
     );
 
     Ok(SyncSummary {

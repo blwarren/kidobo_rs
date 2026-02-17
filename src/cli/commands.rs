@@ -20,8 +20,8 @@ pub fn dispatch(command: Command) -> Result<(), KidoboError> {
         Command::Sync => run_sync_command(),
         Command::Flush { cache_only } => run_flush_command(cache_only),
         Command::Lookup { ip, file } => run_lookup_command(ip, file),
-        Command::Ban { target } => run_ban_command(target),
-        Command::Unban { target, yes } => run_unban_command(target, yes),
+        Command::Ban { target } => run_ban_command(&target),
+        Command::Unban { target, yes } => run_unban_command(&target, yes),
     }
 }
 

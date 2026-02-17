@@ -5,16 +5,16 @@ use std::path::Path;
 
 use crate::adapters::path::{PathResolutionInput, resolve_paths};
 use crate::core::network::{
-    CanonicalCidr, collapse_ipv4, collapse_ipv6, ipv4_to_interval, ipv6_to_interval,
-    parse_ip_cidr_non_strict, split_by_family,
+    CanonicalCidr, IntervalU32, IntervalU128, collapse_ipv4, collapse_ipv6, ipv4_to_interval,
+    ipv6_to_interval, parse_ip_cidr_non_strict, split_by_family,
 };
 use crate::error::KidoboError;
 
 #[allow(clippy::print_stdout, clippy::print_stderr)]
-pub fn run_ban_command(target: String) -> Result<(), KidoboError> {
+pub fn run_ban_command(target: &str) -> Result<(), KidoboError> {
     let path_input = PathResolutionInput::from_process(None);
     let paths = resolve_paths(&path_input)?;
-    let outcome = ban_target_in_file(&paths.blocklist_file, &target)?;
+    let outcome = ban_target_in_file(&paths.blocklist_file, target)?;
 
     match outcome {
         BanOutcome::Added(value) => println!("added blocklist entry {value}"),
@@ -33,10 +33,10 @@ pub enum BanOutcome {
 }
 
 #[allow(clippy::print_stdout, clippy::print_stderr)]
-pub fn run_unban_command(target: String, yes: bool) -> Result<(), KidoboError> {
+pub fn run_unban_command(target: &str, yes: bool) -> Result<(), KidoboError> {
     let path_input = PathResolutionInput::from_process(None);
     let paths = resolve_paths(&path_input)?;
-    let mut plan = build_unban_plan(&paths.blocklist_file, &target)?;
+    let mut plan = build_unban_plan(&paths.blocklist_file, target)?;
 
     if !plan.partial_matches.is_empty() {
         println!(
@@ -100,7 +100,7 @@ fn build_unban_plan(path: &Path, input: &str) -> Result<UnbanPlan, KidoboError> 
         if let Some(entry) = &line.canonical {
             if entry == &canonical {
                 exact_indexes.push(idx);
-            } else if canonical_contains(entry, &canonical) {
+            } else if canonical_overlaps(entry, &canonical) {
                 partial_matches.push(PartialMatch {
                     index: idx,
                     entry: entry.to_string(),
@@ -241,23 +241,26 @@ fn parse_blocklist_target(input: &str) -> Result<CanonicalCidr, KidoboError> {
         input: input.to_string(),
     })
 }
-
-fn canonical_contains(entry: &CanonicalCidr, target: &CanonicalCidr) -> bool {
+fn canonical_overlaps(entry: &CanonicalCidr, target: &CanonicalCidr) -> bool {
     match (entry, target) {
-        (CanonicalCidr::V4(entry_cidr), CanonicalCidr::V4(target_cidr)) => {
-            let entry_interval = ipv4_to_interval(*entry_cidr);
-            let target_interval = ipv4_to_interval(*target_cidr);
-            entry_interval.start <= target_interval.start
-                && entry_interval.end >= target_interval.end
-        }
-        (CanonicalCidr::V6(entry_cidr), CanonicalCidr::V6(target_cidr)) => {
-            let entry_interval = ipv6_to_interval(*entry_cidr);
-            let target_interval = ipv6_to_interval(*target_cidr);
-            entry_interval.start <= target_interval.start
-                && entry_interval.end >= target_interval.end
-        }
+        (CanonicalCidr::V4(entry_cidr), CanonicalCidr::V4(target_cidr)) => intervals_overlap_u32(
+            ipv4_to_interval(*entry_cidr),
+            ipv4_to_interval(*target_cidr),
+        ),
+        (CanonicalCidr::V6(entry_cidr), CanonicalCidr::V6(target_cidr)) => intervals_overlap_u128(
+            ipv6_to_interval(*entry_cidr),
+            ipv6_to_interval(*target_cidr),
+        ),
         _ => false,
     }
+}
+
+fn intervals_overlap_u32(a: IntervalU32, b: IntervalU32) -> bool {
+    a.start <= b.end && b.start <= a.end
+}
+
+fn intervals_overlap_u128(a: IntervalU128, b: IntervalU128) -> bool {
+    a.start <= b.end && b.start <= a.end
 }
 
 #[allow(clippy::print_stdout)]
@@ -440,12 +443,14 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use crate::core::network::parse_ip_cidr_non_strict;
+    use crate::core::network::{
+        CanonicalCidr, ipv4_to_interval, ipv6_to_interval, parse_ip_cidr_non_strict,
+    };
 
     use super::{
         BanOutcome, BlocklistFile, KidoboError, append_blocklist_entry, apply_unban_plan,
-        ban_target_in_file, build_unban_plan, canonical_contains, ensure_blocklist_parent,
-        normalize_local_blocklist, parse_blocklist_target, write_blocklist_lines,
+        ban_target_in_file, build_unban_plan, ensure_blocklist_parent, normalize_local_blocklist,
+        parse_blocklist_target, write_blocklist_lines,
     };
 
     fn write_temp_file(temp: &TempDir, contents: &str) -> PathBuf {
@@ -511,19 +516,37 @@ mod tests {
         assert!(contents.is_empty());
     }
 
+    fn canonical_contains_local(entry: &CanonicalCidr, target: &CanonicalCidr) -> bool {
+        match (entry, target) {
+            (CanonicalCidr::V4(entry_cidr), CanonicalCidr::V4(target_cidr)) => {
+                let entry_interval = ipv4_to_interval(*entry_cidr);
+                let target_interval = ipv4_to_interval(*target_cidr);
+                entry_interval.start <= target_interval.start
+                    && entry_interval.end >= target_interval.end
+            }
+            (CanonicalCidr::V6(entry_cidr), CanonicalCidr::V6(target_cidr)) => {
+                let entry_interval = ipv6_to_interval(*entry_cidr);
+                let target_interval = ipv6_to_interval(*target_cidr);
+                entry_interval.start <= target_interval.start
+                    && entry_interval.end >= target_interval.end
+            }
+            _ => false,
+        }
+    }
+
     #[test]
     fn canonical_contains_detects_ipv4_and_ipv6_crop() {
         let supernet_v4 = parse_ip_cidr_non_strict("203.0.113.0/24").expect("parse");
         let host_v4 = parse_ip_cidr_non_strict("203.0.113.7").expect("parse");
-        assert!(canonical_contains(&supernet_v4, &host_v4));
+        assert!(canonical_contains_local(&supernet_v4, &host_v4));
 
         let supernet_v6 = parse_ip_cidr_non_strict("2001:db8::/64").expect("parse");
         let host_v6 = parse_ip_cidr_non_strict("2001:db8::1").expect("parse");
-        assert!(canonical_contains(&supernet_v6, &host_v6));
+        assert!(canonical_contains_local(&supernet_v6, &host_v6));
 
         let mismatch = parse_ip_cidr_non_strict("203.0.113.7").expect("parse");
         let mismatch_v6 = parse_ip_cidr_non_strict("2001:db8::1").expect("parse");
-        assert!(!canonical_contains(&mismatch, &mismatch_v6));
+        assert!(!canonical_contains_local(&mismatch, &mismatch_v6));
     }
 
     #[test]
@@ -546,6 +569,17 @@ mod tests {
         assert!(blocklist.contains("2001:db8::/64"));
         assert!(blocklist.has_content);
         assert!(blocklist.trailing_newline);
+    }
+
+    #[test]
+    fn build_plan_reports_partial_for_overlapping_entry() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("blocklist.txt");
+        fs::write(&path, "174.129.101.247/32\n").expect("write");
+
+        let plan = build_unban_plan(&path, "174.129.101.0/24").expect("plan");
+        assert!(plan.exact_indexes.is_empty());
+        assert_eq!(plan.partial_matches.len(), 1);
     }
 
     #[test]

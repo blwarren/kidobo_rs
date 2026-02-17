@@ -150,7 +150,7 @@ fn parse_ipset(raw: RawIpsetConfig) -> Result<IpsetConfig, ConfigError> {
 
     let set_name_v6 = match raw.set_name_v6 {
         Some(value) => {
-            let parsed = non_empty(value, "ipset.set_name_v6")?;
+            let parsed = non_empty(&value, "ipset.set_name_v6")?;
             validate_ipset_set_name(&parsed, "ipset.set_name_v6")?;
             parsed
         }
@@ -165,7 +165,7 @@ fn parse_ipset(raw: RawIpsetConfig) -> Result<IpsetConfig, ConfigError> {
     let chain_action = parse_chain_action(raw.chain_action)?;
     let set_type = match raw.set_type {
         Some(value) => {
-            let parsed = non_empty(value, "ipset.set_type")?;
+            let parsed = non_empty(&value, "ipset.set_type")?;
             validate_ipset_set_type(&parsed)?;
             parsed
         }
@@ -215,7 +215,7 @@ fn parse_safe(raw: RawSafeConfig) -> Result<SafeConfig, ConfigError> {
     let mut ips = Vec::new();
     if let Some(values) = raw.ips {
         for value in values {
-            ips.push(non_empty(value, "safe.ips")?);
+            ips.push(non_empty(&value, "safe.ips")?);
         }
     }
 
@@ -225,7 +225,7 @@ fn parse_safe(raw: RawSafeConfig) -> Result<SafeConfig, ConfigError> {
 
     let github_meta_url = match raw.github_meta_url {
         Some(value) => {
-            let parsed = non_empty(value, "safe.github_meta_url")?;
+            let parsed = non_empty(&value, "safe.github_meta_url")?;
             validate_http_url(&parsed, "safe.github_meta_url")?;
             parsed
         }
@@ -237,7 +237,7 @@ fn parse_safe(raw: RawSafeConfig) -> Result<SafeConfig, ConfigError> {
         Some(values) => {
             let mut normalized = Vec::with_capacity(values.len());
             for value in values {
-                normalized.push(non_empty(value, "safe.github_meta_categories")?);
+                normalized.push(non_empty(&value, "safe.github_meta_categories")?);
             }
             Some(normalized)
         }
@@ -255,7 +255,7 @@ fn parse_remote(raw: RawRemoteConfig) -> Result<RemoteConfig, ConfigError> {
     let mut urls = Vec::new();
     if let Some(values) = raw.urls {
         for value in values {
-            urls.push(non_empty(value, "remote.urls")?);
+            urls.push(non_empty(&value, "remote.urls")?);
         }
     }
 
@@ -272,7 +272,7 @@ fn parse_remote(raw: RawRemoteConfig) -> Result<RemoteConfig, ConfigError> {
 
 fn required_non_empty(value: Option<String>, field: &'static str) -> Result<String, ConfigError> {
     match value {
-        Some(value) => non_empty(value, field),
+        Some(value) => non_empty(&value, field),
         None => Err(ConfigError::InvalidField {
             field,
             reason: "value is required".to_string(),
@@ -280,7 +280,7 @@ fn required_non_empty(value: Option<String>, field: &'static str) -> Result<Stri
     }
 }
 
-fn non_empty(value: String, field: &'static str) -> Result<String, ConfigError> {
+fn non_empty(value: &str, field: &'static str) -> Result<String, ConfigError> {
     let normalized = value.trim().to_string();
     if normalized.is_empty() {
         return Err(ConfigError::InvalidField {
@@ -300,7 +300,10 @@ fn bounded_u32(value: i64, field: &'static str, min: u32, max: u32) -> Result<u3
         });
     }
 
-    Ok(value as u32)
+    u32::try_from(value).map_err(|err| ConfigError::InvalidField {
+        field,
+        reason: err.to_string(),
+    })
 }
 
 fn validate_ipset_set_name(value: &str, field: &'static str) -> Result<(), ConfigError> {
@@ -353,7 +356,7 @@ fn parse_chain_action(value: Option<String>) -> Result<FirewallAction, ConfigErr
         return Ok(DEFAULT_CHAIN_ACTION);
     };
 
-    let normalized = non_empty(value, "ipset.chain_action")?;
+    let normalized = non_empty(&value, "ipset.chain_action")?;
     match normalized.to_ascii_uppercase().as_str() {
         "DROP" => Ok(FirewallAction::Drop),
         "REJECT" => Ok(FirewallAction::Reject),

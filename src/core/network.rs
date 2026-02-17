@@ -215,11 +215,7 @@ pub fn ipv4_to_interval(cidr: Ipv4Cidr) -> IntervalU32 {
         u32::MAX
     } else {
         let host_bits = 32_u32 - u32::from(cidr.prefix);
-        let suffix = if host_bits == 0 {
-            0
-        } else {
-            ((1_u64 << host_bits) - 1) as u32
-        };
+        let suffix = (1_u32 << host_bits) - 1;
         start | suffix
     };
 
@@ -370,7 +366,7 @@ fn intervals_to_ipv4_cidrs_from_merged(intervals: &[IntervalU32]) -> Vec<Ipv4Cid
             if next > u64::from(u32::MAX) {
                 break;
             }
-            start = next as u32;
+            start = u32::try_from(next).expect("next within ipv4 range");
         }
     }
 

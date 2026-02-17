@@ -1,5 +1,22 @@
 #![forbid(unsafe_code)]
-#![deny(clippy::disallowed_methods)]
+#![deny(dead_code)]
+#![deny(clippy::all)]
+#![warn(clippy::pedantic)]
+#![allow(
+    clippy::disallowed_methods,
+    clippy::format_collect,
+    clippy::manual_let_else,
+    clippy::match_same_arms,
+    clippy::must_use_candidate,
+    clippy::needless_raw_string_hashes,
+    clippy::missing_errors_doc,
+    clippy::redundant_closure_for_method_calls,
+    clippy::single_match_else,
+    clippy::struct_field_names,
+    clippy::unreadable_literal,
+    clippy::unnested_or_patterns,
+    clippy::unnecessary_wraps
+)]
 #![cfg_attr(
     not(test),
     deny(
@@ -12,7 +29,8 @@
         clippy::suspicious_command_arg_space,
         clippy::indexing_slicing,
         clippy::print_stdout,
-        clippy::print_stderr
+        clippy::print_stderr,
+        clippy::panic_in_result_fn
     )
 )]
 

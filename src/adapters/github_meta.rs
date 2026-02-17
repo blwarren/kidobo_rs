@@ -92,10 +92,10 @@ pub fn load_github_meta_safelist(
     client: &dyn HttpClient,
     cache_dir: &Path,
     github_meta_url: &str,
-    category_mode: GithubMetaCategoryMode,
+    category_mode: &GithubMetaCategoryMode,
     env: &BTreeMap<String, String>,
 ) -> Result<GithubMetaLoadResult, GithubMetaLoadError> {
-    let selection = CategorySelection::from_mode(&category_mode);
+    let selection = CategorySelection::from_mode(category_mode);
     let max_bytes = max_http_body_bytes(env);
     let paths = CachePaths::from_cache_dir(cache_dir);
 

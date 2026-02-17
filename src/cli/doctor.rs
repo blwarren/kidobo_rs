@@ -114,6 +114,7 @@ pub fn run_doctor_command() -> Result<(), KidoboError> {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) fn build_doctor_report(
     path_input: &PathResolutionInput,
     binary_locator: &dyn BinaryLocator,

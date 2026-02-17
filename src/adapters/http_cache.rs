@@ -779,7 +779,7 @@ mod tests {
             );
             socket
                 .write_all(response.as_bytes())
-                .and_then(|_| socket.write_all(body))
+                .and_then(|()| socket.write_all(body))
                 .expect("write response");
         });
 

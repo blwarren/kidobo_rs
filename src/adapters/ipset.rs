@@ -156,7 +156,8 @@ pub fn build_restore_script(
     sorted_entries.dedup();
 
     let mut script = String::new();
-    script.push_str(&format!(
+    write!(
+        &mut script,
         "create {} {} family {} hashsize {} maxelem {} timeout {}\n",
         temp_set_name,
         spec.set_type,
@@ -164,13 +165,19 @@ pub fn build_restore_script(
         spec.hashsize,
         spec.maxelem,
         spec.timeout
-    ));
+    )
+    .expect("restore script formatting");
 
     for entry in sorted_entries {
-        script.push_str(&format!("add {} {}\n", temp_set_name, entry));
+        write!(&mut script, "add {temp_set_name} {entry}\n").expect("restore script formatting");
     }
 
-    script.push_str(&format!("swap {} {}\n", temp_set_name, spec.set_name));
+    write!(
+        &mut script,
+        "swap {temp_set_name} {}\n",
+        spec.set_name
+    )
+    .expect("restore script formatting");
     script
 }
 
@@ -180,7 +187,7 @@ pub fn execute_ipset_restore(
 ) -> Result<(), IpsetError> {
     let (mut file, path) = create_restore_script_file()?;
     file.write_all(script.as_bytes())
-        .and_then(|_| file.flush())
+        .and_then(|()| file.flush())
         .map_err(|err| IpsetError::WriteRestoreScript {
             path: path.clone(),
             reason: err.to_string(),
@@ -275,7 +282,7 @@ fn create_restore_script_file() -> Result<(std::fs::File, PathBuf), IpsetError> 
 
         match options.open(&path) {
             Ok(file) => return Ok((file, path)),
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(err) => {
                 return Err(IpsetError::CreateRestoreScript {
                     path,
@@ -314,7 +321,7 @@ fn random_hex_suffix(length: usize) -> String {
 
     let mut hex = String::with_capacity(digest.len() * 2);
     for byte in digest {
-        hex.push_str(&format!("{byte:02x}"));
+        write!(&mut hex, "{byte:02x}").expect("hex formatting");
     }
 
     hex[..length.min(hex.len())].to_string()

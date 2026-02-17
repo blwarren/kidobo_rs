@@ -1,4 +1,6 @@
 disallowed-methods = [
   { path = "reqwest::Response::bytes", reason = "Use bounded streaming reads to enforce body-size caps." },
-  { path = "reqwest::blocking::Response::bytes", reason = "Use bounded streaming reads to enforce body-size caps." }
+  { path = "reqwest::blocking::Response::bytes", reason = "Use bounded streaming reads to enforce body-size caps." },
+  { path = "std::fs::read", reason = "Use bounded file reads with explicit size limits." },
+  { path = "std::fs::read_to_string", reason = "Use bounded file reads with explicit size limits." }
 ]
