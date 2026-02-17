@@ -38,7 +38,13 @@ pub fn run() -> ExitCode {
         return ExitCode::from(130);
     }
 
-    match commands::dispatch(cli.command) {
+    let dispatch_result = commands::dispatch(cli.command);
+
+    if interrupt::was_interrupted() {
+        return ExitCode::from(130);
+    }
+
+    match dispatch_result {
         Ok(()) => ExitCode::SUCCESS,
         Err(KidoboError::Interrupted) => ExitCode::from(130),
         Err(KidoboError::DoctorFailed) => ExitCode::from(1),

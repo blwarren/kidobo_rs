@@ -30,6 +30,8 @@ The format is based on Keep a Changelog, with one section per release.
 - Remote feed metadata cache parse/read failures now degrade gracefully to
   metadata-free operation, preserving stale `.iplist` fallback behavior instead
   of hard-failing the source load.
+- `kidobo` now exits with code `130` when `SIGINT` is received during command
+  execution (after the current command step returns), not only before dispatch.
 
 ## [0.2.0] - 2026-02-16
 
