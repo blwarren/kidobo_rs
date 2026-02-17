@@ -225,18 +225,18 @@ Type=oneshot\n",
 
     if let Some(root) = kido_root_override {
         let root_value = root.to_string_lossy();
-        write!(
+        writeln!(
             &mut output,
-            "Environment=\"KIDOBO_ROOT={}\"\n",
+            "Environment=\"KIDOBO_ROOT={}\"",
             escape_systemd_value(root_value.as_ref())
         )
         .expect("systemd template formatting");
     }
 
     let executable = executable_path.to_string_lossy();
-    write!(
+    writeln!(
         &mut output,
-        "ExecStart=\"{}\" sync\n",
+        "ExecStart=\"{}\" sync",
         escape_systemd_value(executable.as_ref())
     )
     .expect("systemd template formatting");
@@ -265,18 +265,18 @@ fn print_init_summary(summary: &InitSummary) {
 
 fn render_init_summary(summary: &InitSummary) -> String {
     let mut output = String::new();
-    write!(
+    writeln!(
         &mut output,
-        "init completed: created={} unchanged={}\n",
+        "init completed: created={} unchanged={}",
         summary.created.len(),
         summary.unchanged.len()
     )
     .expect("summary formatting");
     for path in &summary.created {
-        write!(&mut output, "created: {}\n", path.display()).expect("summary formatting");
+        writeln!(&mut output, "created: {}", path.display()).expect("summary formatting");
     }
     for path in &summary.unchanged {
-        write!(&mut output, "unchanged: {}\n", path.display()).expect("summary formatting");
+        writeln!(&mut output, "unchanged: {}", path.display()).expect("summary formatting");
     }
     output
 }
