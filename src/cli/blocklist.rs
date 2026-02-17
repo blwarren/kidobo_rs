@@ -378,7 +378,11 @@ impl BlocklistFile {
     fn contains(&self, canonical: &str) -> bool {
         self.lines
             .iter()
-            .filter_map(|line| line.canonical.as_ref().map(std::string::ToString::to_string))
+            .filter_map(|line| {
+                line.canonical
+                    .as_ref()
+                    .map(std::string::ToString::to_string)
+            })
             .any(|entry| entry == canonical)
     }
 }
