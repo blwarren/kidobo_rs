@@ -8,7 +8,6 @@
     clippy::must_use_candidate,
     clippy::needless_raw_string_hashes,
     clippy::missing_errors_doc,
-    clippy::redundant_closure_for_method_calls,
     clippy::single_match_else,
     clippy::struct_field_names,
     clippy::unreadable_literal,

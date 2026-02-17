@@ -238,7 +238,7 @@ fn fetch_remote_networks_concurrently(
                     let next_url = {
                         let mut guard = queue
                             .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                         guard.pop_front()
                     };
 
@@ -251,7 +251,7 @@ fn fetch_remote_networks_concurrently(
                             if !cached.networks.is_empty() {
                                 let mut guard = collected
                                     .lock()
-                                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                                 guard.extend(cached.networks);
                             }
                         }
@@ -265,7 +265,7 @@ fn fetch_remote_networks_concurrently(
     let mut networks = {
         let mut guard = collected
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         std::mem::take(&mut *guard)
     };
 
@@ -347,7 +347,7 @@ mod tests {
                 let mut events = self
                     .events
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 events.push(format!("http:{}", request.url));
             }
 
@@ -362,7 +362,7 @@ mod tests {
                 let mut guard = self
                     .responses
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let queue = guard
                     .get_mut(&request.url)
                     .expect("response queue for requested URL");
@@ -390,14 +390,14 @@ mod tests {
         fn events(&self) -> Vec<String> {
             self.events
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone()
         }
 
         fn swap_targets(&self) -> Vec<String> {
             self.restore_scripts
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .iter()
                 .filter_map(|script| {
                     script
@@ -413,7 +413,7 @@ mod tests {
             let mut entries = self
                 .restore_scripts
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .iter()
                 .filter_map(|script| {
                     let target = script
@@ -448,7 +448,7 @@ mod tests {
                 let mut events = self
                     .events
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 events.push(format!("cmd:{} {}", command, args.join(" ")));
             }
 
@@ -458,7 +458,7 @@ mod tests {
                         .expect("restore script readable");
                 self.restore_scripts
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .push(script);
                 return Ok(success());
             }
@@ -629,7 +629,7 @@ mod tests {
 
         let events = events
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
 
         let first_http = events

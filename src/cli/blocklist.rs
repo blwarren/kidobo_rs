@@ -315,11 +315,11 @@ fn canonicalize_blocklist(contents: &str) -> String {
 
     let canonical_entries = canonical_entry_lines(&entries);
     if !canonical_entries.is_empty() {
-        if !lines.is_empty() && !lines.last().is_some_and(|line| line.is_empty()) {
+        if !lines.is_empty() && !lines.last().is_some_and(std::string::String::is_empty) {
             lines.push(String::new());
         }
         lines.extend(canonical_entries);
-    } else if lines.last().is_some_and(|line| line.is_empty()) {
+    } else if lines.last().is_some_and(std::string::String::is_empty) {
         lines.pop();
     }
 
@@ -378,7 +378,7 @@ impl BlocklistFile {
     fn contains(&self, canonical: &str) -> bool {
         self.lines
             .iter()
-            .filter_map(|line| line.canonical.as_ref().map(|entry| entry.to_string()))
+            .filter_map(|line| line.canonical.as_ref().map(std::string::ToString::to_string))
             .any(|entry| entry == canonical)
     }
 }
