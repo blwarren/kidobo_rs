@@ -20,6 +20,8 @@ pub fn run_ban_command(target: String) -> Result<(), KidoboError> {
         BanOutcome::AlreadyPresent(value) => println!("blocklist already contains {value}"),
     }
 
+    println!("changes take effect after running `sudo kidobo sync`");
+
     Ok(())
 }
 
@@ -63,6 +65,7 @@ pub fn run_unban_command(target: String, yes: bool) -> Result<(), KidoboError> {
         result.total(),
         plan.target
     );
+    println!("changes take effect after running `sudo kidobo sync`");
     Ok(())
 }
 
