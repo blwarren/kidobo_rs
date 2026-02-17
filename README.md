@@ -168,6 +168,7 @@ Example config:
 set_name = "kidobo"
 set_name_v6 = "kidobo-v6"
 enable_ipv6 = true
+chain_action = "DROP"
 set_type = "hash:net"
 hashsize = 65536
 maxelem = 500000
@@ -190,6 +191,7 @@ Key fields:
   - `set_name` required
   - `set_name_v6` optional, defaults to `"<set_name>-v6"`
   - `enable_ipv6` default `true`
+  - `chain_action` optional, `DROP` (default) or `REJECT`
   - `maxelem` must be in `[1, 500000]`
 - `[safe]`
   - `ips` static safelist entries

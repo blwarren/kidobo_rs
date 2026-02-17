@@ -6,6 +6,15 @@ The format is based on Keep a Changelog, with one section per release.
 
 ## [Unreleased]
 
+### Fixed
+
+- Path resolution no longer hard-fails when the process current directory is
+  unavailable unless repo config fallback is explicitly enabled. This allows
+  `kidobo init` and other default-path flows to run deterministically from
+  stale/deleted working directories.
+- Added configurable firewall chain action via `ipset.chain_action` with
+  allowed values `DROP` (default) and `REJECT` for kidobo chain rules.
+
 ## [0.2.1] - 2026-02-17
 
 ### Changed

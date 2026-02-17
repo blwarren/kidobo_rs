@@ -14,10 +14,12 @@ use crate::adapters::http_cache::{HttpClient, ReqwestHttpClient, fetch_iplist_wi
 use crate::adapters::ipset::{
     IpsetCommandRunner, IpsetFamily, IpsetSetSpec, atomic_replace_ipset, ensure_ipset_exists,
 };
-use crate::adapters::iptables::{FirewallCommandRunner, ensure_firewall_wiring_for_families};
+use crate::adapters::iptables::{
+    ChainAction, FirewallCommandRunner, ensure_firewall_wiring_for_families,
+};
 use crate::adapters::lock::acquire_non_blocking;
 use crate::adapters::path::{PathResolutionInput, ResolvedPaths, resolve_paths};
-use crate::core::config::Config;
+use crate::core::config::{Config, FirewallAction};
 use crate::core::network::{CanonicalCidr, parse_lines_non_strict};
 use crate::core::sync::compute_effective_blocklists;
 use crate::error::KidoboError;
@@ -31,7 +33,7 @@ pub struct SyncSummary {
 }
 
 pub fn run_sync_command() -> Result<(), KidoboError> {
-    let path_input = PathResolutionInput::from_process(None)?;
+    let path_input = PathResolutionInput::from_process(None);
     let paths = resolve_paths(&path_input)?;
     let config = load_config_from_file(&paths.config_file)?;
 
@@ -79,6 +81,7 @@ pub(crate) fn run_sync_with_dependencies(
         &config.ipset.set_name,
         &config.ipset.set_name_v6,
         config.ipset.enable_ipv6,
+        chain_action(config),
     )?;
 
     let internal = load_internal_blocklist(&paths.blocklist_file)?;
@@ -184,6 +187,13 @@ fn ensure_within_maxelem(spec: &IpsetSetSpec, entries: usize) -> Result<(), Kido
     })
 }
 
+fn chain_action(config: &Config) -> ChainAction {
+    match config.ipset.chain_action {
+        FirewallAction::Drop => ChainAction::Drop,
+        FirewallAction::Reject => ChainAction::Reject,
+    }
+}
+
 fn load_internal_blocklist(path: &Path) -> Result<Vec<CanonicalCidr>, KidoboError> {
     if !path.exists() {
         return Ok(Vec::new());
@@ -279,7 +289,7 @@ mod tests {
     use crate::adapters::ipset::{IpsetCommandRunner, IpsetFamily, IpsetSetSpec};
     use crate::adapters::iptables::FirewallCommandRunner;
     use crate::adapters::path::ResolvedPaths;
-    use crate::core::config::{Config, IpsetConfig, RemoteConfig, SafeConfig};
+    use crate::core::config::{Config, FirewallAction, IpsetConfig, RemoteConfig, SafeConfig};
     use crate::error::KidoboError;
 
     struct MockHttpClient {
@@ -514,6 +524,7 @@ mod tests {
                 set_name: "kidobo".to_string(),
                 set_name_v6: "kidobo-v6".to_string(),
                 enable_ipv6: true,
+                chain_action: FirewallAction::Drop,
                 set_type: "hash:net".to_string(),
                 hashsize: 65536,
                 maxelem: 500000,
@@ -538,6 +549,7 @@ mod tests {
                 set_name: "kidobo".to_string(),
                 set_name_v6: "kidobo-v6".to_string(),
                 enable_ipv6,
+                chain_action: FirewallAction::Drop,
                 set_type: "hash:net".to_string(),
                 hashsize: 65536,
                 maxelem: 500000,
@@ -732,6 +744,43 @@ mod tests {
         }));
         assert!(events.iter().any(|entry| {
             entry.contains("cmd:ip6tables -A kidobo-input -m set --match-set kidobo-v6 src -j DROP")
+        }));
+    }
+
+    #[test]
+    fn sync_applies_reject_target_when_configured() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = test_paths(temp.path());
+
+        fs::create_dir_all(paths.blocklist_file.parent().expect("parent")).expect("mkdir data");
+        fs::create_dir_all(&paths.remote_cache_dir).expect("mkdir cache");
+        fs::write(&paths.blocklist_file, "10.0.0.0/24\n").expect("write blocklist");
+
+        let mut config = test_config(Vec::new());
+        config.ipset.chain_action = FirewallAction::Reject;
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let http_client = MockHttpClient::new(BTreeMap::new(), Arc::clone(&events), 0);
+        let runner = MockCommandRunner::new(events);
+
+        run_sync_with_dependencies(
+            &paths,
+            &config,
+            &BTreeMap::new(),
+            &http_client,
+            &runner,
+            &runner,
+        )
+        .expect("sync");
+
+        let events = runner.events();
+        assert!(events.iter().any(|entry| {
+            entry.contains("cmd:iptables -A kidobo-input -m set --match-set kidobo src -j REJECT")
+        }));
+        assert!(events.iter().any(|entry| {
+            entry.contains(
+                "cmd:ip6tables -A kidobo-input -m set --match-set kidobo-v6 src -j REJECT",
+            )
         }));
     }
 

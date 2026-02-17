@@ -12,6 +12,7 @@ use crate::error::KidoboError;
 
 const DEFAULT_CONFIG_TEMPLATE: &str = r#"[ipset]
 set_name = "kidobo"
+chain_action = "DROP"
 
 [safe]
 ips = []
@@ -93,7 +94,7 @@ impl InitCommandRunner for NoopInitCommandRunner {
 
 #[allow(clippy::print_stdout)]
 pub fn run_init_command() -> Result<(), KidoboError> {
-    let path_input = PathResolutionInput::from_process(None)?;
+    let path_input = PathResolutionInput::from_process(None);
     let paths = resolve_paths_for_init(&path_input)?;
     let executable_path =
         env::current_exe().unwrap_or_else(|_| PathBuf::from(DEFAULT_KIDOBO_BINARY_PATH));

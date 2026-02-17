@@ -7,6 +7,21 @@ use crate::adapters::command_runner::{
 pub const KIDOBO_CHAIN_NAME: &str = "kidobo-input";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChainAction {
+    Drop,
+    Reject,
+}
+
+impl ChainAction {
+    fn as_target(self) -> &'static str {
+        match self {
+            Self::Drop => "DROP",
+            Self::Reject => "REJECT",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FirewallFamily {
     Ipv4,
     Ipv6,
@@ -73,11 +88,18 @@ pub fn ensure_firewall_wiring(
     runner: &dyn FirewallCommandRunner,
     family: FirewallFamily,
     set_name: &str,
+    chain_action: ChainAction,
 ) -> Result<(), FirewallError> {
     ensure_chain_exists(runner, family, KIDOBO_CHAIN_NAME)?;
     remove_all_input_jumps_for_chain(runner, family, KIDOBO_CHAIN_NAME)?;
     insert_input_jump_at_top(runner, family, KIDOBO_CHAIN_NAME)?;
-    enforce_chain_drop_rule(runner, family, KIDOBO_CHAIN_NAME, set_name)?;
+    enforce_chain_rule(
+        runner,
+        family,
+        KIDOBO_CHAIN_NAME,
+        set_name,
+        chain_action.as_target(),
+    )?;
     Ok(())
 }
 
@@ -86,11 +108,12 @@ pub fn ensure_firewall_wiring_for_families(
     set_name_v4: &str,
     set_name_v6: &str,
     enable_ipv6: bool,
+    chain_action: ChainAction,
 ) -> Result<(), FirewallError> {
-    ensure_firewall_wiring(runner, FirewallFamily::Ipv4, set_name_v4)?;
+    ensure_firewall_wiring(runner, FirewallFamily::Ipv4, set_name_v4, chain_action)?;
 
     if enable_ipv6 {
-        ensure_firewall_wiring(runner, FirewallFamily::Ipv6, set_name_v6)?;
+        ensure_firewall_wiring(runner, FirewallFamily::Ipv6, set_name_v6, chain_action)?;
     }
 
     Ok(())
@@ -148,11 +171,12 @@ fn insert_input_jump_at_top(
     .map(|_| ())
 }
 
-fn enforce_chain_drop_rule(
+fn enforce_chain_rule(
     runner: &dyn FirewallCommandRunner,
     family: FirewallFamily,
     chain_name: &str,
     set_name: &str,
+    target: &str,
 ) -> Result<(), FirewallError> {
     let binary = family.binary();
     run_checked(runner, binary, &["-F", chain_name])?;
@@ -168,7 +192,7 @@ fn enforce_chain_drop_rule(
             set_name,
             "src",
             "-j",
-            "DROP",
+            target,
         ],
     )?;
 
@@ -218,7 +242,7 @@ mod tests {
     use std::collections::VecDeque;
 
     use super::{
-        FirewallCommandRunner, FirewallFamily, KIDOBO_CHAIN_NAME, chain_exists,
+        ChainAction, FirewallCommandRunner, FirewallFamily, KIDOBO_CHAIN_NAME, chain_exists,
         ensure_firewall_wiring, ensure_firewall_wiring_for_families,
     };
     use crate::adapters::command_runner::{CommandResult, CommandRunnerError};
@@ -298,7 +322,13 @@ mod tests {
             Ok(ok(0)), // -A chain drop rule
         ]);
 
-        ensure_firewall_wiring(&runner, FirewallFamily::Ipv4, "kidobo-set").expect("wiring");
+        ensure_firewall_wiring(
+            &runner,
+            FirewallFamily::Ipv4,
+            "kidobo-set",
+            ChainAction::Drop,
+        )
+        .expect("wiring");
 
         let invocations = runner.invocations();
         assert_eq!(invocations[0].0, "iptables");
@@ -346,7 +376,13 @@ mod tests {
             Ok(ok(0)), // -A
         ]);
 
-        ensure_firewall_wiring(&runner, FirewallFamily::Ipv4, "kidobo-set").expect("wiring");
+        ensure_firewall_wiring(
+            &runner,
+            FirewallFamily::Ipv4,
+            "kidobo-set",
+            ChainAction::Drop,
+        )
+        .expect("wiring");
 
         let invocations = runner.invocations();
         assert_eq!(
@@ -392,11 +428,57 @@ mod tests {
             Ok(ok(0)),
         ]);
 
-        ensure_firewall_wiring_for_families(&runner, "kidobo-v4", "kidobo-v6", true)
-            .expect("wiring");
+        ensure_firewall_wiring_for_families(
+            &runner,
+            "kidobo-v4",
+            "kidobo-v6",
+            true,
+            ChainAction::Drop,
+        )
+        .expect("wiring");
 
         let invocations = runner.invocations();
         assert_eq!(invocations[0].0, "iptables");
         assert_eq!(invocations[5].0, "ip6tables");
+    }
+
+    #[test]
+    fn supports_reject_target_rule() {
+        let runner = MockRunner::new(vec![
+            Ok(ok(0)), // -S chain exists
+            Ok(CommandResult {
+                status: Some(1),
+                success: false,
+                stdout: String::new(),
+                stderr: "Bad rule (does a matching rule exist in that chain?).".to_string(),
+            }),
+            Ok(ok(0)), // -I
+            Ok(ok(0)), // -F
+            Ok(ok(0)), // -A
+        ]);
+
+        ensure_firewall_wiring(
+            &runner,
+            FirewallFamily::Ipv4,
+            "kidobo-set",
+            ChainAction::Reject,
+        )
+        .expect("wiring");
+
+        let invocations = runner.invocations();
+        assert_eq!(
+            invocations[4].1,
+            vec![
+                "-A",
+                KIDOBO_CHAIN_NAME,
+                "-m",
+                "set",
+                "--match-set",
+                "kidobo-set",
+                "src",
+                "-j",
+                "REJECT",
+            ]
+        );
     }
 }

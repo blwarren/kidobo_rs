@@ -26,7 +26,7 @@ pub fn dispatch(command: Command) -> Result<(), KidoboError> {
 fn run_lookup_command(ip: Option<String>, file: Option<PathBuf>) -> Result<(), KidoboError> {
     let targets = collect_lookup_targets(ip, file)?;
 
-    let path_input = PathResolutionInput::from_process(None)?;
+    let path_input = PathResolutionInput::from_process(None);
     let paths = resolve_paths(&path_input)?;
 
     let _config = load_config_from_file(&paths.config_file)?;

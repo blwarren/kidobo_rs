@@ -15,7 +15,7 @@ use crate::core::config::Config;
 use crate::error::KidoboError;
 
 pub fn run_flush_command(cache_only: bool) -> Result<(), KidoboError> {
-    let path_input = PathResolutionInput::from_process(None)?;
+    let path_input = PathResolutionInput::from_process(None);
     let paths = if cache_only {
         resolve_paths_for_init(&path_input)?
     } else {
@@ -144,7 +144,7 @@ mod tests {
     use crate::adapters::command_runner::{CommandResult, CommandRunnerError};
     use crate::adapters::ipset::IpsetCommandRunner;
     use crate::adapters::iptables::FirewallCommandRunner;
-    use crate::core::config::{Config, IpsetConfig, RemoteConfig, SafeConfig};
+    use crate::core::config::{Config, FirewallAction, IpsetConfig, RemoteConfig, SafeConfig};
     use tempfile::TempDir;
 
     struct MockRunner {
@@ -240,6 +240,7 @@ mod tests {
                 set_name: "kidobo".to_string(),
                 set_name_v6: "kidobo-v6".to_string(),
                 enable_ipv6,
+                chain_action: FirewallAction::Drop,
                 set_type: "hash:net".to_string(),
                 hashsize: 65536,
                 maxelem: 500000,

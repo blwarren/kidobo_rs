@@ -2,6 +2,7 @@ use serde::Deserialize;
 use thiserror::Error;
 
 pub const DEFAULT_IPSET_TYPE: &str = "hash:net";
+pub const DEFAULT_CHAIN_ACTION: FirewallAction = FirewallAction::Drop;
 pub const DEFAULT_HASHSIZE: u32 = 65_536;
 pub const DEFAULT_MAXELEM: u32 = 500_000;
 pub const DEFAULT_TIMEOUT: u32 = 0;
@@ -22,10 +23,17 @@ pub struct IpsetConfig {
     pub set_name: String,
     pub set_name_v6: String,
     pub enable_ipv6: bool,
+    pub chain_action: FirewallAction,
     pub set_type: String,
     pub hashsize: u32,
     pub maxelem: u32,
     pub timeout: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FirewallAction {
+    Drop,
+    Reject,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,6 +100,7 @@ struct RawIpsetConfig {
     set_name: Option<String>,
     set_name_v6: Option<String>,
     enable_ipv6: Option<bool>,
+    chain_action: Option<String>,
     set_type: Option<String>,
     hashsize: Option<i64>,
     maxelem: Option<i64>,
@@ -153,6 +162,7 @@ fn parse_ipset(raw: RawIpsetConfig) -> Result<IpsetConfig, ConfigError> {
     };
 
     let enable_ipv6 = raw.enable_ipv6.unwrap_or(true);
+    let chain_action = parse_chain_action(raw.chain_action)?;
     let set_type = match raw.set_type {
         Some(value) => {
             let parsed = non_empty(value, "ipset.set_type")?;
@@ -193,6 +203,7 @@ fn parse_ipset(raw: RawIpsetConfig) -> Result<IpsetConfig, ConfigError> {
         set_name,
         set_name_v6,
         enable_ipv6,
+        chain_action,
         set_type,
         hashsize,
         maxelem,
@@ -337,12 +348,28 @@ fn validate_http_url(value: &str, field: &'static str) -> Result<(), ConfigError
     }
 }
 
+fn parse_chain_action(value: Option<String>) -> Result<FirewallAction, ConfigError> {
+    let Some(value) = value else {
+        return Ok(DEFAULT_CHAIN_ACTION);
+    };
+
+    let normalized = non_empty(value, "ipset.chain_action")?;
+    match normalized.to_ascii_uppercase().as_str() {
+        "DROP" => Ok(FirewallAction::Drop),
+        "REJECT" => Ok(FirewallAction::Reject),
+        _ => Err(ConfigError::InvalidField {
+            field: "ipset.chain_action",
+            reason: "must be DROP or REJECT".to_string(),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        Config, ConfigError, DEFAULT_GITHUB_META_CATEGORIES, DEFAULT_GITHUB_META_URL,
-        DEFAULT_HASHSIZE, DEFAULT_IPSET_TYPE, DEFAULT_MAXELEM, DEFAULT_REMOTE_TIMEOUT_SECS,
-        DEFAULT_TIMEOUT, GithubMetaCategoryMode,
+        Config, ConfigError, DEFAULT_CHAIN_ACTION, DEFAULT_GITHUB_META_CATEGORIES,
+        DEFAULT_GITHUB_META_URL, DEFAULT_HASHSIZE, DEFAULT_IPSET_TYPE, DEFAULT_MAXELEM,
+        DEFAULT_REMOTE_TIMEOUT_SECS, DEFAULT_TIMEOUT, FirewallAction, GithubMetaCategoryMode,
     };
 
     #[test]
@@ -352,6 +379,7 @@ mod tests {
         assert_eq!(config.ipset.set_name, "kidobo");
         assert_eq!(config.ipset.set_name_v6, "kidobo-v6");
         assert!(config.ipset.enable_ipv6);
+        assert_eq!(config.ipset.chain_action, DEFAULT_CHAIN_ACTION);
         assert_eq!(config.ipset.set_type, DEFAULT_IPSET_TYPE);
         assert_eq!(config.ipset.hashsize, DEFAULT_HASHSIZE);
         assert_eq!(config.ipset.maxelem, DEFAULT_MAXELEM);
@@ -386,6 +414,38 @@ mod tests {
             .expect("parse");
 
         assert!(!config.ipset.enable_ipv6);
+    }
+
+    #[test]
+    fn chain_action_defaults_to_drop() {
+        let config = Config::from_toml_str("[ipset]\nset_name='kidobo'\n").expect("parse");
+        assert_eq!(config.ipset.chain_action, FirewallAction::Drop);
+    }
+
+    #[test]
+    fn chain_action_accepts_drop_or_reject_case_insensitively() {
+        let drop_config =
+            Config::from_toml_str("[ipset]\nset_name='kidobo'\nchain_action='drop'\n")
+                .expect("parse");
+        assert_eq!(drop_config.ipset.chain_action, FirewallAction::Drop);
+
+        let reject_config =
+            Config::from_toml_str("[ipset]\nset_name='kidobo'\nchain_action='REJECT'\n")
+                .expect("parse");
+        assert_eq!(reject_config.ipset.chain_action, FirewallAction::Reject);
+    }
+
+    #[test]
+    fn chain_action_rejects_invalid_values() {
+        let err = Config::from_toml_str("[ipset]\nset_name='kidobo'\nchain_action='ACCEPT'\n")
+            .expect_err("must fail");
+        assert_eq!(
+            err,
+            ConfigError::InvalidField {
+                field: "ipset.chain_action",
+                reason: "must be DROP or REJECT".to_string(),
+            }
+        );
     }
 
     #[test]

@@ -12,26 +12,19 @@ pub const ENV_KIDOBO_DISABLE_TEST_SANDBOX: &str = "KIDOBO_DISABLE_TEST_SANDBOX";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PathResolutionInput {
     pub explicit_config_path: Option<PathBuf>,
-    pub cwd: PathBuf,
+    pub cwd: Option<PathBuf>,
     pub temp_dir: PathBuf,
     pub env: BTreeMap<String, String>,
 }
 
 impl PathResolutionInput {
-    pub fn from_process(
-        explicit_config_path: Option<PathBuf>,
-    ) -> Result<Self, PathResolutionError> {
-        let cwd =
-            env::current_dir().map_err(|err| PathResolutionError::CurrentDirectoryUnavailable {
-                reason: err.to_string(),
-            })?;
-
-        Ok(Self {
+    pub fn from_process(explicit_config_path: Option<PathBuf>) -> Self {
+        Self {
             explicit_config_path,
-            cwd,
+            cwd: env::current_dir().ok(),
             temp_dir: env::temp_dir(),
             env: env::vars().collect(),
-        })
+        }
     }
 }
 
@@ -171,10 +164,15 @@ fn select_config_path(
     }
 
     if env_truthy(&input.env, ENV_KIDOBO_ALLOW_REPO_CONFIG_FALLBACK) {
-        let repo_root =
-            find_repo_root(&input.cwd).ok_or_else(|| PathResolutionError::RepoRootNotFound {
-                start: input.cwd.clone(),
-            })?;
+        let cwd =
+            input
+                .cwd
+                .as_ref()
+                .ok_or_else(|| PathResolutionError::CurrentDirectoryUnavailable {
+                    reason: "repo config fallback requires a valid current directory".to_string(),
+                })?;
+        let repo_root = find_repo_root(cwd)
+            .ok_or_else(|| PathResolutionError::RepoRootNotFound { start: cwd.clone() })?;
 
         let fallback = repo_root.join("config.toml");
         if fallback.exists() || allow_missing_config {
@@ -238,7 +236,7 @@ mod tests {
     fn test_input(temp: &TempDir) -> PathResolutionInput {
         PathResolutionInput {
             explicit_config_path: None,
-            cwd: temp.path().to_path_buf(),
+            cwd: Some(temp.path().to_path_buf()),
             temp_dir: temp.path().join("tmp"),
             env: BTreeMap::new(),
         }
@@ -369,7 +367,7 @@ mod tests {
             .expect("write fallback config");
 
         let mut input = test_input(&temp);
-        input.cwd = nested;
+        input.cwd = Some(nested);
         input
             .env
             .insert(ENV_KIDOBO_ROOT.to_string(), root.display().to_string());
@@ -389,8 +387,9 @@ mod tests {
         fs::create_dir_all(&root).expect("mkdir root");
 
         let mut input = test_input(&temp);
-        input.cwd = temp.path().join("outside-repo");
-        fs::create_dir_all(&input.cwd).expect("mkdir cwd");
+        input.cwd = Some(temp.path().join("outside-repo"));
+        let cwd = input.cwd.as_ref().expect("cwd");
+        fs::create_dir_all(cwd).expect("mkdir cwd");
         input
             .env
             .insert(ENV_KIDOBO_ROOT.to_string(), root.display().to_string());
@@ -403,7 +402,7 @@ mod tests {
         assert_eq!(
             err,
             PathResolutionError::RepoRootNotFound {
-                start: input.cwd.clone(),
+                start: input.cwd.clone().expect("cwd"),
             }
         );
     }
@@ -419,7 +418,7 @@ mod tests {
         fs::create_dir_all(repo.join(".git")).expect("mkdir .git");
 
         let mut input = test_input(&temp);
-        input.cwd = nested;
+        input.cwd = Some(nested);
         input
             .env
             .insert(ENV_KIDOBO_ROOT.to_string(), root.display().to_string());
@@ -481,8 +480,9 @@ mod tests {
         fs::create_dir_all(repo.join(".git")).expect("mkdir .git");
 
         let mut input = test_input(&temp);
-        input.cwd = repo.join("nested");
-        fs::create_dir_all(&input.cwd).expect("mkdir nested");
+        input.cwd = Some(repo.join("nested"));
+        let cwd = input.cwd.as_ref().expect("cwd");
+        fs::create_dir_all(cwd).expect("mkdir nested");
         input
             .env
             .insert(ENV_KIDOBO_ROOT.to_string(), root.display().to_string());
@@ -493,5 +493,30 @@ mod tests {
 
         let resolved = resolve_paths_for_init(&input).expect("resolve");
         assert_eq!(resolved.config_file, repo.join("config.toml"));
+    }
+
+    #[test]
+    fn repo_fallback_requires_valid_current_directory() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = temp.path().join("override-root");
+        fs::create_dir_all(&root).expect("mkdir root");
+
+        let mut input = test_input(&temp);
+        input.cwd = None;
+        input
+            .env
+            .insert(ENV_KIDOBO_ROOT.to_string(), root.display().to_string());
+        input.env.insert(
+            ENV_KIDOBO_ALLOW_REPO_CONFIG_FALLBACK.to_string(),
+            "true".to_string(),
+        );
+
+        let err = resolve_paths(&input).expect_err("must fail");
+        assert_eq!(
+            err,
+            PathResolutionError::CurrentDirectoryUnavailable {
+                reason: "repo config fallback requires a valid current directory".to_string(),
+            }
+        );
     }
 }
