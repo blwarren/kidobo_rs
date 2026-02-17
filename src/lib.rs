@@ -25,7 +25,14 @@
         clippy::indexing_slicing,
         clippy::print_stdout,
         clippy::print_stderr,
-        clippy::panic_in_result_fn
+        clippy::panic_in_result_fn,
+        clippy::needless_pass_by_value,
+        clippy::trivially_copy_pass_by_ref,
+        clippy::format_push_string,
+        clippy::uninlined_format_args,
+        clippy::inefficient_to_string,
+        clippy::to_string_in_format_args,
+        clippy::implicit_clone
     )
 )]
 
