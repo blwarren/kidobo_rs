@@ -54,6 +54,15 @@ Install and initialize in one step:
 curl -fsSL https://raw.githubusercontent.com/blwarren/kidobo_rs/main/scripts/install.sh | sudo bash -s -- --init
 ```
 
+Uninstall the installed binary:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/blwarren/kidobo_rs/main/scripts/install.sh | sudo bash -s -- --uninstall
+```
+
+`--uninstall` attempts a full cleanup: flushes firewall/ipset state, disables/removes `kidobo-sync` systemd units, removes kidobo config/data/cache directories, and removes the installed binary.
+If artifacts were created under a custom root, pass the same `KIDOBO_ROOT` value when running uninstall.
+
 Build from source (development):
 
 ```bash

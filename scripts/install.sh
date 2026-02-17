@@ -4,22 +4,31 @@ set -euo pipefail
 REPO_SLUG="${KIDOBO_REPO_SLUG:-blwarren/kidobo_rs}"
 INSTALL_DIR="${KIDOBO_INSTALL_DIR:-/usr/local/bin}"
 BINARY_NAME="kidobo"
+KIDOBO_CHAIN_NAME="kidobo-input"
+DEFAULT_SET_NAME="kidobo"
+DEFAULT_SET_NAME_V6="kidobo-v6"
+KIDOBO_ROOT_OVERRIDE="${KIDOBO_ROOT:-}"
 INIT_AFTER_INSTALL=0
+UNINSTALL_ONLY=0
 VERSION=""
+TARGET_PATH="${INSTALL_DIR}/${BINARY_NAME}"
 
 usage() {
     cat <<'EOF'
 Usage:
   scripts/install.sh [--version vX.Y.Z] [--init]
+  scripts/install.sh --uninstall
 
 Options:
   --version vX.Y.Z  Install a specific release tag. Defaults to latest.
   --init            Run `kidobo init` after installing the binary.
+  --uninstall       Remove kidobo binary and runtime artifacts.
   -h, --help        Show this help.
 
 Environment:
   KIDOBO_REPO_SLUG   Override GitHub repo slug (default: blwarren/kidobo_rs)
   KIDOBO_INSTALL_DIR Override install path (default: /usr/local/bin)
+  KIDOBO_ROOT        Override runtime artifact root (matches `kidobo init`)
 EOF
 }
 
@@ -28,6 +37,27 @@ require_cmd() {
         echo "missing required command: $1" >&2
         exit 1
     fi
+}
+
+has_cmd() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+run_with_optional_sudo() {
+    if "$@"; then
+        return 0
+    fi
+
+    if [[ "${EUID}" -eq 0 ]]; then
+        return 1
+    fi
+
+    if has_cmd sudo; then
+        sudo -n "$@"
+        return $?
+    fi
+
+    return 1
 }
 
 resolve_latest_tag() {
@@ -60,6 +90,161 @@ install_file() {
     fi
 }
 
+remove_path() {
+    local target_path="$1"
+    local label="$2"
+
+    if [[ -e "${target_path}" || -L "${target_path}" ]]; then
+        echo "removing ${label}: ${target_path}"
+        if run_with_optional_sudo rm -rf -- "${target_path}"; then
+            echo "removed ${target_path}"
+        else
+            echo "failed to remove ${target_path}" >&2
+            exit 1
+        fi
+    else
+        echo "${label} not found at ${target_path}"
+    fi
+}
+
+warn_best_effort() {
+    local description="$1"
+    shift
+
+    if run_with_optional_sudo "$@" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    echo "warning: failed to ${description}" >&2
+}
+
+resolve_uninstall_paths() {
+    if [[ -n "${KIDOBO_ROOT_OVERRIDE}" ]]; then
+        if [[ "${KIDOBO_ROOT_OVERRIDE}" == "/" ]]; then
+            echo "refusing uninstall with KIDOBO_ROOT=/" >&2
+            exit 1
+        fi
+
+        CONFIG_DIR="${KIDOBO_ROOT_OVERRIDE}/config"
+        DATA_DIR="${KIDOBO_ROOT_OVERRIDE}/data"
+        CACHE_DIR="${KIDOBO_ROOT_OVERRIDE}/cache"
+        SYSTEMD_DIR="${KIDOBO_ROOT_OVERRIDE}/systemd/system"
+    else
+        CONFIG_DIR="/etc/kidobo"
+        DATA_DIR="/var/lib/kidobo"
+        CACHE_DIR="/var/cache/kidobo"
+        SYSTEMD_DIR="/etc/systemd/system"
+    fi
+
+    SYSTEMD_SERVICE_PATH="${SYSTEMD_DIR}/kidobo-sync.service"
+    SYSTEMD_TIMER_PATH="${SYSTEMD_DIR}/kidobo-sync.timer"
+}
+
+run_flush_best_effort() {
+    if [[ ! -x "${TARGET_PATH}" ]]; then
+        echo "${BINARY_NAME} binary not found at ${TARGET_PATH}; skipping flush command"
+        return 1
+    fi
+
+    echo "running ${BINARY_NAME} flush (best effort)"
+    if [[ -n "${KIDOBO_ROOT_OVERRIDE}" ]]; then
+        if "${TARGET_PATH}" flush; then
+            return 0
+        fi
+    elif [[ "${EUID}" -eq 0 ]]; then
+        if "${TARGET_PATH}" flush; then
+            return 0
+        fi
+    elif has_cmd sudo; then
+        if sudo -n "${TARGET_PATH}" flush; then
+            return 0
+        fi
+    elif "${TARGET_PATH}" flush; then
+        return 0
+    fi
+
+    echo "warning: ${BINARY_NAME} flush failed; continuing with direct fallback cleanup" >&2
+    return 1
+}
+
+cleanup_firewall_chain_family() {
+    local binary="$1"
+    if ! has_cmd "${binary}"; then
+        echo "warning: ${binary} is unavailable; skipping direct firewall cleanup for ${KIDOBO_CHAIN_NAME}" >&2
+        return
+    fi
+
+    while run_with_optional_sudo "${binary}" -D INPUT -j "${KIDOBO_CHAIN_NAME}" >/dev/null 2>&1; do
+        :
+    done
+
+    warn_best_effort "flush ${binary} chain ${KIDOBO_CHAIN_NAME}" \
+        "${binary}" -F "${KIDOBO_CHAIN_NAME}"
+    warn_best_effort "delete ${binary} chain ${KIDOBO_CHAIN_NAME}" \
+        "${binary}" -X "${KIDOBO_CHAIN_NAME}"
+}
+
+cleanup_default_ipsets() {
+    if ! has_cmd ipset; then
+        echo "warning: ipset is unavailable; skipping default ipset cleanup" >&2
+        return
+    fi
+
+    warn_best_effort "destroy ipset ${DEFAULT_SET_NAME}" ipset destroy "${DEFAULT_SET_NAME}"
+    warn_best_effort "destroy ipset ${DEFAULT_SET_NAME_V6}" ipset destroy "${DEFAULT_SET_NAME_V6}"
+}
+
+disable_systemd_timer_best_effort() {
+    if [[ -n "${KIDOBO_ROOT_OVERRIDE}" ]]; then
+        return
+    fi
+
+    if ! has_cmd systemctl; then
+        echo "warning: systemctl is unavailable; skipping timer disable/reset" >&2
+        return
+    fi
+
+    warn_best_effort "disable kidobo-sync.timer" \
+        systemctl disable --now kidobo-sync.timer
+    warn_best_effort "reset failed state for kidobo-sync.service" \
+        systemctl reset-failed kidobo-sync.service
+}
+
+reload_systemd_best_effort() {
+    if [[ -n "${KIDOBO_ROOT_OVERRIDE}" ]]; then
+        return
+    fi
+
+    if ! has_cmd systemctl; then
+        return
+    fi
+
+    warn_best_effort "reload systemd daemon" systemctl daemon-reload
+}
+
+uninstall_artifacts() {
+    require_cmd rm
+    resolve_uninstall_paths
+
+    echo "uninstalling ${BINARY_NAME} artifacts"
+
+    if ! run_flush_best_effort; then
+        cleanup_firewall_chain_family iptables
+        cleanup_firewall_chain_family ip6tables
+        cleanup_default_ipsets
+    fi
+
+    disable_systemd_timer_best_effort
+    remove_path "${SYSTEMD_TIMER_PATH}" "systemd timer"
+    remove_path "${SYSTEMD_SERVICE_PATH}" "systemd service"
+    reload_systemd_best_effort
+
+    remove_path "${CACHE_DIR}" "cache dir"
+    remove_path "${DATA_DIR}" "data dir"
+    remove_path "${CONFIG_DIR}" "config dir"
+    remove_path "${TARGET_PATH}" "binary"
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --version)
@@ -73,6 +258,9 @@ while [[ $# -gt 0 ]]; do
         --init)
             INIT_AFTER_INSTALL=1
             ;;
+        --uninstall)
+            UNINSTALL_ONLY=1
+            ;;
         -h|--help)
             usage
             exit 0
@@ -85,6 +273,16 @@ while [[ $# -gt 0 ]]; do
     esac
     shift
 done
+
+if [[ "${UNINSTALL_ONLY}" -eq 1 && ( -n "${VERSION}" || "${INIT_AFTER_INSTALL}" -eq 1 ) ]]; then
+    echo "--uninstall cannot be combined with --version or --init" >&2
+    exit 1
+fi
+
+if [[ "${UNINSTALL_ONLY}" -eq 1 ]]; then
+    uninstall_artifacts
+    exit 0
+fi
 
 require_cmd curl
 require_cmd tar
@@ -102,7 +300,6 @@ fi
 
 ARCHIVE="kidobo-${VERSION}-linux-x86_64.tar.gz"
 BASE_URL="https://github.com/${REPO_SLUG}/releases/download/${VERSION}"
-TARGET_PATH="${INSTALL_DIR}/${BINARY_NAME}"
 
 workdir="$(mktemp -d)"
 trap 'rm -rf "${workdir}"' EXIT

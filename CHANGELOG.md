@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `scripts/install.sh` now supports `--uninstall` for full teardown: best-effort flush of firewall/ipset state, systemd timer cleanup, removal of kidobo config/data/cache directories, and removal of the installed binary from `KIDOBO_INSTALL_DIR` (default `/usr/local/bin`).
+
 ## [0.4.0] - 2026-02-17
 
 ### Added
