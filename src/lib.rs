@@ -11,8 +11,7 @@
     clippy::single_match_else,
     clippy::struct_field_names,
     clippy::unreadable_literal,
-    clippy::unnested_or_patterns,
-    clippy::unnecessary_wraps
+    clippy::unnested_or_patterns
 )]
 #![cfg_attr(
     not(test),

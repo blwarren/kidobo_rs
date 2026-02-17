@@ -439,11 +439,7 @@ mod tests {
             entries
         }
 
-        fn run_impl(
-            &self,
-            command: &str,
-            args: &[&str],
-        ) -> Result<CommandResult, CommandRunnerError> {
+        fn run_impl(&self, command: &str, args: &[&str]) -> CommandResult {
             {
                 let mut events = self
                     .events
@@ -460,48 +456,48 @@ mod tests {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .push(script);
-                return Ok(success());
+                return success();
             }
 
             match (command, args.first().copied()) {
-                ("ipset", Some("list")) => Ok(CommandResult {
+                ("ipset", Some("list")) => CommandResult {
                     status: Some(1),
                     success: false,
                     stdout: String::new(),
                     stderr: "The set with the given name does not exist".to_string(),
-                }),
-                ("ipset", Some("destroy")) => Ok(CommandResult {
+                },
+                ("ipset", Some("destroy")) => CommandResult {
                     status: Some(1),
                     success: false,
                     stdout: String::new(),
                     stderr: "The set with the given name does not exist".to_string(),
-                }),
-                ("iptables", Some("-S")) | ("ip6tables", Some("-S")) => Ok(CommandResult {
+                },
+                ("iptables", Some("-S")) | ("ip6tables", Some("-S")) => CommandResult {
                     status: Some(1),
                     success: false,
                     stdout: String::new(),
                     stderr: "No chain/target/match by that name".to_string(),
-                }),
-                ("iptables", Some("-D")) | ("ip6tables", Some("-D")) => Ok(CommandResult {
+                },
+                ("iptables", Some("-D")) | ("ip6tables", Some("-D")) => CommandResult {
                     status: Some(1),
                     success: false,
                     stdout: String::new(),
                     stderr: "Bad rule (does a matching rule exist in that chain?).".to_string(),
-                }),
-                _ => Ok(success()),
+                },
+                _ => success(),
             }
         }
     }
 
     impl IpsetCommandRunner for MockCommandRunner {
         fn run(&self, command: &str, args: &[&str]) -> Result<CommandResult, CommandRunnerError> {
-            self.run_impl(command, args)
+            Ok(self.run_impl(command, args))
         }
     }
 
     impl FirewallCommandRunner for MockCommandRunner {
         fn run(&self, command: &str, args: &[&str]) -> Result<CommandResult, CommandRunnerError> {
-            self.run_impl(command, args)
+            Ok(self.run_impl(command, args))
         }
     }
 

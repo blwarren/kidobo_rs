@@ -31,7 +31,8 @@ pub fn run_flush_command(cache_only: bool) -> Result<(), KidoboError> {
 
     let config = load_config_from_file(&paths.config_file)?;
     let sudo_runner = SudoCommandRunner::default();
-    run_flush_with_runner(&config, &sudo_runner, &sudo_runner, &paths.remote_cache_dir)
+    run_flush_with_runner(&config, &sudo_runner, &sudo_runner, &paths.remote_cache_dir);
+    Ok(())
 }
 
 pub(crate) fn run_flush_with_runner(
@@ -39,7 +40,7 @@ pub(crate) fn run_flush_with_runner(
     firewall_runner: &dyn FirewallCommandRunner,
     ipset_runner: &dyn IpsetCommandRunner,
     remote_cache_dir: &Path,
-) -> Result<(), KidoboError> {
+) {
     cleanup_firewall_family(firewall_runner, FirewallFamily::Ipv4);
     if config.ipset.enable_ipv6 {
         cleanup_firewall_family(firewall_runner, FirewallFamily::Ipv6);
@@ -51,8 +52,6 @@ pub(crate) fn run_flush_with_runner(
     }
 
     best_effort_clear_remote_cache_dir(remote_cache_dir);
-
-    Ok(())
 }
 
 fn cleanup_firewall_family(runner: &dyn FirewallCommandRunner, family: FirewallFamily) {
@@ -166,11 +165,7 @@ mod tests {
             self.invocations.borrow().clone()
         }
 
-        fn run_impl(
-            &self,
-            command: &str,
-            args: &[&str],
-        ) -> Result<CommandResult, CommandRunnerError> {
+        fn run_impl(&self, command: &str, args: &[&str]) -> CommandResult {
             self.invocations.borrow_mut().push((
                 command.to_string(),
                 args.iter().map(|value| (*value).to_string()).collect(),
@@ -181,15 +176,15 @@ mod tests {
                 let remaining = budget.get_mut(command).expect("jump budget");
                 if *remaining > 0 {
                     *remaining -= 1;
-                    return Ok(success());
+                    return success();
                 }
 
-                return Ok(CommandResult {
+                return CommandResult {
                     status: Some(1),
                     success: false,
                     stdout: String::new(),
                     stderr: "Bad rule (does a matching rule exist in that chain?).".to_string(),
-                });
+                };
             }
 
             if self.fail_cleanup
@@ -197,27 +192,27 @@ mod tests {
                     && (args.first() == Some(&"-F") || args.first() == Some(&"-X"))
                     || (command == "ipset" && args.first() == Some(&"destroy")))
             {
-                return Ok(CommandResult {
+                return CommandResult {
                     status: Some(1),
                     success: false,
                     stdout: String::new(),
                     stderr: "not found".to_string(),
-                });
+                };
             }
 
-            Ok(success())
+            success()
         }
     }
 
     impl IpsetCommandRunner for MockRunner {
         fn run(&self, command: &str, args: &[&str]) -> Result<CommandResult, CommandRunnerError> {
-            self.run_impl(command, args)
+            Ok(self.run_impl(command, args))
         }
     }
 
     impl FirewallCommandRunner for MockRunner {
         fn run(&self, command: &str, args: &[&str]) -> Result<CommandResult, CommandRunnerError> {
-            self.run_impl(command, args)
+            Ok(self.run_impl(command, args))
         }
     }
 
@@ -263,7 +258,7 @@ mod tests {
         let remote_cache_dir = temp.path().join("remote");
         fs::create_dir_all(&remote_cache_dir).expect("mkdir remote cache");
 
-        run_flush_with_runner(&config, &runner, &runner, &remote_cache_dir).expect("flush");
+        run_flush_with_runner(&config, &runner, &runner, &remote_cache_dir);
 
         let invocations = runner.invocations();
 
@@ -324,7 +319,7 @@ mod tests {
         let remote_cache_dir = temp.path().join("remote");
         fs::create_dir_all(&remote_cache_dir).expect("mkdir remote cache");
 
-        run_flush_with_runner(&config, &runner, &runner, &remote_cache_dir).expect("flush");
+        run_flush_with_runner(&config, &runner, &runner, &remote_cache_dir);
 
         let invocations = runner.invocations();
         assert!(invocations.iter().all(|(cmd, _)| cmd != "ip6tables"));
@@ -343,8 +338,8 @@ mod tests {
         let remote_cache_dir = temp.path().join("remote");
         fs::create_dir_all(&remote_cache_dir).expect("mkdir remote cache");
 
-        run_flush_with_runner(&config, &runner, &runner, &remote_cache_dir).expect("first flush");
-        run_flush_with_runner(&config, &runner, &runner, &remote_cache_dir).expect("second flush");
+        run_flush_with_runner(&config, &runner, &runner, &remote_cache_dir);
+        run_flush_with_runner(&config, &runner, &runner, &remote_cache_dir);
 
         let invocations = runner.invocations();
         let destroy_calls = invocations

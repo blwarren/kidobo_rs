@@ -493,13 +493,13 @@ mod tests {
         fs::write(data_dir.join("blocklist.txt"), "# test\n").expect("write blocklist");
     }
 
-    fn probe_ok() -> Result<CommandResult, CommandRunnerError> {
-        Ok(CommandResult {
+    fn probe_ok() -> CommandResult {
+        CommandResult {
             status: Some(0),
             success: true,
             stdout: String::new(),
             stderr: String::new(),
-        })
+        }
     }
 
     fn find_check<'a>(checks: &'a [DoctorCheck], name: &str) -> &'a DoctorCheck {
@@ -523,7 +523,12 @@ mod tests {
             "iptables-save",
             "iptables-restore",
         ]);
-        let probes = MockProbeRunner::new(vec![probe_ok(), probe_ok(), probe_ok(), probe_ok()]);
+        let probes = MockProbeRunner::new(vec![
+            Ok(probe_ok()),
+            Ok(probe_ok()),
+            Ok(probe_ok()),
+            Ok(probe_ok()),
+        ]);
 
         let report = build_doctor_report(&path_input_for_root(root), &locator, &probes);
 
@@ -553,7 +558,12 @@ mod tests {
             "iptables-restore",
             "ip6tables",
         ]);
-        let probes = MockProbeRunner::new(vec![probe_ok(), probe_ok(), probe_ok(), probe_ok()]);
+        let probes = MockProbeRunner::new(vec![
+            Ok(probe_ok()),
+            Ok(probe_ok()),
+            Ok(probe_ok()),
+            Ok(probe_ok()),
+        ]);
 
         let report = build_doctor_report(&path_input_for_root(root), &locator, &probes);
 
@@ -585,7 +595,12 @@ mod tests {
             "iptables-save",
             "iptables-restore",
         ]);
-        let probes = MockProbeRunner::new(vec![probe_ok(), probe_ok(), probe_ok(), probe_ok()]);
+        let probes = MockProbeRunner::new(vec![
+            Ok(probe_ok()),
+            Ok(probe_ok()),
+            Ok(probe_ok()),
+            Ok(probe_ok()),
+        ]);
 
         let report = build_doctor_report(&path_input_for_root(root), &locator, &probes);
 
@@ -611,7 +626,12 @@ mod tests {
             "iptables-save",
             "iptables-restore",
         ]);
-        let probes = MockProbeRunner::new(vec![probe_ok(), probe_ok(), probe_ok(), probe_ok()]);
+        let probes = MockProbeRunner::new(vec![
+            Ok(probe_ok()),
+            Ok(probe_ok()),
+            Ok(probe_ok()),
+            Ok(probe_ok()),
+        ]);
 
         let report = build_doctor_report(&path_input_for_root(root), &locator, &probes);
 
