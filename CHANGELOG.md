@@ -4,9 +4,8 @@
 
 ### Added
 
-- Added interactive `kidobo ban` / `kidobo unban` commands to manage the local
-  blocklist file (with `--yes` to auto-remove partial matches) so operators
-  can modify the list without editing files manually.
+- `kidobo sync` now rewrites the local blocklist file before each run by collapsing/deduplicating entries, sorting IPv4 before IPv6, trimming whitespace, and preserving any header comments so the on-disk list is the minimal canonical representation of the same IP set.
+- Added interactive `kidobo ban` / `kidobo unban` commands to manage the local blocklist file (with `--yes` to auto-remove partial matches) so operators can modify the list without editing files manually.
 
 ## [0.3.0] - 2026-02-17
 

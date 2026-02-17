@@ -5,7 +5,8 @@ use std::path::Path;
 
 use crate::adapters::path::{PathResolutionInput, resolve_paths};
 use crate::core::network::{
-    CanonicalCidr, ipv4_to_interval, ipv6_to_interval, parse_ip_cidr_non_strict,
+    CanonicalCidr, collapse_ipv4, collapse_ipv6, ipv4_to_interval, ipv6_to_interval,
+    parse_ip_cidr_non_strict, split_by_family,
 };
 use crate::error::KidoboError;
 
@@ -212,6 +213,28 @@ fn ensure_blocklist_parent(path: &Path) -> Result<(), KidoboError> {
     Ok(())
 }
 
+pub fn normalize_local_blocklist(path: &Path) -> Result<(), KidoboError> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let original = fs::read_to_string(path).map_err(|err| KidoboError::BlocklistRead {
+        path: path.to_path_buf(),
+        reason: err.to_string(),
+    })?;
+
+    let normalized = canonicalize_blocklist(&original);
+
+    if normalized != original {
+        fs::write(path, normalized).map_err(|err| KidoboError::BlocklistWrite {
+            path: path.to_path_buf(),
+            reason: err.to_string(),
+        })?;
+    }
+
+    Ok(())
+}
+
 fn parse_blocklist_target(input: &str) -> Result<CanonicalCidr, KidoboError> {
     let token = input.trim();
     parse_ip_cidr_non_strict(token).ok_or_else(|| KidoboError::BlocklistTargetParse {
@@ -255,6 +278,60 @@ fn prompt_confirmation() -> Result<bool, KidoboError> {
 
     let response = buffer.trim().to_ascii_lowercase();
     Ok(matches!(response.as_str(), "y" | "yes"))
+}
+
+fn canonicalize_blocklist(contents: &str) -> String {
+    let mut lines = Vec::new();
+    let mut entries = Vec::new();
+    let mut in_header = true;
+
+    for line in contents.lines() {
+        let trimmed = line.trim();
+
+        if in_header {
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                lines.push(trimmed.to_string());
+                continue;
+            }
+            in_header = false;
+        }
+
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        if let Some(cidr) = parse_ip_cidr_non_strict(trimmed) {
+            entries.push(cidr);
+        }
+    }
+
+    let canonical_entries = canonical_entry_lines(&entries);
+    if !canonical_entries.is_empty() {
+        if !lines.is_empty() && !lines.last().is_some_and(|line| line.is_empty()) {
+            lines.push(String::new());
+        }
+        lines.extend(canonical_entries);
+    } else if lines.last().is_some_and(|line| line.is_empty()) {
+        lines.pop();
+    }
+
+    let mut normalized = lines.join("\n");
+    if !normalized.is_empty() {
+        normalized.push('\n');
+    }
+    normalized
+}
+
+fn canonical_entry_lines(entries: &[CanonicalCidr]) -> Vec<String> {
+    let family_split = split_by_family(entries);
+    let collapsed_v4 = collapse_ipv4(&family_split.ipv4);
+    let collapsed_v6 = collapse_ipv6(&family_split.ipv6);
+
+    let mut canonical = Vec::new();
+    canonical.extend(collapsed_v4.into_iter().map(|cidr| cidr.to_string()));
+    canonical.extend(collapsed_v6.into_iter().map(|cidr| cidr.to_string()));
+
+    canonical
 }
 
 #[derive(Debug)]
@@ -368,7 +445,7 @@ mod tests {
     use super::{
         BanOutcome, BlocklistFile, KidoboError, append_blocklist_entry, apply_unban_plan,
         ban_target_in_file, build_unban_plan, canonical_contains, ensure_blocklist_parent,
-        parse_blocklist_target, write_blocklist_lines,
+        normalize_local_blocklist, parse_blocklist_target, write_blocklist_lines,
     };
 
     fn write_temp_file(temp: &TempDir, contents: &str) -> PathBuf {
@@ -497,6 +574,24 @@ mod tests {
 
         write_blocklist_lines(&path, &[] as &[String]).expect("write empty");
         assert!(fs::read_to_string(&path).unwrap().is_empty());
+    }
+
+    #[test]
+    fn normalize_local_blocklist_canonicalizes_entries_and_preserves_header_comments() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("blocklist.txt");
+        fs::write(
+            &path,
+            "# top comment \n203.0.113.7\n203.0.113.0/24\n2001:db8::/64\n2001:db8::/64\n",
+        )
+        .expect("write");
+
+        normalize_local_blocklist(&path).expect("normalize");
+
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "# top comment\n\n203.0.113.0/24\n2001:db8::/64\n"
+        );
     }
 
     #[test]

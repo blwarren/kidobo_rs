@@ -19,6 +19,7 @@ use crate::adapters::iptables::{
 };
 use crate::adapters::lock::acquire_non_blocking;
 use crate::adapters::path::{PathResolutionInput, ResolvedPaths, resolve_paths};
+use crate::cli::blocklist::normalize_local_blocklist;
 use crate::core::config::{Config, FirewallAction};
 use crate::core::network::{CanonicalCidr, parse_lines_non_strict};
 use crate::core::sync::compute_effective_blocklists;
@@ -84,6 +85,7 @@ pub(crate) fn run_sync_with_dependencies(
         chain_action(config),
     )?;
 
+    normalize_local_blocklist(&paths.blocklist_file)?;
     let internal = load_internal_blocklist(&paths.blocklist_file)?;
     let remote = fetch_remote_networks_concurrently(
         &config.remote.urls,
