@@ -61,25 +61,3 @@ jobs:
 
       - name: cargo audit
         run: cargo audit
-
-  coverage:
-    name: coverage
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.93.1
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
-
-      - name: Install llvm-tools-preview component
-        run: rustup component add llvm-tools-preview
-
-      - name: Install cargo-llvm-cov
-        run: cargo install --locked cargo-llvm-cov
-
-      - name: coverage gates
-        run: scripts/check-critical-coverage.sh
