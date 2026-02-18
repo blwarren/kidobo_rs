@@ -60,6 +60,78 @@ run_with_optional_sudo() {
     return 1
 }
 
+run_with_init_privileges() {
+    if [[ -w /etc || -w /var || -w /usr ]]; then
+        "$@"
+        return $?
+    fi
+
+    if has_cmd sudo; then
+        sudo "$@"
+        return $?
+    fi
+
+    return 1
+}
+
+run_init_after_install() {
+    local init_log="$1"
+    : > "${init_log}"
+
+    if [[ -w /etc || -w /var || -w /usr ]]; then
+        if "${TARGET_PATH}" init > >(tee "${init_log}") 2>&1; then
+            return 0
+        fi
+        return $?
+    elif has_cmd sudo; then
+        if sudo "${TARGET_PATH}" init > >(tee "${init_log}") 2>&1; then
+            return 0
+        fi
+        return $?
+    else
+        echo "skipping init: insufficient privileges and sudo unavailable" >&2
+        return 1
+    fi
+}
+
+recover_known_init_systemd_reset_failed_case() {
+    local init_log="$1"
+
+    if [[ -n "${KIDOBO_ROOT_OVERRIDE}" ]]; then
+        return 1
+    fi
+
+    if ! has_cmd systemctl; then
+        return 1
+    fi
+
+    if ! grep -Fq 'systemctl reset-failed kidobo-sync.service' "${init_log}"; then
+        return 1
+    fi
+
+    if ! grep -Fq 'Unit kidobo-sync.service not loaded' "${init_log}"; then
+        return 1
+    fi
+
+    echo "detected known systemd reset-failed condition; continuing with timer enablement"
+    if ! run_with_init_privileges systemctl daemon-reload; then
+        echo "failed to reload systemd daemon during init recovery" >&2
+        return 1
+    fi
+
+    if ! run_with_init_privileges systemctl reset-failed kidobo-sync.service >/dev/null 2>&1; then
+        echo "warning: failed to reset failed state for kidobo-sync.service during init recovery" >&2
+    fi
+
+    if ! run_with_init_privileges systemctl enable --now kidobo-sync.timer; then
+        echo "failed to enable kidobo-sync.timer during init recovery" >&2
+        return 1
+    fi
+
+    echo "recovered from init reset-failed error"
+    return 0
+}
+
 resolve_latest_tag() {
     local latest_url
     latest_url="$(
@@ -326,12 +398,11 @@ echo "installed ${BINARY_NAME} to ${TARGET_PATH}"
 
 if [[ "${INIT_AFTER_INSTALL}" -eq 1 ]]; then
     echo "running ${BINARY_NAME} init"
-    if [[ -w /etc || -w /var || -w /usr ]]; then
-        "${TARGET_PATH}" init
-    elif command -v sudo >/dev/null 2>&1; then
-        sudo "${TARGET_PATH}" init
-    else
-        echo "skipping init: insufficient privileges and sudo unavailable" >&2
-        exit 1
+    init_log_path="${workdir}/init.log"
+    if ! run_init_after_install "${init_log_path}"; then
+        if ! recover_known_init_systemd_reset_failed_case "${init_log_path}"; then
+            echo "${BINARY_NAME} init failed" >&2
+            exit 1
+        fi
     fi
 fi
