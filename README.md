@@ -76,6 +76,41 @@ Periodic maintenance check (matches CI `udeps-audit` workflow):
 cargo +nightly udeps --all-targets --all-features
 ```
 
+## Performance Measurements
+
+Speed benchmarks (Criterion, core hot paths):
+
+```bash
+# Run benchmarks
+scripts/perf/run-benchmarks.sh
+
+# Save a baseline
+scripts/perf/run-benchmarks.sh main
+
+# Compare to an existing baseline and save a new one
+scripts/perf/run-benchmarks.sh main pr-123
+```
+
+Criterion reports are written under `target/criterion/`.
+
+Lookup memory/time probe (offline, deterministic dataset):
+
+```bash
+scripts/perf/measure-lookup-rss.sh
+```
+
+This prints:
+
+- `elapsed_s`
+- `max_rss_kib`
+- workload size (`blocklist_entries`, `target_entries`, `lookup_matches`)
+
+Tune workload size:
+
+```bash
+KIDOBO_PERF_BLOCKS=100000 KIDOBO_PERF_TARGETS=20000 scripts/perf/measure-lookup-rss.sh
+```
+
 ## Quick Start
 
 ### 1. Initialize files

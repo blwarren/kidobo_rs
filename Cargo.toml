@@ -31,4 +31,9 @@ thiserror = "2"
 toml = "1"
 
 [dev-dependencies]
+criterion = "0.5"
 tempfile = "3"
+
+[[bench]]
+name = "core_perf"
+harness = false
