@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::Once;
 use std::time::Duration;
 
 use log::warn;
@@ -23,6 +24,7 @@ const DEFAULT_HTTP_REQUEST_TIMEOUT: Duration =
     Duration::from_secs(DEFAULT_HTTP_REQUEST_TIMEOUT_SECS);
 const MAX_IPLIST_READ_BYTES: usize = 16 * 1024 * 1024;
 const MAX_METADATA_READ_BYTES: usize = 512 * 1024;
+static RUSTLS_PROVIDER_INIT: Once = Once::new();
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CachePaths {
@@ -105,12 +107,19 @@ impl ReqwestHttpClient {
     }
 
     fn new_with_timeout(user_agent: String, request_timeout: Duration) -> Self {
+        ensure_rustls_provider_installed();
         Self {
             client: reqwest::blocking::Client::new(),
             user_agent,
             request_timeout,
         }
     }
+}
+
+fn ensure_rustls_provider_installed() {
+    RUSTLS_PROVIDER_INIT.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
 }
 
 impl HttpClient for ReqwestHttpClient {

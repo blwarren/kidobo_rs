@@ -6,6 +6,10 @@
 
 - `scripts/install.sh` now supports `--uninstall` for full teardown: best-effort flush of firewall/ipset state, systemd timer cleanup, removal of kidobo config/data/cache directories, and removal of the installed binary from `KIDOBO_INSTALL_DIR` (default `/usr/local/bin`).
 
+### Changed
+
+- TLS backend selection now uses `reqwest` with `rustls-no-provider` and an explicit `rustls` `ring` provider, avoiding `aws-lc`/OpenSSL-licensed transitive crypto code while preserving offline behavior and command surface.
+
 ### Fixed
 
 - `scripts/install.sh --init` now recovers from the known `kidobo init` failure mode where `systemctl reset-failed kidobo-sync.service` exits with `Unit ... not loaded`, and continues by enabling `kidobo-sync.timer`.
