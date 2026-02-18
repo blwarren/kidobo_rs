@@ -39,25 +39,25 @@ For other platforms/architectures, build from source.
 Install latest release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/blwarren/kidobo_rs/main/scripts/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/blwarren/kidobo/main/scripts/install.sh | sudo bash
 ```
 
 Install a specific release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/blwarren/kidobo_rs/main/scripts/install.sh | sudo bash -s -- --version v0.4.0
+curl -fsSL https://raw.githubusercontent.com/blwarren/kidobo/main/scripts/install.sh | sudo bash -s -- --version v0.4.0
 ```
 
 Install and initialize in one step:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/blwarren/kidobo_rs/main/scripts/install.sh | sudo bash -s -- --init
+curl -fsSL https://raw.githubusercontent.com/blwarren/kidobo/main/scripts/install.sh | sudo bash -s -- --init
 ```
 
 Uninstall the installed binary:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/blwarren/kidobo_rs/main/scripts/install.sh | sudo bash -s -- --uninstall
+curl -fsSL https://raw.githubusercontent.com/blwarren/kidobo/main/scripts/install.sh | sudo bash -s -- --uninstall
 ```
 
 `--uninstall` attempts a full cleanup: flushes firewall/ipset state, disables/removes `kidobo-sync` systemd units, removes kidobo config/data/cache directories, and removes the installed binary.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_SLUG="${KIDOBO_REPO_SLUG:-blwarren/kidobo_rs}"
+REPO_SLUG="${KIDOBO_REPO_SLUG:-blwarren/kidobo}"
 INSTALL_DIR="${KIDOBO_INSTALL_DIR:-/usr/local/bin}"
 BINARY_NAME="kidobo"
 KIDOBO_CHAIN_NAME="kidobo-input"
@@ -26,7 +26,7 @@ Options:
   -h, --help        Show this help.
 
 Environment:
-  KIDOBO_REPO_SLUG   Override GitHub repo slug (default: blwarren/kidobo_rs)
+  KIDOBO_REPO_SLUG   Override GitHub repo slug (default: blwarren/kidobo)
   KIDOBO_INSTALL_DIR Override install path (default: /usr/local/bin)
   KIDOBO_ROOT        Override runtime artifact root (matches `kidobo init`)
 EOF
