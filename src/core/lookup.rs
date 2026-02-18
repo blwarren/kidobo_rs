@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::core::network::{
     CanonicalCidr, IntervalU32, IntervalU128, cidr_overlaps as network_cidr_overlaps,
     ipv4_to_interval, ipv6_to_interval, parse_ip_cidr_token,
@@ -5,7 +7,7 @@ use crate::core::network::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LookupSourceEntry {
-    pub source_label: String,
+    pub source_label: Arc<str>,
     pub source_line: String,
     pub cidr: CanonicalCidr,
 }
@@ -164,13 +166,14 @@ impl IntervalIndexV6 {
 }
 
 pub fn run_lookup(targets: &[String], sources: &[LookupSourceEntry]) -> LookupReport {
-    let mut report = LookupReport::default();
     let v4_index = IntervalIndexV4::from_sources(sources);
     let v6_index = IntervalIndexV6::from_sources(sources);
+    let mut matched_entries = Vec::<(&str, &LookupSourceEntry)>::new();
+    let mut invalid_targets = Vec::<&str>::new();
 
     for target in targets {
         let Ok(parsed) = parse_target_strict(target) else {
-            report.invalid_targets.push(target.clone());
+            invalid_targets.push(target.as_str());
             continue;
         };
 
@@ -178,42 +181,58 @@ pub fn run_lookup(targets: &[String], sources: &[LookupSourceEntry]) -> LookupRe
             CanonicalCidr::V4(cidr) => {
                 for source_idx in v4_index.overlapping_source_indices(ipv4_to_interval(cidr)) {
                     if let Some(source) = sources.get(source_idx) {
-                        report.matches.push(LookupMatch {
-                            target: target.clone(),
-                            source_label: source.source_label.clone(),
-                            matched_source_entry: source.source_line.clone(),
-                            matched_cidr: source.cidr,
-                        });
+                        matched_entries.push((target.as_str(), source));
                     }
                 }
             }
             CanonicalCidr::V6(cidr) => {
                 for source_idx in v6_index.overlapping_source_indices(ipv6_to_interval(cidr)) {
                     if let Some(source) = sources.get(source_idx) {
-                        report.matches.push(LookupMatch {
-                            target: target.clone(),
-                            source_label: source.source_label.clone(),
-                            matched_source_entry: source.source_line.clone(),
-                            matched_cidr: source.cidr,
-                        });
+                        matched_entries.push((target.as_str(), source));
                     }
                 }
             }
         }
     }
 
-    report.matches.sort_by(|a, b| {
-        (&a.target, &a.source_label, &a.matched_source_entry).cmp(&(
-            &b.target,
-            &b.source_label,
-            &b.matched_source_entry,
-        ))
+    matched_entries.sort_unstable_by(|(target_a, source_a), (target_b, source_b)| {
+        (
+            *target_a,
+            source_a.source_label.as_ref(),
+            source_a.source_line.as_str(),
+            source_a.cidr,
+        )
+            .cmp(&(
+                *target_b,
+                source_b.source_label.as_ref(),
+                source_b.source_line.as_str(),
+                source_b.cidr,
+            ))
     });
-    report.matches.dedup();
-    report.invalid_targets.sort();
-    report.invalid_targets.dedup();
+    matched_entries.dedup_by(|(target_a, source_a), (target_b, source_b)| {
+        *target_a == *target_b
+            && source_a.source_label == source_b.source_label
+            && source_a.source_line == source_b.source_line
+            && source_a.cidr == source_b.cidr
+    });
 
-    report
+    let matches = matched_entries
+        .into_iter()
+        .map(|(target, source)| LookupMatch {
+            target: target.to_string(),
+            source_label: source.source_label.to_string(),
+            matched_source_entry: source.source_line.clone(),
+            matched_cidr: source.cidr,
+        })
+        .collect();
+
+    invalid_targets.sort_unstable();
+    invalid_targets.dedup();
+
+    LookupReport {
+        matches,
+        invalid_targets: invalid_targets.into_iter().map(str::to_string).collect(),
+    }
 }
 
 #[cfg(test)]
@@ -265,12 +284,12 @@ mod tests {
     fn lookup_reports_matches_and_invalid_targets() {
         let sources = vec![
             LookupSourceEntry {
-                source_label: "internal:blocklist".to_string(),
+                source_label: "internal:blocklist".into(),
                 source_line: "10.0.0.0/24".to_string(),
                 cidr: CanonicalCidr::V4(Ipv4Cidr::from_parts(0x0a000000, 24)),
             },
             LookupSourceEntry {
-                source_label: "remote:abcd1234.iplist".to_string(),
+                source_label: "remote:abcd1234.iplist".into(),
                 source_line: "2001:db8::/64".to_string(),
                 cidr: CanonicalCidr::V6(Ipv6Cidr::from_parts(
                     0x20010db8000000000000000000000000,
@@ -304,17 +323,17 @@ mod tests {
     fn lookup_index_handles_non_overlapping_prefix_sections() {
         let sources = vec![
             LookupSourceEntry {
-                source_label: "source:a".to_string(),
+                source_label: "source:a".into(),
                 source_line: "10.0.0.0/24".to_string(),
                 cidr: CanonicalCidr::V4(Ipv4Cidr::from_parts(0x0a000000, 24)),
             },
             LookupSourceEntry {
-                source_label: "source:b".to_string(),
+                source_label: "source:b".into(),
                 source_line: "10.0.2.0/24".to_string(),
                 cidr: CanonicalCidr::V4(Ipv4Cidr::from_parts(0x0a000200, 24)),
             },
             LookupSourceEntry {
-                source_label: "source:c".to_string(),
+                source_label: "source:c".into(),
                 source_line: "10.0.4.0/24".to_string(),
                 cidr: CanonicalCidr::V4(Ipv4Cidr::from_parts(0x0a000400, 24)),
             },

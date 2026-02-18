@@ -1,5 +1,5 @@
 use std::env;
-use std::fmt::Write as _;
+use std::fmt::{Display, Write as _};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
@@ -207,21 +207,29 @@ pub fn execute_ipset_restore(
     restore_result.map(|_| ())
 }
 
-pub fn atomic_replace_ipset(
+pub fn atomic_replace_ipset_values<T: Copy + Ord + Display>(
     runner: &dyn IpsetCommandRunner,
     spec: &IpsetSetSpec,
-    entries: &[String],
+    entries: &[T],
 ) -> Result<(), IpsetError> {
     let temp_set_name = generate_temp_set_name(&spec.set_name);
 
     best_effort_destroy_set(runner, &temp_set_name);
 
-    let script = build_restore_script(spec, &temp_set_name, entries);
-    let restore_result = execute_ipset_restore(runner, &script);
+    let restore_result = execute_ipset_restore_with_entries(runner, spec, &temp_set_name, entries);
 
     best_effort_destroy_set(runner, &temp_set_name);
 
     restore_result
+}
+
+pub fn atomic_replace_ipset(
+    runner: &dyn IpsetCommandRunner,
+    spec: &IpsetSetSpec,
+    entries: &[String],
+) -> Result<(), IpsetError> {
+    let borrowed = entries.iter().map(String::as_str).collect::<Vec<_>>();
+    atomic_replace_ipset_values(runner, spec, &borrowed)
 }
 
 fn run_checked(
@@ -243,6 +251,65 @@ fn best_effort_destroy_set(runner: &dyn IpsetCommandRunner, set_name: &str) {
     if let Err(err) = runner.run("ipset", &["destroy", set_name]) {
         warn!("best-effort ipset destroy for {set_name} failed: {err}");
     }
+}
+
+fn execute_ipset_restore_with_entries<T: Copy + Ord + Display>(
+    runner: &dyn IpsetCommandRunner,
+    spec: &IpsetSetSpec,
+    temp_set_name: &str,
+    entries: &[T],
+) -> Result<(), IpsetError> {
+    let (mut file, path) = create_restore_script_file()?;
+    if let Err(err) = write_restore_script_file(&mut file, spec, temp_set_name, entries) {
+        let reason = err.to_string();
+        if let Err(cleanup_err) = fs::remove_file(&path) {
+            warn!(
+                "failed to remove temporary ipset restore script {}: {cleanup_err}",
+                path.display()
+            );
+        }
+        return Err(IpsetError::WriteRestoreScript { path, reason });
+    }
+    drop(file);
+
+    let path_string = path.display().to_string();
+    let restore_result = run_checked(runner, "ipset", &["restore", "-file", &path_string]);
+
+    if let Err(err) = fs::remove_file(&path) {
+        warn!(
+            "failed to remove temporary ipset restore script {}: {err}",
+            path.display()
+        );
+    }
+
+    restore_result.map(|_| ())
+}
+
+fn write_restore_script_file<T: Copy + Ord + Display>(
+    file: &mut std::fs::File,
+    spec: &IpsetSetSpec,
+    temp_set_name: &str,
+    entries: &[T],
+) -> Result<(), std::io::Error> {
+    let mut sorted_entries = entries.to_vec();
+    sorted_entries.sort_unstable();
+    sorted_entries.dedup();
+
+    writeln!(
+        file,
+        "create {} {} family {} hashsize {} maxelem {} timeout {}",
+        temp_set_name,
+        spec.set_type,
+        spec.family.as_str(),
+        spec.hashsize,
+        spec.maxelem,
+        spec.timeout
+    )?;
+    for entry in sorted_entries {
+        writeln!(file, "add {temp_set_name} {entry}")?;
+    }
+    writeln!(file, "swap {temp_set_name} {}", spec.set_name)?;
+    file.flush()
 }
 
 fn is_missing_set_result(result: &CommandResult) -> bool {

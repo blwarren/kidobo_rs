@@ -10,6 +10,11 @@
 
 - TLS backend selection now uses `reqwest` with `rustls-no-provider` and an explicit `rustls` `ring` provider, avoiding `aws-lc`/OpenSSL-licensed transitive crypto code while preserving offline behavior and command surface.
 - Updated `Cargo.lock` to use `bumpalo` `3.20.1` (from `3.20.0`) to clear a yanked transitive dependency warning in supply-chain checks.
+- Core interval carving and collapse paths now avoid redundant merge/sort passes and per-fragment temporary vectors, reducing CPU and allocation pressure during `sync`.
+- `kidobo sync` now streams effective CIDRs directly into `ipset restore` generation (without building intermediate `Vec<String>` entries), reducing peak memory use for large sets.
+- Remote source fetch workers now use lock-free index scheduling and per-worker local buffers before final merge, reducing mutex contention under multi-source sync loads.
+- Lookup source entries now share source-label storage across file lines, and lookup matching deduplicates by source/target indices before allocating output strings.
+- Remote `.iplist` cache loads now keep only parsed network vectors in memory (instead of retaining full cached text alongside parsed CIDRs).
 
 ### Fixed
 

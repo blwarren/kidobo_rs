@@ -200,16 +200,14 @@ pub fn dedup_ipv6(mut cidrs: Vec<Ipv6Cidr>) -> Vec<Ipv6Cidr> {
 }
 
 pub fn collapse_ipv4(cidrs: &[Ipv4Cidr]) -> Vec<Ipv4Cidr> {
-    let deduped = dedup_ipv4(cidrs.to_vec());
-    let intervals: Vec<IntervalU32> = deduped.into_iter().map(IntervalU32::from).collect();
-    let merged = merge_intervals_u32(&intervals);
+    let intervals = cidrs.iter().copied().map(IntervalU32::from).collect();
+    let merged = merge_intervals_u32_owned(intervals);
     intervals_to_ipv4_cidrs_from_merged(&merged)
 }
 
 pub fn collapse_ipv6(cidrs: &[Ipv6Cidr]) -> Vec<Ipv6Cidr> {
-    let deduped = dedup_ipv6(cidrs.to_vec());
-    let intervals: Vec<IntervalU128> = deduped.into_iter().map(IntervalU128::from).collect();
-    let merged = merge_intervals_u128(&intervals);
+    let intervals = cidrs.iter().copied().map(IntervalU128::from).collect();
+    let merged = merge_intervals_u128_owned(intervals);
     intervals_to_ipv6_cidrs_from_merged(&merged)
 }
 
@@ -244,108 +242,60 @@ pub fn ipv6_to_interval(cidr: Ipv6Cidr) -> IntervalU128 {
 }
 
 pub fn merge_intervals_u32(intervals: &[IntervalU32]) -> Vec<IntervalU32> {
-    if intervals.is_empty() {
-        return Vec::new();
-    }
-
-    let mut sorted = intervals.to_vec();
-    sorted.sort_unstable();
-
-    let mut merged = Vec::with_capacity(sorted.len());
-    let mut iter = sorted.into_iter();
-    let Some(mut current) = iter.next() else {
-        return Vec::new();
-    };
-
-    for interval in iter {
-        if interval.start <= current.end.saturating_add(1) {
-            current.end = current.end.max(interval.end);
-        } else {
-            merged.push(current);
-            current = interval;
-        }
-    }
-
-    merged.push(current);
-    merged
+    merge_intervals_u32_owned(intervals.to_vec())
 }
 
 pub fn merge_intervals_u128(intervals: &[IntervalU128]) -> Vec<IntervalU128> {
-    if intervals.is_empty() {
-        return Vec::new();
-    }
-
-    let mut sorted = intervals.to_vec();
-    sorted.sort_unstable();
-
-    let mut merged = Vec::with_capacity(sorted.len());
-    let mut iter = sorted.into_iter();
-    let Some(mut current) = iter.next() else {
-        return Vec::new();
-    };
-
-    for interval in iter {
-        if interval.start <= current.end.saturating_add(1) {
-            current.end = current.end.max(interval.end);
-        } else {
-            merged.push(current);
-            current = interval;
-        }
-    }
-
-    merged.push(current);
-    merged
+    merge_intervals_u128_owned(intervals.to_vec())
 }
 
 pub fn subtract_safelist_ipv4(candidates: &[Ipv4Cidr], safelist: &[Ipv4Cidr]) -> Vec<Ipv4Cidr> {
-    let candidate_intervals = merge_intervals_u32(
-        &candidates
+    let candidate_intervals = merge_intervals_u32_owned(
+        candidates
+            .iter()
+            .copied()
+            .map(IntervalU32::from)
+            .collect::<Vec<_>>(),
+    );
+    let safe_intervals = merge_intervals_u32_owned(
+        safelist
             .iter()
             .copied()
             .map(IntervalU32::from)
             .collect::<Vec<_>>(),
     );
 
-    let safe_intervals = merge_intervals_u32(
-        &safelist
-            .iter()
-            .copied()
-            .map(IntervalU32::from)
-            .collect::<Vec<_>>(),
-    );
-
-    let carved = subtract_intervals_u32(&candidate_intervals, &safe_intervals);
-    intervals_to_ipv4_cidrs(&carved)
+    let carved = subtract_intervals_u32_merged(&candidate_intervals, &safe_intervals);
+    intervals_to_ipv4_cidrs_from_merged(&carved)
 }
 
 pub fn subtract_safelist_ipv6(candidates: &[Ipv6Cidr], safelist: &[Ipv6Cidr]) -> Vec<Ipv6Cidr> {
-    let candidate_intervals = merge_intervals_u128(
-        &candidates
+    let candidate_intervals = merge_intervals_u128_owned(
+        candidates
+            .iter()
+            .copied()
+            .map(IntervalU128::from)
+            .collect::<Vec<_>>(),
+    );
+    let safe_intervals = merge_intervals_u128_owned(
+        safelist
             .iter()
             .copied()
             .map(IntervalU128::from)
             .collect::<Vec<_>>(),
     );
 
-    let safe_intervals = merge_intervals_u128(
-        &safelist
-            .iter()
-            .copied()
-            .map(IntervalU128::from)
-            .collect::<Vec<_>>(),
-    );
-
-    let carved = subtract_intervals_u128(&candidate_intervals, &safe_intervals);
-    intervals_to_ipv6_cidrs(&carved)
+    let carved = subtract_intervals_u128_merged(&candidate_intervals, &safe_intervals);
+    intervals_to_ipv6_cidrs_from_merged(&carved)
 }
 
 pub fn intervals_to_ipv4_cidrs(intervals: &[IntervalU32]) -> Vec<Ipv4Cidr> {
-    let merged = merge_intervals_u32(intervals);
+    let merged = merge_intervals_u32_owned(intervals.to_vec());
     intervals_to_ipv4_cidrs_from_merged(&merged)
 }
 
 pub fn intervals_to_ipv6_cidrs(intervals: &[IntervalU128]) -> Vec<Ipv6Cidr> {
-    let merged = merge_intervals_u128(intervals);
+    let merged = merge_intervals_u128_owned(intervals.to_vec());
     intervals_to_ipv6_cidrs_from_merged(&merged)
 }
 
@@ -412,7 +362,57 @@ fn intervals_to_ipv6_cidrs_from_merged(intervals: &[IntervalU128]) -> Vec<Ipv6Ci
     out
 }
 
-fn subtract_intervals_u32(base: &[IntervalU32], carve: &[IntervalU32]) -> Vec<IntervalU32> {
+fn merge_intervals_u32_owned(mut intervals: Vec<IntervalU32>) -> Vec<IntervalU32> {
+    if intervals.is_empty() {
+        return Vec::new();
+    }
+
+    intervals.sort_unstable();
+    let mut iter = intervals.into_iter();
+    let Some(mut current) = iter.next() else {
+        return Vec::new();
+    };
+    let mut merged = Vec::new();
+
+    for interval in iter {
+        if interval.start <= current.end.saturating_add(1) {
+            current.end = current.end.max(interval.end);
+        } else {
+            merged.push(current);
+            current = interval;
+        }
+    }
+
+    merged.push(current);
+    merged
+}
+
+fn merge_intervals_u128_owned(mut intervals: Vec<IntervalU128>) -> Vec<IntervalU128> {
+    if intervals.is_empty() {
+        return Vec::new();
+    }
+
+    intervals.sort_unstable();
+    let mut iter = intervals.into_iter();
+    let Some(mut current) = iter.next() else {
+        return Vec::new();
+    };
+    let mut merged = Vec::new();
+
+    for interval in iter {
+        if interval.start <= current.end.saturating_add(1) {
+            current.end = current.end.max(interval.end);
+        } else {
+            merged.push(current);
+            current = interval;
+        }
+    }
+
+    merged.push(current);
+    merged
+}
+
+fn subtract_intervals_u32_merged(base: &[IntervalU32], carve: &[IntervalU32]) -> Vec<IntervalU32> {
     if base.is_empty() {
         return Vec::new();
     }
@@ -420,13 +420,10 @@ fn subtract_intervals_u32(base: &[IntervalU32], carve: &[IntervalU32]) -> Vec<In
         return base.to_vec();
     }
 
-    let base = merge_intervals_u32(base);
-    let carve = merge_intervals_u32(carve);
-
-    let mut result = Vec::new();
+    let mut result = Vec::with_capacity(base.len());
     let mut carve_idx = 0_usize;
 
-    for base_interval in base {
+    for base_interval in base.iter().copied() {
         while carve
             .get(carve_idx)
             .is_some_and(|interval| interval.end < base_interval.start)
@@ -434,30 +431,53 @@ fn subtract_intervals_u32(base: &[IntervalU32], carve: &[IntervalU32]) -> Vec<In
             carve_idx += 1;
         }
 
-        let mut fragments = vec![base_interval];
-        for carve_interval in carve
-            .iter()
-            .copied()
-            .skip(carve_idx)
-            .take_while(|interval| interval.start <= base_interval.end)
-        {
-            let mut next_fragments = Vec::new();
-            for fragment in fragments {
-                next_fragments.extend(subtract_one_u32(fragment, carve_interval));
-            }
-            fragments = next_fragments;
-            if fragments.is_empty() {
+        let mut next_start = base_interval.start;
+        let mut idx = carve_idx;
+        let mut fully_carved = false;
+
+        while let Some(&carve_interval) = carve.get(idx) {
+            if carve_interval.start > base_interval.end {
                 break;
             }
+
+            if carve_interval.end < next_start {
+                idx += 1;
+                continue;
+            }
+
+            if carve_interval.start > next_start {
+                result.push(IntervalU32 {
+                    start: next_start,
+                    end: carve_interval.start - 1,
+                });
+            }
+
+            if carve_interval.end >= base_interval.end {
+                fully_carved = true;
+                break;
+            }
+
+            next_start = carve_interval.end + 1;
+            idx += 1;
         }
 
-        result.extend(fragments);
+        if !fully_carved && next_start <= base_interval.end {
+            result.push(IntervalU32 {
+                start: next_start,
+                end: base_interval.end,
+            });
+        }
+
+        carve_idx = idx;
     }
 
     result
 }
 
-fn subtract_intervals_u128(base: &[IntervalU128], carve: &[IntervalU128]) -> Vec<IntervalU128> {
+fn subtract_intervals_u128_merged(
+    base: &[IntervalU128],
+    carve: &[IntervalU128],
+) -> Vec<IntervalU128> {
     if base.is_empty() {
         return Vec::new();
     }
@@ -465,13 +485,10 @@ fn subtract_intervals_u128(base: &[IntervalU128], carve: &[IntervalU128]) -> Vec
         return base.to_vec();
     }
 
-    let base = merge_intervals_u128(base);
-    let carve = merge_intervals_u128(carve);
-
-    let mut result = Vec::new();
+    let mut result = Vec::with_capacity(base.len());
     let mut carve_idx = 0_usize;
 
-    for base_interval in base {
+    for base_interval in base.iter().copied() {
         while carve
             .get(carve_idx)
             .is_some_and(|interval| interval.end < base_interval.start)
@@ -479,83 +496,47 @@ fn subtract_intervals_u128(base: &[IntervalU128], carve: &[IntervalU128]) -> Vec
             carve_idx += 1;
         }
 
-        let mut fragments = vec![base_interval];
-        for carve_interval in carve
-            .iter()
-            .copied()
-            .skip(carve_idx)
-            .take_while(|interval| interval.start <= base_interval.end)
-        {
-            let mut next_fragments = Vec::new();
-            for fragment in fragments {
-                next_fragments.extend(subtract_one_u128(fragment, carve_interval));
-            }
-            fragments = next_fragments;
-            if fragments.is_empty() {
+        let mut next_start = base_interval.start;
+        let mut idx = carve_idx;
+        let mut fully_carved = false;
+
+        while let Some(&carve_interval) = carve.get(idx) {
+            if carve_interval.start > base_interval.end {
                 break;
             }
+
+            if carve_interval.end < next_start {
+                idx += 1;
+                continue;
+            }
+
+            if carve_interval.start > next_start {
+                result.push(IntervalU128 {
+                    start: next_start,
+                    end: carve_interval.start - 1,
+                });
+            }
+
+            if carve_interval.end >= base_interval.end {
+                fully_carved = true;
+                break;
+            }
+
+            next_start = carve_interval.end + 1;
+            idx += 1;
         }
 
-        result.extend(fragments);
+        if !fully_carved && next_start <= base_interval.end {
+            result.push(IntervalU128 {
+                start: next_start,
+                end: base_interval.end,
+            });
+        }
+
+        carve_idx = idx;
     }
 
     result
-}
-
-fn subtract_one_u32(base: IntervalU32, carve: IntervalU32) -> Vec<IntervalU32> {
-    if carve.end < base.start || carve.start > base.end {
-        return vec![base];
-    }
-
-    if carve.start <= base.start && carve.end >= base.end {
-        return Vec::new();
-    }
-
-    let mut out = Vec::with_capacity(2);
-
-    if carve.start > base.start {
-        out.push(IntervalU32 {
-            start: base.start,
-            end: carve.start - 1,
-        });
-    }
-
-    if carve.end < base.end {
-        out.push(IntervalU32 {
-            start: carve.end + 1,
-            end: base.end,
-        });
-    }
-
-    out
-}
-
-fn subtract_one_u128(base: IntervalU128, carve: IntervalU128) -> Vec<IntervalU128> {
-    if carve.end < base.start || carve.start > base.end {
-        return vec![base];
-    }
-
-    if carve.start <= base.start && carve.end >= base.end {
-        return Vec::new();
-    }
-
-    let mut out = Vec::with_capacity(2);
-
-    if carve.start > base.start {
-        out.push(IntervalU128 {
-            start: base.start,
-            end: carve.start - 1,
-        });
-    }
-
-    if carve.end < base.end {
-        out.push(IntervalU128 {
-            start: carve.end + 1,
-            end: base.end,
-        });
-    }
-
-    out
 }
 
 fn largest_prefix_u32(start: u32, end: u32) -> u8 {

@@ -1,6 +1,6 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -11,7 +11,7 @@ use crate::adapters::config::load_config_from_file;
 use crate::adapters::github_meta::load_github_meta_safelist;
 use crate::adapters::http_cache::{HttpClient, ReqwestHttpClient, fetch_iplist_with_cache};
 use crate::adapters::ipset::{
-    IpsetCommandRunner, IpsetFamily, IpsetSetSpec, atomic_replace_ipset, ensure_ipset_exists,
+    IpsetCommandRunner, IpsetFamily, IpsetSetSpec, atomic_replace_ipset_values, ensure_ipset_exists,
 };
 use crate::adapters::iptables::{
     ChainAction, FirewallCommandRunner, ensure_firewall_wiring_for_families,
@@ -121,28 +121,25 @@ pub(crate) fn run_sync_with_dependencies(
 
     let effective = compute_effective_blocklists(&candidates, &safelist, config.ipset.enable_ipv6);
 
-    let ipv4_entries: Vec<String> = effective.ipv4.iter().map(ToString::to_string).collect();
-    let ipv6_entries: Vec<String> = effective.ipv6.iter().map(ToString::to_string).collect();
-
     if config.ipset.enable_ipv6 {
-        ensure_within_maxelem(&ipv6_spec, ipv6_entries.len())?;
-        atomic_replace_ipset(ipset_runner, &ipv6_spec, &ipv6_entries)?;
+        ensure_within_maxelem(&ipv6_spec, effective.ipv6.len())?;
+        atomic_replace_ipset_values(ipset_runner, &ipv6_spec, &effective.ipv6)?;
     }
-    ensure_within_maxelem(&ipv4_spec, ipv4_entries.len())?;
-    atomic_replace_ipset(ipset_runner, &ipv4_spec, &ipv4_entries)?;
+    ensure_within_maxelem(&ipv4_spec, effective.ipv4.len())?;
+    atomic_replace_ipset_values(ipset_runner, &ipv4_spec, &effective.ipv4)?;
 
     info!(
         "sync source counts: internal={internal_count} remote={remote_count} safelist={safelist_count}"
     );
     info!(
         "sync final ipset counts: ipv4={pv4} ipv6={pv6}",
-        pv4 = ipv4_entries.len(),
-        pv6 = ipv6_entries.len()
+        pv4 = effective.ipv4.len(),
+        pv6 = effective.ipv6.len()
     );
 
     Ok(SyncSummary {
-        ipv4_entries: ipv4_entries.len(),
-        ipv6_entries: ipv6_entries.len(),
+        ipv4_entries: effective.ipv4.len(),
+        ipv6_entries: effective.ipv6.len(),
     })
 }
 
@@ -223,51 +220,38 @@ fn fetch_remote_networks_concurrently(
         return Vec::new();
     }
 
-    let queue = Arc::new(Mutex::new(urls.iter().cloned().collect::<VecDeque<_>>()));
-    let collected = Arc::new(Mutex::new(Vec::<CanonicalCidr>::new()));
-
     let worker_count = urls.len().min(MAX_REMOTE_FETCH_WORKERS);
+    let next_idx = AtomicUsize::new(0);
+    let mut networks = Vec::new();
 
     thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(worker_count);
         for _ in 0..worker_count {
-            let queue = Arc::clone(&queue);
-            let collected = Arc::clone(&collected);
-
-            scope.spawn(move || {
+            handles.push(scope.spawn(|| {
+                let mut local = Vec::new();
                 loop {
-                    let next_url = {
-                        let mut guard = queue
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        guard.pop_front()
-                    };
-
-                    let Some(url) = next_url else {
+                    let idx = next_idx.fetch_add(1, Ordering::Relaxed);
+                    let Some(url) = urls.get(idx) else {
                         break;
                     };
 
-                    match fetch_iplist_with_cache(http_client, &url, cache_dir, env) {
-                        Ok(cached) => {
-                            if !cached.networks.is_empty() {
-                                let mut guard = collected
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                                guard.extend(cached.networks);
-                            }
-                        }
+                    match fetch_iplist_with_cache(http_client, url, cache_dir, env) {
+                        Ok(cached) => local.extend(cached.networks),
                         Err(err) => warn!("remote source fetch failed softly for {url}: {err}"),
                     }
                 }
-            });
+                local
+            }));
+        }
+
+        for handle in handles {
+            let local = match handle.join() {
+                Ok(local) => local,
+                Err(payload) => std::panic::resume_unwind(payload),
+            };
+            networks.extend(local);
         }
     });
-
-    let mut networks = {
-        let mut guard = collected
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        std::mem::take(&mut *guard)
-    };
 
     networks.sort_unstable();
     networks.dedup();

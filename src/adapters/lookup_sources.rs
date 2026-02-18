@@ -1,6 +1,7 @@
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::Deserialize;
 use thiserror::Error;
@@ -98,11 +99,12 @@ fn read_source_file(
         }
     })?;
 
+    let source_label: Arc<str> = Arc::from(source_label);
     let mut entries = Vec::new();
     for raw_line in contents.lines() {
         if let Some((cidr, token)) = parse_lookup_source_line(raw_line) {
             entries.push(LookupSourceEntry {
-                source_label: source_label.to_string(),
+                source_label: Arc::clone(&source_label),
                 source_line: token,
                 cidr,
             });
@@ -209,7 +211,7 @@ mod tests {
 
         let labels = entries
             .iter()
-            .map(|entry| entry.source_label.as_str())
+            .map(|entry| entry.source_label.as_ref())
             .collect::<Vec<_>>();
         let lines = entries
             .iter()
@@ -239,7 +241,7 @@ mod tests {
         let entries = load_lookup_sources(&paths).expect("load sources");
 
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].source_label, "remote:a.iplist");
+        assert_eq!(entries[0].source_label.as_ref(), "remote:a.iplist");
     }
 
     #[test]
@@ -255,7 +257,7 @@ mod tests {
         let entries = load_lookup_sources(&paths).expect("load sources");
 
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].source_label, "remote:a.iplist");
+        assert_eq!(entries[0].source_label.as_ref(), "remote:a.iplist");
     }
 
     #[test]
