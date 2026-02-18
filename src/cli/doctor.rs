@@ -12,7 +12,9 @@ use crate::adapters::command_runner::{
     CommandExecutor, CommandResult, CommandRunnerError, SudoCommandRunner,
 };
 use crate::adapters::config::load_config_from_file;
-use crate::adapters::path::{PathResolutionInput, resolve_paths};
+use crate::adapters::path::{
+    PathResolutionError, PathResolutionInput, ResolvedPaths, resolve_paths,
+};
 use crate::core::config::Config;
 use crate::error::KidoboError;
 
@@ -69,6 +71,34 @@ enum Ipv6Mode {
     Unknown,
 }
 
+type BinaryAvailability = BTreeMap<&'static str, bool>;
+type PathsResult = Result<ResolvedPaths, PathResolutionError>;
+
+const REQUIRED_BINARY_CHECKS: [(&str, &str); 5] = [
+    ("binary_sudo", "sudo"),
+    ("binary_ipset", "ipset"),
+    ("binary_iptables", "iptables"),
+    ("binary_iptables_save", "iptables-save"),
+    ("binary_iptables_restore", "iptables-restore"),
+];
+
+const SUDO_PROBE_CHECKS: [(&str, &str, &[&str]); 4] = [
+    ("sudo_probe_ipset", "ipset", &["list"]),
+    ("sudo_probe_iptables", "iptables", &["-S"]),
+    ("sudo_probe_iptables_save", "iptables-save", &[]),
+    (
+        "sudo_probe_iptables_restore",
+        "iptables-restore",
+        &["--version"],
+    ),
+];
+
+#[derive(Debug)]
+struct DoctorBuildContext {
+    paths_result: PathsResult,
+    ipv6_mode: Ipv6Mode,
+}
+
 pub trait BinaryLocator {
     fn find_in_path(&self, binary: &str) -> Option<PathBuf>;
 }
@@ -115,75 +145,105 @@ pub fn run_doctor_command() -> Result<(), KidoboError> {
     }
 }
 
-#[allow(clippy::too_many_lines)]
 pub(crate) fn build_doctor_report(
     path_input: &PathResolutionInput,
     binary_locator: &dyn BinaryLocator,
     sudo_probe_runner: &dyn SudoProbeRunner,
 ) -> DoctorReport {
     let mut checks = Vec::new();
-    let mut binary_available = BTreeMap::new();
+    let context = collect_doctor_context(path_input, &mut checks);
+    let binary_available = collect_binary_checks(&mut checks, binary_locator, context.ipv6_mode);
+    push_path_checks(&mut checks, &context.paths_result);
+    push_sudo_probe_checks(
+        &mut checks,
+        context.ipv6_mode,
+        &binary_available,
+        sudo_probe_runner,
+    );
 
+    DoctorReport::from_checks(checks)
+}
+
+fn collect_doctor_context(
+    path_input: &PathResolutionInput,
+    checks: &mut Vec<DoctorCheck>,
+) -> DoctorBuildContext {
     let paths_result = resolve_paths(path_input);
-    let mut config: Option<Config> = None;
 
-    match &paths_result {
+    let ipv6_mode = match &paths_result {
         Ok(paths) => match load_config_from_file(&paths.config_file) {
             Ok(parsed) => {
                 checks.push(ok_check(
                     "config_parse",
                     format!("config parsed: {}", paths.config_file.display()),
                 ));
-                config = Some(parsed);
+                ipv6_mode_from_config(Some(&parsed))
             }
-            Err(err) => checks.push(fail_check(
-                "config_parse",
-                format!("failed to parse {}: {err}", paths.config_file.display()),
-            )),
+            Err(err) => {
+                checks.push(fail_check(
+                    "config_parse",
+                    format!("failed to parse {}: {err}", paths.config_file.display()),
+                ));
+                ipv6_mode_from_config(None)
+            }
         },
-        Err(err) => checks.push(fail_check(
-            "config_parse",
-            format!("path resolution failed: {err}"),
-        )),
-    }
+        Err(err) => {
+            checks.push(fail_check(
+                "config_parse",
+                format!("path resolution failed: {err}"),
+            ));
+            ipv6_mode_from_config(None)
+        }
+    };
 
-    let ipv6_mode = match config.as_ref() {
+    DoctorBuildContext {
+        paths_result,
+        ipv6_mode,
+    }
+}
+
+fn ipv6_mode_from_config(config: Option<&Config>) -> Ipv6Mode {
+    match config {
         Some(cfg) if cfg.ipset.enable_ipv6 => Ipv6Mode::Enabled,
         Some(_) => Ipv6Mode::Disabled,
         None => Ipv6Mode::Unknown,
+    }
+}
+
+fn collect_binary_checks(
+    checks: &mut Vec<DoctorCheck>,
+    binary_locator: &dyn BinaryLocator,
+    ipv6_mode: Ipv6Mode,
+) -> BinaryAvailability {
+    let mut binary_available = BTreeMap::new();
+
+    for &(check_name, binary) in &REQUIRED_BINARY_CHECKS {
+        let available = push_binary_check(checks, binary_locator, check_name, binary);
+        binary_available.insert(binary, available);
+    }
+
+    push_ipv6_binary_check(checks, binary_locator, ipv6_mode, &mut binary_available);
+    binary_available
+}
+
+fn push_ipv6_binary_check(
+    checks: &mut Vec<DoctorCheck>,
+    binary_locator: &dyn BinaryLocator,
+    ipv6_mode: Ipv6Mode,
+    binary_available: &mut BinaryAvailability,
+) {
+    let available = if let Some(reason) = ipv6_skip_reason(ipv6_mode) {
+        checks.push(skip_check("binary_ip6tables", reason));
+        false
+    } else {
+        push_binary_check(checks, binary_locator, "binary_ip6tables", "ip6tables")
     };
 
-    for (check_name, binary) in [
-        ("binary_sudo", "sudo"),
-        ("binary_ipset", "ipset"),
-        ("binary_iptables", "iptables"),
-        ("binary_iptables_save", "iptables-save"),
-        ("binary_iptables_restore", "iptables-restore"),
-    ] {
-        let available = push_binary_check(&mut checks, binary_locator, check_name, binary);
-        binary_available.insert(binary.to_string(), available);
-    }
+    binary_available.insert("ip6tables", available);
+}
 
-    match ipv6_mode {
-        Ipv6Mode::Enabled => {
-            let available =
-                push_binary_check(&mut checks, binary_locator, "binary_ip6tables", "ip6tables");
-            binary_available.insert("ip6tables".to_string(), available);
-        }
-        Ipv6Mode::Disabled => {
-            checks.push(skip_check("binary_ip6tables", "ipv6 disabled in config"));
-            binary_available.insert("ip6tables".to_string(), false);
-        }
-        Ipv6Mode::Unknown => {
-            checks.push(skip_check(
-                "binary_ip6tables",
-                "config unavailable; ipv6 state unknown",
-            ));
-            binary_available.insert("ip6tables".to_string(), false);
-        }
-    }
-
-    match &paths_result {
+fn push_path_checks(checks: &mut Vec<DoctorCheck>, paths_result: &PathsResult) {
+    match paths_result {
         Ok(paths) => {
             checks.push(file_exists_check("file_config", &paths.config_file));
             checks.push(file_exists_check("file_blocklist", &paths.blocklist_file));
@@ -204,47 +264,48 @@ pub(crate) fn build_doctor_report(
             ));
         }
     }
+}
 
+fn push_sudo_probe_checks(
+    checks: &mut Vec<DoctorCheck>,
+    ipv6_mode: Ipv6Mode,
+    binary_available: &BinaryAvailability,
+    runner: &dyn SudoProbeRunner,
+) {
     let sudo_available = *binary_available.get("sudo").unwrap_or(&false);
 
-    for (check_name, binary, args) in [
-        ("sudo_probe_ipset", "ipset", vec!["list"]),
-        ("sudo_probe_iptables", "iptables", vec!["-S"]),
-        ("sudo_probe_iptables_save", "iptables-save", Vec::new()),
-        (
-            "sudo_probe_iptables_restore",
-            "iptables-restore",
-            vec!["--version"],
-        ),
-    ] {
+    for &(check_name, binary, args) in &SUDO_PROBE_CHECKS {
         checks.push(sudo_probe_check(
             check_name,
             binary,
-            &args,
+            args,
             sudo_available,
-            &binary_available,
-            sudo_probe_runner,
+            binary_available,
+            runner,
         ));
     }
 
-    let ipv6_probe = match ipv6_mode {
-        Ipv6Mode::Enabled => sudo_probe_check(
+    let ipv6_probe = if let Some(reason) = ipv6_skip_reason(ipv6_mode) {
+        skip_check("sudo_probe_ip6tables", reason)
+    } else {
+        sudo_probe_check(
             "sudo_probe_ip6tables",
             "ip6tables",
             &["-S"],
             sudo_available,
-            &binary_available,
-            sudo_probe_runner,
-        ),
-        Ipv6Mode::Disabled => skip_check("sudo_probe_ip6tables", "ipv6 disabled in config"),
-        Ipv6Mode::Unknown => skip_check(
-            "sudo_probe_ip6tables",
-            "config unavailable; ipv6 state unknown",
-        ),
+            binary_available,
+            runner,
+        )
     };
     checks.push(ipv6_probe);
+}
 
-    DoctorReport::from_checks(checks)
+fn ipv6_skip_reason(ipv6_mode: Ipv6Mode) -> Option<&'static str> {
+    match ipv6_mode {
+        Ipv6Mode::Enabled => None,
+        Ipv6Mode::Disabled => Some("ipv6 disabled in config"),
+        Ipv6Mode::Unknown => Some("config unavailable; ipv6 state unknown"),
+    }
 }
 
 fn push_binary_check(
@@ -308,7 +369,7 @@ fn sudo_probe_check(
     binary: &str,
     args: &[&str],
     sudo_available: bool,
-    binary_available: &BTreeMap<String, bool>,
+    binary_available: &BinaryAvailability,
     runner: &dyn SudoProbeRunner,
 ) -> DoctorCheck {
     if !sudo_available {
@@ -394,8 +455,8 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        BinaryLocator, DoctorCheck, DoctorCheckStatus, DoctorOverall, SudoProbeRunner,
-        build_doctor_report,
+        BinaryLocator, DoctorCheck, DoctorCheckStatus, DoctorOverall, Ipv6Mode, SudoProbeRunner,
+        build_doctor_report, collect_binary_checks, ipv6_skip_reason,
     };
     use crate::adapters::command_runner::{CommandResult, CommandRunnerError};
     use crate::adapters::path::{ENV_KIDOBO_ROOT, PathResolutionInput};
@@ -500,6 +561,39 @@ mod tests {
             .iter()
             .find(|check| check.name == name)
             .expect("named check")
+    }
+
+    #[test]
+    fn ipv6_skip_reason_matches_mode() {
+        assert_eq!(ipv6_skip_reason(Ipv6Mode::Enabled), None);
+        assert_eq!(
+            ipv6_skip_reason(Ipv6Mode::Disabled),
+            Some("ipv6 disabled in config")
+        );
+        assert_eq!(
+            ipv6_skip_reason(Ipv6Mode::Unknown),
+            Some("config unavailable; ipv6 state unknown")
+        );
+    }
+
+    #[test]
+    fn collect_binary_checks_skips_ipv6_when_config_is_unknown() {
+        let locator = MockBinaryLocator::new(&[
+            "sudo",
+            "ipset",
+            "iptables",
+            "iptables-save",
+            "iptables-restore",
+            "ip6tables",
+        ]);
+        let mut checks = Vec::new();
+        let availability = collect_binary_checks(&mut checks, &locator, Ipv6Mode::Unknown);
+
+        assert_eq!(availability.get("ip6tables"), Some(&false));
+        assert_eq!(
+            find_check(&checks, "binary_ip6tables").status,
+            DoctorCheckStatus::Skip
+        );
     }
 
     #[test]
