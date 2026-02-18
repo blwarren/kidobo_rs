@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-02-18
+
+
 ### Added
 
 - `scripts/install.sh` now supports `--uninstall` for full teardown: best-effort flush of firewall/ipset state, systemd timer cleanup, removal of kidobo config/data/cache directories, and removal of the installed binary from `KIDOBO_INSTALL_DIR` (default `/usr/local/bin`).
@@ -20,6 +23,7 @@
 ### Fixed
 
 - `scripts/install.sh --init` now recovers from the known `kidobo init` failure mode where `systemctl reset-failed kidobo-sync.service` exits with `Unit ... not loaded`, and continues by enabling `kidobo-sync.timer`.
+
 
 ## [0.4.0] - 2026-02-17
 
