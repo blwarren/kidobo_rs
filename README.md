@@ -93,6 +93,22 @@ scripts/perf/run-benchmarks.sh main pr-123
 
 Criterion reports are written under `target/criterion/`.
 
+Regression alert check (non-zero exit on significant slowdown):
+
+```bash
+# First create/update a baseline
+scripts/perf/run-benchmarks.sh main
+
+# Then compare current run to that baseline
+scripts/perf/check-regressions.sh --baseline main --max-slowdown-pct 10
+```
+
+Optional thresholds for lookup probe:
+
+```bash
+scripts/perf/check-regressions.sh --baseline main --max-rss-kib 20000 --max-elapsed-s 0.10
+```
+
 Lookup memory/time probe (offline, deterministic dataset):
 
 ```bash

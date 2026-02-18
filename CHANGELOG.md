@@ -15,7 +15,7 @@
 - Remote source fetch workers now use lock-free index scheduling and per-worker local buffers before final merge, reducing mutex contention under multi-source sync loads.
 - Lookup source entries now share source-label storage across file lines, and lookup matching deduplicates by source/target indices before allocating output strings.
 - Remote `.iplist` cache loads now keep only parsed network vectors in memory (instead of retaining full cached text alongside parsed CIDRs).
-- Added reproducible local performance tooling: Criterion benchmarks for core hot paths (`cargo bench --bench core_perf` via `scripts/perf/run-benchmarks.sh`) and a deterministic lookup RSS/time probe (`scripts/perf/measure-lookup-rss.sh`).
+- Added reproducible local performance tooling: Criterion benchmarks for core hot paths (`cargo bench --bench core_perf` via `scripts/perf/run-benchmarks.sh`), a deterministic lookup RSS/time probe (`scripts/perf/measure-lookup-rss.sh`), and a local regression gate script (`scripts/perf/check-regressions.sh`) that fails when slowdown/RSS/time thresholds are exceeded.
 
 ### Fixed
 
