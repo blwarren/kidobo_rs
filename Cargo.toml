@@ -1,5 +1,5 @@
 [package]
-name = "kidobo_rs"
+name = "kidobo"
 version = "0.4.0"
 edition = "2024"
 license = "MIT"
@@ -7,7 +7,7 @@ description = "One-shot Linux firewall blocklist manager with atomic ipset updat
 readme = "README.md"
 repository = "https://github.com/blwarren/kidobo"
 homepage = "https://github.com/blwarren/kidobo"
-documentation = "https://docs.rs/kidobo_rs"
+documentation = "https://docs.rs/kidobo"
 keywords = ["firewall", "ipset", "iptables", "blocklist", "cli"]
 categories = ["command-line-utilities", "network-programming"]
 rust-version = "1.93.1"

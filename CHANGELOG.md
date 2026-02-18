@@ -9,6 +9,7 @@
 ### Changed
 
 - TLS backend selection now uses `reqwest` with `rustls-no-provider` and an explicit `rustls` `ring` provider, avoiding `aws-lc`/OpenSSL-licensed transitive crypto code while preserving offline behavior and command surface.
+- Updated `Cargo.lock` to use `bumpalo` `3.20.1` (from `3.20.0`) to clear a yanked transitive dependency warning in supply-chain checks.
 
 ### Fixed
 
