@@ -150,7 +150,7 @@ pub fn remove_all_input_jumps_for_chain(
         }
 
         return Err(FirewallError::CommandFailed {
-            command: format!("{binary} -D INPUT -j {chain_name}"),
+            command: display_command(binary, &["-D", "INPUT", "-j", chain_name]),
             status: result.status,
             stderr: result.stderr,
         });

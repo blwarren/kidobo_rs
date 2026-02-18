@@ -8,19 +8,18 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 pub fn hex_lower(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(bytes.len() * 2);
 
-    for byte in bytes {
+    for &byte in bytes {
         output.push(lower_hex_nibble(byte >> 4));
-        output.push(lower_hex_nibble(byte & 0x0f));
+        output.push(lower_hex_nibble(byte));
     }
 
     output
 }
 
 fn lower_hex_nibble(value: u8) -> char {
-    match value {
-        0..=9 => char::from(b'0' + value),
-        10..=15 => char::from(b'a' + (value - 10)),
-        _ => '0',
+    match value & 0x0f {
+        0..=9 => char::from(b'0' + (value & 0x0f)),
+        _ => char::from(b'a' + ((value & 0x0f) - 10)),
     }
 }
 

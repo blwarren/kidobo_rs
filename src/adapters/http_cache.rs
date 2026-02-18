@@ -177,11 +177,9 @@ fn read_response_body_capped(
             });
         }
 
-        let Some(slice) = chunk.get(..read) else {
-            return Err(HttpClientError::Request {
-                reason: "internal read exceeded chunk size".to_string(),
-            });
-        };
+        let slice = chunk.get(..read).ok_or_else(|| HttpClientError::Request {
+            reason: "internal read exceeded chunk size".to_string(),
+        })?;
         out.extend_from_slice(slice);
     }
 
@@ -265,8 +263,7 @@ fn parse_cached_iplist(iplist: &str) -> Vec<CanonicalCidr> {
 fn format_normalized_cidrs(cidrs: &[CanonicalCidr]) -> String {
     cidrs
         .iter()
-        .copied()
-        .map(canonical_to_string)
+        .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -283,15 +280,16 @@ pub fn fetch_iplist_with_cache(
     let cached_iplist = read_optional_iplist(&cache_paths)?;
     let cached_networks = cached_iplist.as_deref().map(parse_cached_iplist);
     let cached_meta = read_optional_metadata_lossy(&cache_paths);
+    let (cached_etag, cached_last_modified) = cached_meta.as_ref().map_or((None, None), |meta| {
+        (meta.etag.clone(), meta.last_modified.clone())
+    });
 
     let ConditionalFetchResult { outcome, response } = fetch_with_conditional_cache(
         client,
         url,
         max_bytes,
-        cached_meta.as_ref().and_then(|meta| meta.etag.clone()),
-        cached_meta
-            .as_ref()
-            .and_then(|meta| meta.last_modified.clone()),
+        cached_etag,
+        cached_last_modified,
         cached_networks.is_some(),
         "remote source",
     );
@@ -490,13 +488,6 @@ fn cache_fallback(
     }
 }
 
-fn canonical_to_string(cidr: CanonicalCidr) -> String {
-    match cidr {
-        CanonicalCidr::V4(value) => value.to_string(),
-        CanonicalCidr::V6(value) => value.to_string(),
-    }
-}
-
 fn header_to_string(
     headers: &reqwest::header::HeaderMap,
     name: reqwest::header::HeaderName,
@@ -504,7 +495,7 @@ fn header_to_string(
     headers
         .get(name)
         .and_then(|value| value.to_str().ok())
-        .map(ToString::to_string)
+        .map(str::to_owned)
 }
 
 #[cfg(test)]

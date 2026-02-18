@@ -117,15 +117,16 @@ pub fn load_github_meta_safelist(
     } else {
         None
     };
+    let (cached_etag, cached_last_modified) = cached_meta.as_ref().map_or((None, None), |meta| {
+        (meta.etag.clone(), meta.last_modified.clone())
+    });
 
     let ConditionalFetchResult { outcome, response } = fetch_with_conditional_cache(
         client,
         github_meta_url,
         max_bytes,
-        cached_meta.as_ref().and_then(|meta| meta.etag.clone()),
-        cached_meta
-            .as_ref()
-            .and_then(|meta| meta.last_modified.clone()),
+        cached_etag,
+        cached_last_modified,
         cached_networks.is_some(),
         "github meta",
     );

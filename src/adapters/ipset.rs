@@ -1,4 +1,5 @@
 use std::env;
+use std::fmt::Write as _;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
@@ -13,6 +14,7 @@ use crate::adapters::command_common::{display_command, ensure_command_succeeded}
 use crate::adapters::command_runner::{
     CommandExecutor, CommandResult, CommandRunnerError, SudoCommandRunner,
 };
+use crate::adapters::hash::hex_lower;
 
 const IPSET_NAME_MAX_LEN: usize = 31;
 #[cfg(test)]
@@ -159,28 +161,23 @@ pub fn build_restore_script(
     sorted_entries.dedup();
 
     let mut script = String::new();
-    let _ = std::fmt::Write::write_fmt(
+    writeln!(
         &mut script,
-        format_args!(
-            "create {} {} family {} hashsize {} maxelem {} timeout {}\n",
-            temp_set_name,
-            spec.set_type,
-            spec.family.as_str(),
-            spec.hashsize,
-            spec.maxelem,
-            spec.timeout
-        ),
-    );
+        "create {} {} family {} hashsize {} maxelem {} timeout {}",
+        temp_set_name,
+        spec.set_type,
+        spec.family.as_str(),
+        spec.hashsize,
+        spec.maxelem,
+        spec.timeout
+    )
+    .ok();
 
     for entry in sorted_entries {
-        let _ =
-            std::fmt::Write::write_fmt(&mut script, format_args!("add {temp_set_name} {entry}\n"));
+        writeln!(&mut script, "add {temp_set_name} {entry}").ok();
     }
 
-    let _ = std::fmt::Write::write_fmt(
-        &mut script,
-        format_args!("swap {temp_set_name} {}\n", spec.set_name),
-    );
+    writeln!(&mut script, "swap {temp_set_name} {}", spec.set_name).ok();
     script
 }
 
@@ -310,13 +307,9 @@ fn random_hex_suffix(length: usize) -> String {
 
     let seed = format!("{}-{now_nanos}", process::id());
     let digest = Sha256::digest(seed.as_bytes());
-
-    let mut hex = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        let _ = std::fmt::Write::write_fmt(&mut hex, format_args!("{byte:02x}"));
-    }
-
-    hex[..length.min(hex.len())].to_string()
+    let mut hex = hex_lower(digest.as_ref());
+    hex.truncate(length.min(hex.len()));
+    hex
 }
 
 #[cfg(test)]
