@@ -1,40 +1,25 @@
 # kidobo
 
-`kidobo` is a one-shot Linux firewall blocklist manager written in Rust.
-It builds IP/CIDR blocklists from local and remote sources, removes safelisted
-ranges, and updates `ipset` atomically with deterministic `iptables`/`ip6tables`
-wiring.
-
-## What it does
-
-- Parse non-strict IP/CIDR source data (invalid lines are ignored).
-- Keep IPv4 and IPv6 processing separate.
-- Collapse and deduplicate ranges to reduce rule volume.
-- Subtract safelist ranges from blocklist ranges.
-- Apply updates atomically with `ipset restore` + `swap`.
-- Keep a deterministic firewall chain (`kidobo-input`) in place.
-- Cache remote feeds with conditional HTTP fetches (`ETag`/`Last-Modified`).
-- Run offline lookups against local + cached sources.
+`kidobo` is a one-shot Linux firewall blocklist manager.
+It builds IPv4/IPv6 blocklists from local and remote sources, subtracts safelist
+entries, and updates `ipset` atomically with deterministic
+`iptables`/`ip6tables` wiring.
 
 ## Requirements
 
 - Linux
-- Rust/Cargo 1.93+ (for source builds only)
 - `sudo`
 - `ipset`
-- `iptables`
-- `iptables-save`
-- `iptables-restore`
-- `ip6tables` (only if IPv6 is enabled in config)
+- `iptables`, `iptables-save`, `iptables-restore`
+- `ip6tables` (only when IPv6 is enabled)
 
 `doctor`, `sync`, and `flush` run privileged commands via `sudo -n ...`.
-With default system paths (`/etc/kidobo`, `/var/lib/kidobo`, `/var/cache/kidobo`),
-`init` is also typically run with `sudo`.
+With default system paths, `init` is also typically run with `sudo`.
 
 ## Install
 
-GitHub release artifacts are currently published for Linux x86_64 only.
-For other platforms/architectures, build from source.
+Release artifacts are currently published for Linux `x86_64`.
+For other targets, build from source.
 
 Install latest release:
 
@@ -54,253 +39,64 @@ Install and initialize in one step:
 curl -fsSL https://raw.githubusercontent.com/blwarren/kidobo/main/scripts/install.sh | sudo bash -s -- --init
 ```
 
-Uninstall the installed binary:
+Uninstall:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/blwarren/kidobo/main/scripts/install.sh | sudo bash -s -- --uninstall
 ```
 
-`--uninstall` attempts a full cleanup: flushes firewall/ipset state, disables/removes `kidobo-sync` systemd units, removes kidobo config/data/cache directories, and removes the installed binary.
-If artifacts were created under a custom root, pass the same `KIDOBO_ROOT` value when running uninstall.
-
-Build from source (development):
+Build from source:
 
 ```bash
 cargo build --release --locked
 ./target/release/kidobo --help
 ```
 
-Periodic maintenance check (matches CI `udeps-audit` workflow):
-
-```bash
-cargo +nightly udeps --all-targets --all-features
-```
-
-## Performance Measurements
-
-Speed benchmarks (Criterion, core hot paths):
-
-```bash
-# Run benchmarks
-scripts/perf/run-benchmarks.sh
-
-# Save a baseline
-scripts/perf/run-benchmarks.sh main
-
-# Compare to an existing baseline and save a new one
-scripts/perf/run-benchmarks.sh main pr-123
-```
-
-Criterion reports are written under `target/criterion/`.
-
-Regression alert check (non-zero exit on significant slowdown):
-
-```bash
-# First create/update a baseline
-scripts/perf/run-benchmarks.sh main
-
-# Then compare current run to that baseline
-scripts/perf/check-regressions.sh --baseline main --max-slowdown-pct 10
-```
-
-Optional thresholds for lookup probe:
-
-```bash
-scripts/perf/check-regressions.sh --baseline main --max-rss-kib 20000 --max-elapsed-s 0.10
-```
-
-Lookup memory/time probe (offline, deterministic dataset):
-
-```bash
-scripts/perf/measure-lookup-rss.sh
-```
-
-This prints:
-
-- `elapsed_s`
-- `max_rss_kib`
-- workload size (`blocklist_entries`, `target_entries`, `lookup_matches`)
-
-Tune workload size:
-
-```bash
-KIDOBO_PERF_BLOCKS=100000 KIDOBO_PERF_TARGETS=20000 scripts/perf/measure-lookup-rss.sh
-```
-
 ## Quick Start
 
-### 1. Initialize files
+1. Initialize files:
 
 ```bash
 sudo kidobo init
 ```
 
-This creates missing directories/files and does not overwrite existing config
-or blocklist files. `init` prints a summary of created vs unchanged artifacts.
-It also creates systemd unit files for periodic sync:
-
-- `/etc/systemd/system/kidobo-sync.service`
-- `/etc/systemd/system/kidobo-sync.timer`
-
-With default system paths, `init` also runs:
-
-- `systemctl daemon-reload`
-- `systemctl reset-failed kidobo-sync.service`
-- `systemctl enable --now kidobo-sync.timer`
-
-When `KIDOBO_ROOT` is set, unit files are written under
-`$KIDOBO_ROOT/systemd/system/` instead, and `systemctl` commands are skipped.
-
-### 2. Edit config
-
-Default config file:
-
-```text
-/etc/kidobo/config.toml
-```
-
-Example:
+2. Edit config:
 
 ```bash
 sudoedit /etc/kidobo/config.toml
 ```
 
-### 3. Add local blocklist entries (optional)
-
-Default local blocklist file:
-
-```text
-/var/lib/kidobo/blocklist.txt
-```
-
-Example:
+3. (Optional) add local entries:
 
 ```bash
 echo "203.0.113.0/24" | sudo tee -a /var/lib/kidobo/blocklist.txt
 ```
 
-### 4. Manage blocklist entries from the CLI
-
-```bash
-sudo kidobo ban 203.0.113.7
-sudo kidobo unban 203.0.113.0/24
-```
-
-`kidobo ban` normalizes the input, avoids duplicates, and appends the canonical IP/CIDR to the local blocklist file, creating missing directories if necessary.
-
-`kidobo unban` removes matching entries; if the argument is part of a larger CIDR, the command lists the partial matches and prompts for confirmation before deleting them. Use `--yes` to auto-approve removal of those partial matches in automation scripts. Every ban/unban change still requires `sudo kidobo sync` to push updates into the firewall state.
-
-### 5. Check the environment
+4. Check environment:
 
 ```bash
 sudo kidobo doctor
 ```
 
-`doctor` prints a JSON report and exits non-zero if required checks fail.
-
-### 6. Apply blocklists
+5. Apply blocklists:
 
 ```bash
 sudo kidobo sync
 ```
 
-### 7. Enable periodic sync manually (optional)
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now kidobo-sync.timer
-```
-
-### 8. Check whether an IP would match
+6. Check whether targets match (offline):
 
 ```bash
 kidobo lookup 203.0.113.7
 kidobo lookup --file targets.txt
 ```
 
-### 9. Remove Kidobo firewall/ipset artifacts (optional)
+7. Remove kidobo firewall/ipset artifacts (optional):
 
 ```bash
 sudo kidobo flush
-```
-
-To clear only remote feed cache files without touching firewall/ipset state:
-
-```bash
 sudo kidobo flush --cache-only
 ```
-
-## Configuration
-
-Example config:
-
-```toml
-[ipset]
-set_name = "kidobo"
-set_name_v6 = "kidobo-v6"
-enable_ipv6 = true
-chain_action = "DROP"
-set_type = "hash:net"
-hashsize = 65536
-maxelem = 500000
-timeout = 0
-
-[safe]
-ips = []
-include_github_meta = true
-github_meta_url = "https://api.github.com/meta"
-# github_meta_categories = ["api", "git", "hooks", "packages"]
-
-[remote]
-timeout_secs = 30
-urls = []
-```
-
-Key fields:
-
-- `[ipset]`
-  - `set_name` required
-  - `set_name_v6` optional, defaults to `"<set_name>-v6"`
-  - `enable_ipv6` default `true`
-  - `chain_action` optional, `DROP` (default) or `REJECT`
-  - `maxelem` must be in `[1, 500000]`
-- `[safe]`
-  - `ips` static safelist entries
-  - `include_github_meta` default `true`
-  - `github_meta_url` default `https://api.github.com/meta`
-  - `github_meta_categories`:
-    - omitted: default categories (`api`, `git`, `hooks`, `packages`)
-    - `[]`: all categories
-    - explicit list: only those categories
-- `[remote]`
-  - `timeout_secs` request timeout for each remote HTTP fetch (default `30`, range `[1, 3600]`)
-  - `urls` list of remote feed URLs
-
-Invalid or missing required config causes command failure.
-
-## Paths and Environment
-
-Default system paths:
-
-- config dir: `/etc/kidobo`
-- config file: `/etc/kidobo/config.toml`
-- data dir: `/var/lib/kidobo`
-- blocklist file: `/var/lib/kidobo/blocklist.txt`
-- cache dir: `/var/cache/kidobo`
-- remote cache dir: `/var/cache/kidobo/remote`
-- lock file: `/var/cache/kidobo/sync.lock`
-- systemd service: `/etc/systemd/system/kidobo-sync.service`
-- systemd timer: `/etc/systemd/system/kidobo-sync.timer`
-
-Useful environment variables:
-
-- `KIDOBO_ROOT`
-  - Relocates config/data/cache under one writable root.
-- `KIDOBO_ALLOW_REPO_CONFIG_FALLBACK`
-  - Truthy values (`1`, `true`, `yes`, `on`) allow config fallback to
-    `<repo-root>/config.toml` when the primary config is missing.
-- `KIDOBO_MAX_HTTP_BODY_BYTES`
-  - Overrides max remote response body size (default: `33554432` bytes).
 
 ## Commands
 
@@ -317,18 +113,49 @@ Global flags:
 - `--version`
 - `--log-level <trace|debug|info|warn|error>`
 
-## Lookup Output
+## Minimal Config
 
-Each match is printed as tab-separated fields:
+`/etc/kidobo/config.toml`:
 
-```text
-<queried-target-ip-or-cidr>    <source-label>    <matched-source-entry>
+```toml
+[ipset]
+set_name = "kidobo"
+
+[safe]
+ips = []
+include_github_meta = true
+github_meta_url = "https://api.github.com/meta"
+
+[remote]
+timeout_secs = 30
+urls = []
 ```
 
-For remote cached sources, `<source-label>` is the original source URL from
-cache metadata.
+Useful options:
 
-Lookup does not fetch remote data; it uses local and cached sources only.
+- `ipset.set_name_v6`: optional, defaults to `<set_name>-v6`
+- `ipset.enable_ipv6`: default `true`
+- `ipset.chain_action`: `DROP` (default) or `REJECT`
+- `ipset.maxelem`: range `[1, 500000]`
+- `remote.timeout_secs`: range `[1, 3600]`
+
+## Defaults
+
+- Config file: `/etc/kidobo/config.toml`
+- Local blocklist: `/var/lib/kidobo/blocklist.txt`
+- Cache dir: `/var/cache/kidobo`
+- Systemd units:
+  - `/etc/systemd/system/kidobo-sync.service`
+  - `/etc/systemd/system/kidobo-sync.timer`
+
+`kidobo init` creates missing files and systemd units.
+At default paths it also runs `systemctl daemon-reload` and enables
+`kidobo-sync.timer`.
+
+## Notes
+
+- `lookup` does not fetch remote data; it only uses local and cached sources.
+- `KIDOBO_ROOT` relocates config/data/cache paths under a custom root.
 
 ## License
 
