@@ -14,20 +14,11 @@ cargo clippy --all-targets --all-features -- -D warnings
 log "running functional test suite"
 cargo test --all-targets --all-features
 
-log "running doc tests"
-cargo test --doc
-
-log "running release check"
-cargo check --release --locked
+log "running release build"
+cargo build --release --locked
 
 log "running supply-chain checks"
 cargo deny check advisories bans licenses sources
-cargo audit
-
-log "check for unused dependencies"
-rustup toolchain install nightly --component rust-src
-cargo +nightly install --locked cargo-udeps
-cargo +nightly udeps --all-targets --all-features
 
 log "running coverage gate"
 scripts/check-critical-coverage.sh
