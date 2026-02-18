@@ -142,6 +142,10 @@ pub fn parse_ip_cidr_non_strict(input: &str) -> Option<CanonicalCidr> {
         return None;
     }
 
+    parse_ip_cidr_token(token)
+}
+
+pub(crate) fn parse_ip_cidr_token(token: &str) -> Option<CanonicalCidr> {
     if let Ok(ip) = token.parse::<IpAddr>() {
         return Some(match ip {
             IpAddr::V4(v4) => CanonicalCidr::V4(Ipv4Cidr::new(v4, 32)?),
@@ -343,6 +347,18 @@ pub fn intervals_to_ipv4_cidrs(intervals: &[IntervalU32]) -> Vec<Ipv4Cidr> {
 pub fn intervals_to_ipv6_cidrs(intervals: &[IntervalU128]) -> Vec<Ipv6Cidr> {
     let merged = merge_intervals_u128(intervals);
     intervals_to_ipv6_cidrs_from_merged(&merged)
+}
+
+pub fn cidr_overlaps(a: CanonicalCidr, b: CanonicalCidr) -> bool {
+    match (a, b) {
+        (CanonicalCidr::V4(left), CanonicalCidr::V4(right)) => {
+            intervals_overlap_u32(ipv4_to_interval(left), ipv4_to_interval(right))
+        }
+        (CanonicalCidr::V6(left), CanonicalCidr::V6(right)) => {
+            intervals_overlap_u128(ipv6_to_interval(left), ipv6_to_interval(right))
+        }
+        _ => false,
+    }
 }
 
 fn intervals_to_ipv4_cidrs_from_merged(intervals: &[IntervalU32]) -> Vec<Ipv4Cidr> {
@@ -613,6 +629,14 @@ fn block_end_u128(start: u128, prefix: u8) -> u128 {
         let host_bits = 128_u32 - u32::from(prefix);
         start.saturating_add((1_u128 << host_bits) - 1)
     }
+}
+
+fn intervals_overlap_u32(a: IntervalU32, b: IntervalU32) -> bool {
+    !(a.end < b.start || b.end < a.start)
+}
+
+fn intervals_overlap_u128(a: IntervalU128, b: IntervalU128) -> bool {
+    !(a.end < b.start || b.end < a.start)
 }
 
 fn ipv4_mask(prefix: u8) -> u32 {

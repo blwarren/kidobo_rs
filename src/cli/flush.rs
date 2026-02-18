@@ -3,7 +3,8 @@ use std::path::Path;
 
 use log::warn;
 
-use crate::adapters::command_runner::SudoCommandRunner;
+use crate::adapters::command_common::display_command;
+use crate::adapters::command_runner::{CommandResult, CommandRunnerError, SudoCommandRunner};
 use crate::adapters::config::load_config_from_file;
 use crate::adapters::ipset::IpsetCommandRunner;
 use crate::adapters::iptables::{
@@ -61,8 +62,12 @@ fn cleanup_firewall_family(runner: &dyn FirewallCommandRunner, family: FirewallF
     }
 
     let binary = firewall_binary(family);
-    best_effort_firewall_command(runner, binary, &["-F", KIDOBO_CHAIN_NAME]);
-    best_effort_firewall_command(runner, binary, &["-X", KIDOBO_CHAIN_NAME]);
+    best_effort_command(binary, &["-F", KIDOBO_CHAIN_NAME], |command, args| {
+        runner.run(command, args)
+    });
+    best_effort_command(binary, &["-X", KIDOBO_CHAIN_NAME], |command, args| {
+        runner.run(command, args)
+    });
 }
 
 fn firewall_binary(family: FirewallFamily) -> &'static str {
@@ -72,36 +77,25 @@ fn firewall_binary(family: FirewallFamily) -> &'static str {
     }
 }
 
-fn best_effort_firewall_command(runner: &dyn FirewallCommandRunner, binary: &str, args: &[&str]) {
-    match runner.run(binary, args) {
+fn best_effort_command<F>(command: &str, args: &[&str], run: F)
+where
+    F: FnOnce(&str, &[&str]) -> Result<CommandResult, CommandRunnerError>,
+{
+    let rendered = display_command(command, args);
+    match run(command, args) {
         Ok(result) if result.success => {}
         Ok(result) => warn!(
-            "best-effort flush command failed: {} {} (status={:?} stderr={})",
-            binary,
-            args.join(" "),
-            result.status,
-            result.stderr
+            "best-effort flush command failed: {} (status={:?} stderr={})",
+            rendered, result.status, result.stderr
         ),
-        Err(err) => warn!(
-            "best-effort flush command execution failed: {} {} ({})",
-            binary,
-            args.join(" "),
-            err
-        ),
+        Err(err) => warn!("best-effort flush command execution failed: {rendered} ({err})"),
     }
 }
 
 fn best_effort_ipset_destroy(runner: &dyn IpsetCommandRunner, set_name: &str) {
-    match runner.run("ipset", &["destroy", set_name]) {
-        Ok(result) if result.success => {}
-        Ok(result) => warn!(
-            "best-effort flush command failed: ipset destroy {} (status={:?} stderr={})",
-            set_name, result.status, result.stderr
-        ),
-        Err(err) => {
-            warn!("best-effort flush command execution failed: ipset destroy {set_name} ({err})");
-        }
-    }
+    best_effort_command("ipset", &["destroy", set_name], |command, args| {
+        runner.run(command, args)
+    });
 }
 
 fn best_effort_clear_remote_cache_dir(remote_cache_dir: &Path) {

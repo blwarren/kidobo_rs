@@ -7,9 +7,9 @@ use std::time::Duration;
 use log::warn;
 use reqwest::header::{ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED, USER_AGENT};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use crate::adapters::hash::sha256_hex;
 use crate::adapters::http_fetch::{
     ConditionalFetchOutcome, ConditionalFetchResult, fetch_with_conditional_cache,
 };
@@ -213,8 +213,7 @@ pub enum HttpCacheError {
 }
 
 pub fn url_hash_prefix(url: &str) -> String {
-    let digest = Sha256::digest(url.as_bytes());
-    hex_lower(&digest)[..16].to_string()
+    sha256_hex(url.as_bytes())[..16].to_string()
 }
 
 pub fn cache_paths_for_url(cache_dir: &Path, url: &str) -> CachePaths {
@@ -496,30 +495,6 @@ fn canonical_to_string(cidr: CanonicalCidr) -> String {
         CanonicalCidr::V4(value) => value.to_string(),
         CanonicalCidr::V6(value) => value.to_string(),
     }
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    hex_lower(&digest)
-}
-
-fn lower_hex_nibble(value: u8) -> char {
-    match value {
-        0..=9 => char::from(b'0' + value),
-        10..=15 => char::from(b'a' + (value - 10)),
-        _ => '0',
-    }
-}
-
-fn hex_lower(bytes: &[u8]) -> String {
-    let mut output = String::with_capacity(bytes.len() * 2);
-
-    for byte in bytes {
-        output.push(lower_hex_nibble(byte >> 4));
-        output.push(lower_hex_nibble(byte & 0x0f));
-    }
-
-    output
 }
 
 fn header_to_string(

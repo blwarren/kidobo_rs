@@ -1,8 +1,6 @@
-use std::net::IpAddr;
-
 use crate::core::network::{
-    CanonicalCidr, IntervalU32, IntervalU128, Ipv4Cidr, Ipv6Cidr, ipv4_to_interval,
-    ipv6_to_interval,
+    CanonicalCidr, IntervalU32, IntervalU128, cidr_overlaps as network_cidr_overlaps,
+    ipv4_to_interval, ipv6_to_interval, parse_ip_cidr_token,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,48 +40,11 @@ pub fn parse_target_strict(input: &str) -> Result<CanonicalCidr, LookupTargetPar
         return Err(LookupTargetParseError::Invalid);
     }
 
-    if let Ok(ip) = normalized.parse::<IpAddr>() {
-        return match ip {
-            IpAddr::V4(v4) => Ipv4Cidr::new(v4, 32)
-                .map(CanonicalCidr::V4)
-                .ok_or(LookupTargetParseError::Invalid),
-            IpAddr::V6(v6) => Ipv6Cidr::new(v6, 128)
-                .map(CanonicalCidr::V6)
-                .ok_or(LookupTargetParseError::Invalid),
-        };
-    }
-
-    let (address_part, prefix_part) = normalized
-        .split_once('/')
-        .ok_or(LookupTargetParseError::Invalid)?;
-
-    let prefix = prefix_part
-        .parse::<u8>()
-        .map_err(|_| LookupTargetParseError::Invalid)?;
-    let ip = address_part
-        .parse::<IpAddr>()
-        .map_err(|_| LookupTargetParseError::Invalid)?;
-
-    match ip {
-        IpAddr::V4(v4) => Ipv4Cidr::new(v4, prefix)
-            .map(CanonicalCidr::V4)
-            .ok_or(LookupTargetParseError::Invalid),
-        IpAddr::V6(v6) => Ipv6Cidr::new(v6, prefix)
-            .map(CanonicalCidr::V6)
-            .ok_or(LookupTargetParseError::Invalid),
-    }
+    parse_ip_cidr_token(normalized).ok_or(LookupTargetParseError::Invalid)
 }
 
 pub fn cidr_overlaps(a: CanonicalCidr, b: CanonicalCidr) -> bool {
-    match (a, b) {
-        (CanonicalCidr::V4(left), CanonicalCidr::V4(right)) => {
-            intervals_overlap_u32(ipv4_to_interval(left), ipv4_to_interval(right))
-        }
-        (CanonicalCidr::V6(left), CanonicalCidr::V6(right)) => {
-            intervals_overlap_u128(ipv6_to_interval(left), ipv6_to_interval(right))
-        }
-        _ => false,
-    }
+    network_cidr_overlaps(a, b)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -253,14 +214,6 @@ pub fn run_lookup(targets: &[String], sources: &[LookupSourceEntry]) -> LookupRe
     report.invalid_targets.dedup();
 
     report
-}
-
-fn intervals_overlap_u32(a: IntervalU32, b: IntervalU32) -> bool {
-    !(a.end < b.start || b.end < a.start)
-}
-
-fn intervals_overlap_u128(a: IntervalU128, b: IntervalU128) -> bool {
-    !(a.end < b.start || b.end < a.start)
 }
 
 #[cfg(test)]

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use log::info;
 use serde::Serialize;
 
+use crate::adapters::command_common::display_command;
 use crate::adapters::command_runner::{
     CommandExecutor, CommandResult, CommandRunnerError, SudoCommandRunner,
 };
@@ -335,14 +336,6 @@ fn sudo_probe_check(
             check_name,
             format!("sudo -n {command} execution failed: {err}"),
         ),
-    }
-}
-
-fn display_command(binary: &str, args: &[&str]) -> String {
-    if args.is_empty() {
-        binary.to_string()
-    } else {
-        format!("{} {}", binary, args.join(" "))
     }
 }
 

@@ -8,7 +8,7 @@ use thiserror::Error;
 use crate::adapters::limited_io::read_to_string_with_limit;
 use crate::adapters::path::ResolvedPaths;
 use crate::core::lookup::LookupSourceEntry;
-use crate::core::network::parse_ip_cidr_non_strict;
+use crate::core::network::parse_ip_cidr_token;
 
 const SOURCE_FILE_READ_LIMIT: usize = 16 * 1024 * 1024;
 const REMOTE_META_READ_LIMIT: usize = 256 * 1024;
@@ -157,7 +157,7 @@ fn parse_lookup_source_line(line: &str) -> Option<(crate::core::network::Canonic
         return None;
     }
 
-    let cidr = parse_ip_cidr_non_strict(token)?;
+    let cidr = parse_ip_cidr_token(token)?;
     Some((cidr, token.to_string()))
 }
 

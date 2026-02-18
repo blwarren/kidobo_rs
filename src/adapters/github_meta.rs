@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 use log::warn;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use crate::adapters::hash::sha256_hex;
 use crate::adapters::http_cache::{HttpClient, HttpResponse, max_http_body_bytes};
 use crate::adapters::http_fetch::{
     ConditionalFetchOutcome, ConditionalFetchResult, fetch_with_conditional_cache,
@@ -497,26 +497,6 @@ where
     }
 
     unique.into_iter().collect()
-}
-
-fn lower_hex_nibble(value: u8) -> char {
-    match value {
-        0..=9 => char::from(b'0' + value),
-        10..=15 => char::from(b'a' + (value - 10)),
-        _ => '0',
-    }
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    let mut output = String::with_capacity(digest.len() * 2);
-
-    for byte in digest {
-        output.push(lower_hex_nibble(byte >> 4));
-        output.push(lower_hex_nibble(byte & 0x0f));
-    }
-
-    output
 }
 
 #[cfg(test)]

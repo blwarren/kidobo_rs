@@ -147,37 +147,25 @@ fn run_init_with_context(
     let systemd_service = systemd_dir.join(KIDOBO_SYNC_SERVICE_FILE);
     let systemd_timer = systemd_dir.join(KIDOBO_SYNC_TIMER_FILE);
 
-    summary.record(&paths.config_dir, ensure_dir(&paths.config_dir)?);
-    summary.record(&paths.data_dir, ensure_dir(&paths.data_dir)?);
-    summary.record(
+    for dir in [
+        &paths.config_dir,
+        &paths.data_dir,
         &paths.remote_cache_dir,
-        ensure_dir(&paths.remote_cache_dir)?,
-    );
-    summary.record(&systemd_dir, ensure_dir(&systemd_dir)?);
+        &systemd_dir,
+    ] {
+        summary.record(dir, ensure_dir(dir)?);
+    }
 
-    summary.record(
-        &paths.config_file,
-        ensure_file_if_missing(&paths.config_file, DEFAULT_CONFIG_TEMPLATE)?,
-    );
-    summary.record(
-        &paths.blocklist_file,
-        ensure_file_if_missing(&paths.blocklist_file, DEFAULT_BLOCKLIST_TEMPLATE)?,
-    );
-    summary.record(
-        &paths.lock_file,
-        ensure_file_if_missing(&paths.lock_file, "")?,
-    );
-    summary.record(
-        &systemd_service,
-        ensure_file_if_missing(
-            &systemd_service,
-            &build_systemd_service_template(executable_path, kido_root_override),
-        )?,
-    );
-    summary.record(
-        &systemd_timer,
-        ensure_file_if_missing(&systemd_timer, DEFAULT_SYSTEMD_TIMER_TEMPLATE)?,
-    );
+    let service_template = build_systemd_service_template(executable_path, kido_root_override);
+    for (file_path, contents) in [
+        (&paths.config_file, DEFAULT_CONFIG_TEMPLATE),
+        (&paths.blocklist_file, DEFAULT_BLOCKLIST_TEMPLATE),
+        (&paths.lock_file, ""),
+        (&systemd_service, service_template.as_str()),
+        (&systemd_timer, DEFAULT_SYSTEMD_TIMER_TEMPLATE),
+    ] {
+        summary.record(file_path, ensure_file_if_missing(file_path, contents)?);
+    }
 
     if kido_root_override.is_none() {
         ensure_systemd_timer_enabled(runner)?;

@@ -1,5 +1,6 @@
 use thiserror::Error;
 
+use crate::adapters::command_common::{display_command, ensure_command_succeeded};
 use crate::adapters::command_runner::{
     CommandExecutor, CommandResult, CommandRunnerError, SudoCommandRunner,
 };
@@ -78,7 +79,7 @@ pub fn chain_exists(
     }
 
     Err(FirewallError::CommandFailed {
-        command: format!("{binary} -S {chain_name}"),
+        command: display_command(binary, &["-S", chain_name]),
         status: result.status,
         stderr: result.stderr,
     })
@@ -205,14 +206,12 @@ fn run_checked(
     args: &[&str],
 ) -> Result<CommandResult, FirewallError> {
     let result = runner.run(command, args)?;
-    if result.success {
-        return Ok(result);
-    }
-
-    Err(FirewallError::CommandFailed {
-        command: display_command(command, args),
-        status: result.status,
-        stderr: result.stderr,
+    ensure_command_succeeded(result, command, args, |rendered, status, stderr| {
+        FirewallError::CommandFailed {
+            command: rendered,
+            status,
+            stderr,
+        }
     })
 }
 
@@ -226,14 +225,6 @@ fn is_missing_chain_result(result: &CommandResult) -> bool {
 
 fn is_missing_rule_result(result: &CommandResult) -> bool {
     result.status == Some(1) && result.stderr.to_ascii_lowercase().contains("bad rule")
-}
-
-fn display_command(command: &str, args: &[&str]) -> String {
-    if args.is_empty() {
-        command.to_string()
-    } else {
-        format!("{} {}", command, args.join(" "))
-    }
 }
 
 #[cfg(test)]

@@ -9,6 +9,7 @@ use log::warn;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use crate::adapters::command_common::{display_command, ensure_command_succeeded};
 use crate::adapters::command_runner::{
     CommandExecutor, CommandResult, CommandRunnerError, SudoCommandRunner,
 };
@@ -85,7 +86,7 @@ pub fn ipset_exists(runner: &dyn IpsetCommandRunner, set_name: &str) -> Result<b
     }
 
     Err(IpsetError::CommandFailed {
-        command: format!("ipset list {set_name}"),
+        command: display_command("ipset", &["list", set_name]),
         status: result.status,
         stderr: result.stderr,
     })
@@ -232,29 +233,18 @@ fn run_checked(
     args: &[&str],
 ) -> Result<CommandResult, IpsetError> {
     let result = runner.run(command, args)?;
-
-    if result.success {
-        return Ok(result);
-    }
-
-    Err(IpsetError::CommandFailed {
-        command: display_command(command, args),
-        status: result.status,
-        stderr: result.stderr,
+    ensure_command_succeeded(result, command, args, |rendered, status, stderr| {
+        IpsetError::CommandFailed {
+            command: rendered,
+            status,
+            stderr,
+        }
     })
 }
 
 fn best_effort_destroy_set(runner: &dyn IpsetCommandRunner, set_name: &str) {
     if let Err(err) = runner.run("ipset", &["destroy", set_name]) {
         warn!("best-effort ipset destroy for {set_name} failed: {err}");
-    }
-}
-
-fn display_command(command: &str, args: &[&str]) -> String {
-    if args.is_empty() {
-        command.to_string()
-    } else {
-        format!("{} {}", command, args.join(" "))
     }
 }
 

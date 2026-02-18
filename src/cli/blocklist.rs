@@ -6,8 +6,8 @@ use std::path::Path;
 use crate::adapters::limited_io::read_to_string_with_limit;
 use crate::adapters::path::{PathResolutionInput, resolve_paths};
 use crate::core::network::{
-    CanonicalCidr, IntervalU32, IntervalU128, collapse_ipv4, collapse_ipv6, ipv4_to_interval,
-    ipv6_to_interval, parse_ip_cidr_non_strict, split_by_family,
+    CanonicalCidr, cidr_overlaps, collapse_ipv4, collapse_ipv6, parse_ip_cidr_non_strict,
+    split_by_family,
 };
 use crate::error::KidoboError;
 
@@ -78,7 +78,7 @@ fn ban_target_in_file(path: &Path, input: &str) -> Result<BanOutcome, KidoboErro
     let blocklist = BlocklistFile::load(path)?;
     let canonical_str = canonical.to_string();
 
-    if blocklist.contains(&canonical_str) {
+    if blocklist.contains_canonical(canonical) {
         return Ok(BanOutcome::AlreadyPresent(canonical_str));
     }
 
@@ -247,25 +247,7 @@ fn parse_blocklist_target(input: &str) -> Result<CanonicalCidr, KidoboError> {
     })
 }
 fn canonical_overlaps(entry: &CanonicalCidr, target: &CanonicalCidr) -> bool {
-    match (entry, target) {
-        (CanonicalCidr::V4(entry_cidr), CanonicalCidr::V4(target_cidr)) => intervals_overlap_u32(
-            ipv4_to_interval(*entry_cidr),
-            ipv4_to_interval(*target_cidr),
-        ),
-        (CanonicalCidr::V6(entry_cidr), CanonicalCidr::V6(target_cidr)) => intervals_overlap_u128(
-            ipv6_to_interval(*entry_cidr),
-            ipv6_to_interval(*target_cidr),
-        ),
-        _ => false,
-    }
-}
-
-fn intervals_overlap_u32(a: IntervalU32, b: IntervalU32) -> bool {
-    a.start <= b.end && b.start <= a.end
-}
-
-fn intervals_overlap_u128(a: IntervalU128, b: IntervalU128) -> bool {
-    a.start <= b.end && b.start <= a.end
+    cidr_overlaps(*entry, *target)
 }
 
 #[allow(clippy::print_stdout)]
@@ -375,15 +357,10 @@ impl BlocklistFile {
         })
     }
 
-    fn contains(&self, canonical: &str) -> bool {
+    fn contains_canonical(&self, canonical: CanonicalCidr) -> bool {
         self.lines
             .iter()
-            .filter_map(|line| {
-                line.canonical
-                    .as_ref()
-                    .map(std::string::ToString::to_string)
-            })
-            .any(|entry| entry == canonical)
+            .any(|line| line.canonical == Some(canonical))
     }
 }
 
@@ -578,7 +555,8 @@ mod tests {
         let blocklist = BlocklistFile::load(&path).expect("load");
 
         assert_eq!(blocklist.lines.len(), 4);
-        assert!(blocklist.contains("2001:db8::/64"));
+        let cidr = parse_ip_cidr_non_strict("2001:db8::/64").expect("parse");
+        assert!(blocklist.contains_canonical(cidr));
         assert!(blocklist.has_content);
         assert!(blocklist.trailing_newline);
     }
