@@ -2,9 +2,13 @@
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-02-19
+
+
 ### Fixed
 
 - `kidobo sync` now writes generated `ipset restore` scripts through buffered I/O, reducing kernel write-call overhead introduced by per-line restore emission while preserving atomic swap behavior.
+
 
 ## [0.5.2] - 2026-02-19
 
