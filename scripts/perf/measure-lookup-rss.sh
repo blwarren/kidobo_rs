@@ -8,9 +8,31 @@ fi
 
 blocks="${KIDOBO_PERF_BLOCKS:-50000}"
 targets="${KIDOBO_PERF_TARGETS:-10000}"
+cpu_core="${KIDOBO_PERF_CPU_CORE:-}"
+mem_limit_kib="${KIDOBO_PERF_MEM_LIMIT_KIB:-}"
 
 if [[ "${blocks}" -le 0 || "${targets}" -le 1 ]]; then
   echo "error: KIDOBO_PERF_BLOCKS must be > 0 and KIDOBO_PERF_TARGETS must be > 1" >&2
+  exit 1
+fi
+
+if [[ -n "${cpu_core}" ]] && ! [[ "${cpu_core}" =~ ^[0-9]+$ ]]; then
+  echo "error: KIDOBO_PERF_CPU_CORE must be a non-negative integer" >&2
+  exit 1
+fi
+
+if [[ -n "${mem_limit_kib}" ]] && ! [[ "${mem_limit_kib}" =~ ^[0-9]+$ ]]; then
+  echo "error: KIDOBO_PERF_MEM_LIMIT_KIB must be a positive integer in KiB" >&2
+  exit 1
+fi
+
+if [[ -n "${mem_limit_kib}" && "${mem_limit_kib}" -le 0 ]]; then
+  echo "error: KIDOBO_PERF_MEM_LIMIT_KIB must be > 0" >&2
+  exit 1
+fi
+
+if [[ -n "${cpu_core}" ]] && ! command -v taskset >/dev/null 2>&1; then
+  echo "error: taskset is required when KIDOBO_PERF_CPU_CORE is set" >&2
   exit 1
 fi
 
@@ -51,9 +73,30 @@ awk -v count="${half_targets}" 'BEGIN {
 
 /usr/bin/time -f 'elapsed_s=%e
 max_rss_kib=%M' \
-  "${binary}" lookup --file "${targets_path}" > "${lookup_output_path}" 2> "${time_output_path}"
+  bash -lc '
+    set -euo pipefail
+    lookup_cmd=("$1" lookup --file "$2")
+    if [[ -n "$4" ]]; then
+      ulimit -Sv "$4"
+    fi
+    if [[ -n "$3" ]]; then
+      exec taskset -c "$3" "${lookup_cmd[@]}"
+    fi
+    exec "${lookup_cmd[@]}"
+  ' -- "${binary}" "${targets_path}" "${cpu_core}" "${mem_limit_kib}" \
+  > "${lookup_output_path}" 2> "${time_output_path}"
 
 printf 'blocklist_entries=%s\n' "${blocks}"
 printf 'target_entries=%s\n' "$((half_targets * 2))"
 printf 'lookup_matches=%s\n' "$(wc -l < "${lookup_output_path}" | tr -d ' ')"
+if [[ -n "${cpu_core}" ]]; then
+  printf 'cpu_core=%s\n' "${cpu_core}"
+else
+  printf 'cpu_core=unconstrained\n'
+fi
+if [[ -n "${mem_limit_kib}" ]]; then
+  printf 'mem_limit_kib=%s\n' "${mem_limit_kib}"
+else
+  printf 'mem_limit_kib=unconstrained\n'
+fi
 cat "${time_output_path}"

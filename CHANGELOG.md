@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `scripts/perf/measure-lookup-constrained.sh` to run the deterministic lookup RSS/time probe under constrained resources by default (`1` CPU core via `taskset`, `1 GiB` memory via `ulimit -Sv`).
+- `scripts/perf/measure-lookup-rss.sh` now supports optional runtime constraints through `KIDOBO_PERF_CPU_CORE` and `KIDOBO_PERF_MEM_LIMIT_KIB` for reproducible low-resource perf checks.
+
 ## [0.5.2] - 2026-02-19
 
 
