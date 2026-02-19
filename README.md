@@ -84,14 +84,29 @@ sudo kidobo doctor
 sudo kidobo sync
 ```
 
-6. Check whether targets match (offline):
+6. Add or remove a local blocklist entry:
+
+```bash
+kidobo ban 203.0.113.7
+kidobo unban 203.0.113.7
+# skip interactive confirmation when removing overlapping entries
+kidobo unban 203.0.113.0/24 --yes
+```
+
+7. Re-apply after local blocklist changes:
+
+```bash
+sudo kidobo sync
+```
+
+8. Check whether targets match (offline):
 
 ```bash
 kidobo lookup 203.0.113.7
 kidobo lookup --file targets.txt
 ```
 
-7. Remove kidobo firewall/ipset artifacts (optional):
+9. Remove kidobo firewall/ipset artifacts (optional):
 
 ```bash
 sudo kidobo flush
@@ -105,6 +120,8 @@ kidobo init
 kidobo doctor
 kidobo sync
 kidobo flush [--cache-only]
+kidobo ban <ip-or-cidr>
+kidobo unban <ip-or-cidr> [--yes]
 kidobo lookup [ip | --file <path>]
 ```
 
@@ -165,6 +182,8 @@ At default paths it also runs `systemctl daemon-reload` and enables
 
 ## Notes
 
+- `ban` and `unban` only modify the local blocklist file; run `sync` to apply
+  those changes to firewall/ipset runtime state.
 - `lookup` does not fetch remote data; it only uses local and cached sources.
 - `KIDOBO_ROOT` relocates config/data/cache paths under a custom root.
 
