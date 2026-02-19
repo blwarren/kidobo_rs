@@ -214,6 +214,8 @@ Wants=network-online.target\n\
 Type=oneshot\n",
     );
 
+    let _ = writeln!(&mut output, "Environment=\"KIDOBO_LOG_FORMAT=journal\"");
+
     if let Some(root) = kido_root_override {
         let root_value = root.to_string_lossy();
         let _ = writeln!(
@@ -681,12 +683,14 @@ mod tests {
     fn systemd_service_template_includes_optional_kido_root() {
         let without_root = build_systemd_service_template(Path::new("/usr/local/bin/kidobo"), None);
         assert!(!without_root.contains("KIDOBO_ROOT="));
+        assert!(without_root.contains("Environment=\"KIDOBO_LOG_FORMAT=journal\""));
         assert!(without_root.contains("ExecStart=\"/usr/local/bin/kidobo\" sync"));
 
         let with_root = build_systemd_service_template(
             Path::new("/usr/local/bin/kidobo"),
             Some(Path::new("/tmp/kidobo-root")),
         );
+        assert!(with_root.contains("Environment=\"KIDOBO_LOG_FORMAT=journal\""));
         assert!(with_root.contains("Environment=\"KIDOBO_ROOT=/tmp/kidobo-root\""));
     }
 }

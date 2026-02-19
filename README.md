@@ -113,6 +113,12 @@ Global flags:
 - `--version`
 - `--log-level <trace|debug|info|warn|error>`
 
+Logging format:
+
+- `KIDOBO_LOG_FORMAT=auto|human|journal` (default `auto`)
+- `auto` uses `journal` under systemd or when stderr is non-TTY, and `human`
+  for interactive TTY runs
+
 ## Minimal Config
 
 `/etc/kidobo/config.toml`:
@@ -150,7 +156,8 @@ Useful options:
 
 `kidobo init` creates missing files and systemd units.
 At default paths it also runs `systemctl daemon-reload` and enables
-`kidobo-sync.timer`.
+`kidobo-sync.timer`, and writes `KIDOBO_LOG_FORMAT=journal` into
+`kidobo-sync.service`.
 
 ## Notes
 

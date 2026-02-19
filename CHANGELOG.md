@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Logging format selection is now runtime-aware via `KIDOBO_LOG_FORMAT`
+  (`auto|human|journal`): interactive TTY runs default to a human-readable
+  format, while systemd/non-TTY runs default to the existing
+  `level=<LEVEL> msg=<text>` journal-friendly format.
+- `kidobo init` now writes `Environment="KIDOBO_LOG_FORMAT=journal"` into the
+  generated `kidobo-sync.service` unit for deterministic systemd logging.
+
 ## [0.5.3] - 2026-02-19
 
 
