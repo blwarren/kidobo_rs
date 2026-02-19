@@ -19,7 +19,7 @@ use crate::adapters::iptables::{
 use crate::adapters::limited_io::read_to_string_with_limit;
 use crate::adapters::lock::acquire_non_blocking;
 use crate::adapters::path::{PathResolutionInput, ResolvedPaths, resolve_paths};
-use crate::cli::blocklist::normalize_local_blocklist;
+use crate::cli::blocklist::{BlocklistNormalizeResult, normalize_local_blocklist_with_fast_state};
 use crate::core::config::{Config, FirewallAction};
 use crate::core::network::{CanonicalCidr, parse_lines_non_strict};
 use crate::core::sync::compute_effective_blocklists;
@@ -27,6 +27,7 @@ use crate::error::KidoboError;
 
 const MAX_REMOTE_FETCH_WORKERS: usize = 5;
 const BLOCKLIST_READ_LIMIT: usize = 16 * 1024 * 1024;
+const BLOCKLIST_FAST_STATE_FILE: &str = "blocklist-normalize.fast-state";
 #[cfg(test)]
 const RESTORE_SCRIPT_READ_LIMIT: usize = 8 * 1024 * 1024;
 
@@ -88,7 +89,16 @@ pub(crate) fn run_sync_with_dependencies(
         chain_action(config),
     )?;
 
-    normalize_local_blocklist(&paths.blocklist_file)?;
+    let fast_state_path = paths.cache_dir.join(BLOCKLIST_FAST_STATE_FILE);
+    let normalize_result =
+        normalize_local_blocklist_with_fast_state(&paths.blocklist_file, &fast_state_path)?;
+    if normalize_result == BlocklistNormalizeResult::SkippedUnchanged {
+        info!(
+            "sync blocklist normalization skipped: unchanged path={}",
+            paths.blocklist_file.display()
+        );
+    }
+
     let internal = load_internal_blocklist(&paths.blocklist_file)?;
     let remote = fetch_remote_networks_concurrently(
         &config.remote.urls,

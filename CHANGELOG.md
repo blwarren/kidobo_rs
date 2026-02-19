@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `kidobo sync` now uses a fast local blocklist-change check (`size` + `mtime`) and skips the canonicalize/collapse rewrite pass when the local blocklist file is unchanged since the last sync.
+
 ## [0.5.1] - 2026-02-19
 
 

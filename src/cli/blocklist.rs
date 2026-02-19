@@ -2,6 +2,9 @@ use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
+use std::time::UNIX_EPOCH;
+
+use log::warn;
 
 use crate::adapters::limited_io::read_to_string_with_limit;
 use crate::adapters::path::{PathResolutionInput, resolve_paths};
@@ -12,6 +15,60 @@ use crate::core::network::{
 use crate::error::KidoboError;
 
 const BLOCKLIST_READ_LIMIT: usize = 16 * 1024 * 1024;
+const BLOCKLIST_FAST_STATE_VERSION: &str = "v1";
+const BLOCKLIST_FAST_STATE_READ_LIMIT: usize = 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BlocklistNormalizeResult {
+    MissingBlocklist,
+    SkippedUnchanged,
+    Checked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BlocklistFastState {
+    byte_len: u64,
+    modified_nanos: u128,
+}
+
+impl BlocklistFastState {
+    fn capture(path: &Path) -> Option<Self> {
+        let metadata = fs::metadata(path).ok()?;
+        let modified = metadata.modified().ok()?;
+        let since_epoch = modified.duration_since(UNIX_EPOCH).ok()?;
+
+        Some(Self {
+            byte_len: metadata.len(),
+            modified_nanos: since_epoch.as_nanos(),
+        })
+    }
+
+    fn parse(contents: &str) -> Option<Self> {
+        let mut parts = contents.split_whitespace();
+        let version = parts.next()?;
+        if version != BLOCKLIST_FAST_STATE_VERSION {
+            return None;
+        }
+
+        let byte_len = parts.next()?.parse::<u64>().ok()?;
+        let modified_nanos = parts.next()?.parse::<u128>().ok()?;
+        if parts.next().is_some() {
+            return None;
+        }
+
+        Some(Self {
+            byte_len,
+            modified_nanos,
+        })
+    }
+
+    fn serialize(self) -> String {
+        format!(
+            "{} {} {}\n",
+            BLOCKLIST_FAST_STATE_VERSION, self.byte_len, self.modified_nanos
+        )
+    }
+}
 
 #[allow(clippy::print_stdout, clippy::print_stderr)]
 pub fn run_ban_command(target: &str) -> Result<(), KidoboError> {
@@ -240,6 +297,37 @@ pub fn normalize_local_blocklist(path: &Path) -> Result<(), KidoboError> {
     Ok(())
 }
 
+pub(crate) fn normalize_local_blocklist_with_fast_state(
+    blocklist_path: &Path,
+    fast_state_path: &Path,
+) -> Result<BlocklistNormalizeResult, KidoboError> {
+    if !blocklist_path.exists() {
+        return Ok(BlocklistNormalizeResult::MissingBlocklist);
+    }
+
+    let current_state = BlocklistFastState::capture(blocklist_path);
+    let cached_state = read_blocklist_fast_state(fast_state_path);
+    if current_state
+        .zip(cached_state)
+        .is_some_and(|(current, cached)| current == cached)
+    {
+        return Ok(BlocklistNormalizeResult::SkippedUnchanged);
+    }
+
+    normalize_local_blocklist(blocklist_path)?;
+
+    if let Some(final_state) = BlocklistFastState::capture(blocklist_path)
+        && let Err(err) = write_blocklist_fast_state(fast_state_path, final_state)
+    {
+        warn!(
+            "best-effort blocklist fast-state write failed for {} ({err})",
+            fast_state_path.display()
+        );
+    }
+
+    Ok(BlocklistNormalizeResult::Checked)
+}
+
 fn parse_blocklist_target(input: &str) -> Result<CanonicalCidr, KidoboError> {
     let token = input.trim();
     parse_ip_cidr_non_strict(token).ok_or_else(|| KidoboError::BlocklistTargetParse {
@@ -310,6 +398,21 @@ fn canonicalize_blocklist(contents: &str) -> String {
         normalized.push('\n');
     }
     normalized
+}
+
+fn read_blocklist_fast_state(path: &Path) -> Option<BlocklistFastState> {
+    let contents = read_to_string_with_limit(path, BLOCKLIST_FAST_STATE_READ_LIMIT).ok()?;
+    BlocklistFastState::parse(&contents)
+}
+
+fn write_blocklist_fast_state(
+    path: &Path,
+    state: BlocklistFastState,
+) -> Result<(), std::io::Error> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, state.serialize())
 }
 
 fn canonical_entry_lines(entries: &[CanonicalCidr]) -> Vec<String> {
@@ -436,9 +539,10 @@ mod tests {
     };
 
     use super::{
-        BLOCKLIST_READ_LIMIT, BanOutcome, BlocklistFile, KidoboError, append_blocklist_entry,
-        apply_unban_plan, ban_target_in_file, build_unban_plan, ensure_blocklist_parent,
-        normalize_local_blocklist, parse_blocklist_target, write_blocklist_lines,
+        BLOCKLIST_READ_LIMIT, BanOutcome, BlocklistFile, BlocklistNormalizeResult, KidoboError,
+        append_blocklist_entry, apply_unban_plan, ban_target_in_file, build_unban_plan,
+        ensure_blocklist_parent, normalize_local_blocklist,
+        normalize_local_blocklist_with_fast_state, parse_blocklist_target, write_blocklist_lines,
     };
     use crate::adapters::limited_io::read_to_string_with_limit;
 
@@ -633,6 +737,43 @@ mod tests {
                 .expect("read")
                 .as_str(),
             "# top comment\n\n203.0.113.0/24\n2001:db8::/64\n"
+        );
+    }
+
+    #[test]
+    fn normalize_with_fast_state_skips_when_unchanged() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("blocklist.txt");
+        let state_path = temp.path().join("cache/blocklist-normalize.fast-state");
+        fs::write(&path, "203.0.113.7\n203.0.113.0/24\n").expect("write");
+
+        let first =
+            normalize_local_blocklist_with_fast_state(&path, &state_path).expect("first normalize");
+        assert_eq!(first, BlocklistNormalizeResult::Checked);
+
+        let second = normalize_local_blocklist_with_fast_state(&path, &state_path)
+            .expect("second normalize should skip");
+        assert_eq!(second, BlocklistNormalizeResult::SkippedUnchanged);
+    }
+
+    #[test]
+    fn normalize_with_fast_state_rechecks_after_blocklist_change() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("blocklist.txt");
+        let state_path = temp.path().join("cache/blocklist-normalize.fast-state");
+        fs::write(&path, "203.0.113.7\n203.0.113.0/24\n").expect("write");
+
+        normalize_local_blocklist_with_fast_state(&path, &state_path).expect("first normalize");
+        fs::write(&path, "198.51.100.7\n").expect("rewrite");
+
+        let second = normalize_local_blocklist_with_fast_state(&path, &state_path)
+            .expect("second normalize should recheck");
+        assert_eq!(second, BlocklistNormalizeResult::Checked);
+        assert_eq!(
+            read_to_string_with_limit(&path, BLOCKLIST_READ_LIMIT)
+                .expect("read")
+                .as_str(),
+            "198.51.100.7/32\n"
         );
     }
 
