@@ -10,6 +10,8 @@
   `level=<LEVEL> msg=<text>` journal-friendly format.
 - `kidobo init` now writes `Environment="KIDOBO_LOG_FORMAT=journal"` into the
   generated `kidobo-sync.service` unit for deterministic systemd logging.
+- CLI help output now includes clearer command/flag descriptions and examples,
+  improving discoverability directly in `kidobo --help` and subcommand help.
 
 ## [0.5.3] - 2026-02-19
 

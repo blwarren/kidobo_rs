@@ -7,10 +7,18 @@ use log::LevelFilter;
 #[command(
     name = "kidobo",
     version,
-    about = "One-shot firewall blocklist manager"
+    about = "One-shot firewall blocklist manager",
+    long_about = "Manage Kidobo firewall blocklists with one-shot commands (no daemon/background service).",
+    after_help = "Examples:\n  kidobo init\n  kidobo sync\n  kidobo lookup 203.0.113.7\n  kidobo lookup --file ./targets.txt\n  kidobo ban 203.0.113.0/24\n  kidobo unban 203.0.113.7 --yes"
 )]
 pub struct Cli {
-    #[arg(long = "log-level", value_enum, default_value_t = LogLevel::Info, global = true)]
+    #[arg(
+        long = "log-level",
+        value_enum,
+        default_value_t = LogLevel::Info,
+        global = true,
+        help = "Set stderr log verbosity"
+    )]
     pub log_level: LogLevel,
 
     #[command(subcommand)]
@@ -40,27 +48,47 @@ impl From<LogLevel> for LevelFilter {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    #[command(about = "Create missing config/data/cache files and systemd units")]
     Init,
+    #[command(about = "Run environment checks and print a JSON report")]
     Doctor,
+    #[command(about = "Sync local+remote blocklists into firewall/ipset state")]
     Sync,
+    #[command(about = "Best-effort cleanup of kidobo runtime state")]
     Flush {
-        #[arg(long = "cache-only")]
+        #[arg(
+            long = "cache-only",
+            help = "Only clear cached remote source files (leave firewall/ipset state unchanged)"
+        )]
         cache_only: bool,
     },
+    #[command(about = "Add an IP/CIDR entry to the local blocklist")]
     Ban {
-        #[arg(value_name = "ip|cidr")]
+        #[arg(value_name = "IP_OR_CIDR", help = "IPv4/IPv6 address or CIDR to add")]
         target: String,
     },
+    #[command(about = "Remove an IP/CIDR entry from the local blocklist")]
     Unban {
-        #[arg(value_name = "ip|cidr")]
+        #[arg(
+            value_name = "IP_OR_CIDR",
+            help = "IPv4/IPv6 address or CIDR to remove"
+        )]
         target: String,
 
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Skip confirmation and remove overlapping entries if needed"
+        )]
         yes: bool,
     },
+    #[command(
+        about = "Offline lookup against local blocklist + cached remote sources",
+        long_about = "Lookup runs offline only and never fetches remote sources."
+    )]
     Lookup {
         #[arg(
-            value_name = "ip",
+            value_name = "IP_OR_CIDR",
+            help = "Single target IP/CIDR to match",
             conflicts_with = "file",
             required_unless_present = "file"
         )]
@@ -68,7 +96,8 @@ pub enum Command {
 
         #[arg(
             long,
-            value_name = "path",
+            value_name = "PATH",
+            help = "File with one target IP/CIDR per line",
             conflicts_with = "ip",
             required_unless_present = "ip"
         )]
