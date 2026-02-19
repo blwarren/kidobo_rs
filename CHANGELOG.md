@@ -2,25 +2,17 @@
 
 ## [Unreleased]
 
-### Added
-
-- Added `scripts/perf/measure-lookup-constrained.sh` to run the deterministic lookup RSS/time probe under constrained resources by default (`1` CPU core via `taskset`, `1 GiB` memory via `ulimit -Sv`).
-- `scripts/perf/measure-lookup-rss.sh` now supports optional runtime constraints through `KIDOBO_PERF_CPU_CORE` and `KIDOBO_PERF_MEM_LIMIT_KIB` for reproducible low-resource perf checks.
-
 ### Fixed
 
 - `kidobo sync` now writes generated `ipset restore` scripts through buffered I/O, reducing kernel write-call overhead introduced by per-line restore emission while preserving atomic swap behavior.
 
 ## [0.5.2] - 2026-02-19
 
-
 ### Changed
 
 - `kidobo sync` now uses a fast local blocklist-change check (`size` + `mtime`) and skips the canonicalize/collapse rewrite pass when the local blocklist file is unchanged since the last sync.
 
-
 ## [0.5.1] - 2026-02-19
-
 
 ### Changed
 
@@ -29,7 +21,6 @@
 - Remote sync fetch worker selection is now CPU-aware (`available_parallelism`) while still capped by `MAX_REMOTE_FETCH_WORKERS`, reducing oversubscription pressure on single-core hosts.
 - Ipset restore script generation now skips redundant sort/dedup work when entries are already sorted and unique, reducing CPU and allocation overhead on the sync hot path.
 - Remote cache normalization now formats canonical CIDRs without building an intermediate `Vec<String>`, reducing temporary allocations during source processing.
-
 
 ## [0.5.0] - 2026-02-18
 
