@@ -1,7 +1,7 @@
 use std::env;
 use std::fmt::{Display, Write as _};
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -278,8 +278,9 @@ fn execute_ipset_restore_with_entries<T: Copy + Ord + Display>(
     temp_set_name: &str,
     entries: &[T],
 ) -> Result<(), IpsetError> {
-    let (mut file, path) = create_restore_script_file()?;
-    if let Err(err) = write_restore_script_file(&mut file, spec, temp_set_name, entries) {
+    let (file, path) = create_restore_script_file()?;
+    let mut writer = BufWriter::new(file);
+    if let Err(err) = write_restore_script_file(&mut writer, spec, temp_set_name, entries) {
         let reason = err.to_string();
         if let Err(cleanup_err) = fs::remove_file(&path) {
             warn!(
@@ -289,7 +290,17 @@ fn execute_ipset_restore_with_entries<T: Copy + Ord + Display>(
         }
         return Err(IpsetError::WriteRestoreScript { path, reason });
     }
-    drop(file);
+    if let Err(err) = writer.flush() {
+        let reason = err.to_string();
+        if let Err(cleanup_err) = fs::remove_file(&path) {
+            warn!(
+                "failed to remove temporary ipset restore script {}: {cleanup_err}",
+                path.display()
+            );
+        }
+        return Err(IpsetError::WriteRestoreScript { path, reason });
+    }
+    drop(writer);
 
     let path_string = path.display().to_string();
     let restore_result = run_checked(runner, "ipset", &["restore", "-file", &path_string]);
@@ -305,13 +316,13 @@ fn execute_ipset_restore_with_entries<T: Copy + Ord + Display>(
 }
 
 fn write_restore_script_file<T: Copy + Ord + Display>(
-    file: &mut std::fs::File,
+    writer: &mut impl Write,
     spec: &IpsetSetSpec,
     temp_set_name: &str,
     entries: &[T],
 ) -> Result<(), std::io::Error> {
     writeln!(
-        file,
+        writer,
         "create {} {} family {} hashsize {} maxelem {} timeout {}",
         temp_set_name,
         spec.set_type,
@@ -321,20 +332,19 @@ fn write_restore_script_file<T: Copy + Ord + Display>(
         spec.timeout
     )?;
 
-    write_restore_entry_lines(file, temp_set_name, entries)?;
+    write_restore_entry_lines(writer, temp_set_name, entries)?;
 
-    writeln!(file, "swap {temp_set_name} {}", spec.set_name)?;
-    file.flush()
+    writeln!(writer, "swap {temp_set_name} {}", spec.set_name)
 }
 
 fn write_restore_entry_lines<T: Copy + Ord + Display>(
-    file: &mut std::fs::File,
+    writer: &mut impl Write,
     temp_set_name: &str,
     entries: &[T],
 ) -> Result<(), std::io::Error> {
     if is_sorted_and_unique(entries) {
         for entry in entries {
-            writeln!(file, "add {temp_set_name} {entry}")?;
+            writeln!(writer, "add {temp_set_name} {entry}")?;
         }
         return Ok(());
     }
@@ -343,7 +353,7 @@ fn write_restore_entry_lines<T: Copy + Ord + Display>(
     sorted_entries.sort_unstable();
     sorted_entries.dedup();
     for entry in sorted_entries {
-        writeln!(file, "add {temp_set_name} {entry}")?;
+        writeln!(writer, "add {temp_set_name} {entry}")?;
     }
     Ok(())
 }
