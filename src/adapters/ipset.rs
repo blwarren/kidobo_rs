@@ -78,7 +78,26 @@ impl<E: CommandExecutor> IpsetCommandRunner for SudoCommandRunner<E> {
 }
 
 pub fn ipset_exists(runner: &dyn IpsetCommandRunner, set_name: &str) -> Result<bool, IpsetError> {
-    let result = runner.run("ipset", &["list", set_name])?;
+    let terse_args = ["list", set_name, "-terse"];
+    let terse_result = runner.run("ipset", &terse_args)?;
+    if terse_result.success {
+        return Ok(true);
+    }
+
+    if is_missing_set_result(&terse_result) {
+        return Ok(false);
+    }
+
+    if !is_unsupported_terse_option_result(&terse_result) {
+        return Err(IpsetError::CommandFailed {
+            command: display_command("ipset", &terse_args),
+            status: terse_result.status,
+            stderr: terse_result.stderr,
+        });
+    }
+
+    let list_args = ["list", set_name];
+    let result = runner.run("ipset", &list_args)?;
     if result.success {
         return Ok(true);
     }
@@ -88,7 +107,7 @@ pub fn ipset_exists(runner: &dyn IpsetCommandRunner, set_name: &str) -> Result<b
     }
 
     Err(IpsetError::CommandFailed {
-        command: display_command("ipset", &["list", set_name]),
+        command: display_command("ipset", &list_args),
         status: result.status,
         stderr: result.stderr,
     })
@@ -291,10 +310,6 @@ fn write_restore_script_file<T: Copy + Ord + Display>(
     temp_set_name: &str,
     entries: &[T],
 ) -> Result<(), std::io::Error> {
-    let mut sorted_entries = entries.to_vec();
-    sorted_entries.sort_unstable();
-    sorted_entries.dedup();
-
     writeln!(
         file,
         "create {} {} family {} hashsize {} maxelem {} timeout {}",
@@ -305,11 +320,41 @@ fn write_restore_script_file<T: Copy + Ord + Display>(
         spec.maxelem,
         spec.timeout
     )?;
+
+    write_restore_entry_lines(file, temp_set_name, entries)?;
+
+    writeln!(file, "swap {temp_set_name} {}", spec.set_name)?;
+    file.flush()
+}
+
+fn write_restore_entry_lines<T: Copy + Ord + Display>(
+    file: &mut std::fs::File,
+    temp_set_name: &str,
+    entries: &[T],
+) -> Result<(), std::io::Error> {
+    if is_sorted_and_unique(entries) {
+        for entry in entries {
+            writeln!(file, "add {temp_set_name} {entry}")?;
+        }
+        return Ok(());
+    }
+
+    let mut sorted_entries = entries.to_vec();
+    sorted_entries.sort_unstable();
+    sorted_entries.dedup();
     for entry in sorted_entries {
         writeln!(file, "add {temp_set_name} {entry}")?;
     }
-    writeln!(file, "swap {temp_set_name} {}", spec.set_name)?;
-    file.flush()
+    Ok(())
+}
+
+fn is_sorted_and_unique<T: Ord>(entries: &[T]) -> bool {
+    entries.windows(2).all(|window| {
+        window
+            .first()
+            .zip(window.get(1))
+            .is_some_and(|(left, right)| left < right)
+    })
 }
 
 fn is_missing_set_result(result: &CommandResult) -> bool {
@@ -318,6 +363,15 @@ fn is_missing_set_result(result: &CommandResult) -> bool {
             .stderr
             .to_ascii_lowercase()
             .contains("does not exist")
+}
+
+fn is_unsupported_terse_option_result(result: &CommandResult) -> bool {
+    let stderr = result.stderr.to_ascii_lowercase();
+    stderr.contains("terse")
+        && (stderr.contains("unknown")
+            || stderr.contains("unrecognized")
+            || stderr.contains("invalid")
+            || stderr.contains("syntax"))
 }
 
 fn restore_script_path() -> PathBuf {
@@ -506,6 +560,41 @@ mod tests {
 
         let err = ipset_exists(&runner, "kidobo").expect_err("must fail");
         assert!(matches!(err, IpsetError::CommandFailed { .. }));
+    }
+
+    #[test]
+    fn ipset_exists_falls_back_when_terse_flag_is_unsupported() {
+        let runner = MockRunner::new(vec![
+            Ok(CommandResult {
+                status: Some(2),
+                success: false,
+                stdout: String::new(),
+                stderr: "Unknown argument: -terse".to_string(),
+            }),
+            Ok(CommandResult {
+                status: Some(0),
+                success: true,
+                stdout: "Name: kidobo".to_string(),
+                stderr: String::new(),
+            }),
+        ]);
+
+        let exists = ipset_exists(&runner, "kidobo").expect("exists check");
+        assert!(exists);
+
+        let invocations = runner.invocations();
+        assert_eq!(
+            invocations[0].1,
+            vec![
+                "list".to_string(),
+                "kidobo".to_string(),
+                "-terse".to_string()
+            ]
+        );
+        assert_eq!(
+            invocations[1].1,
+            vec!["list".to_string(), "kidobo".to_string()]
+        );
     }
 
     #[test]

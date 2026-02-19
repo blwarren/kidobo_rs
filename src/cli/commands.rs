@@ -10,7 +10,7 @@ use crate::cli::doctor::run_doctor_command;
 use crate::cli::flush::run_flush_command;
 use crate::cli::init::run_init_command;
 use crate::cli::sync::run_sync_command;
-use crate::core::lookup::run_lookup;
+use crate::core::lookup::run_lookup_streaming;
 use crate::error::KidoboError;
 
 const LOOKUP_TARGET_READ_LIMIT: usize = 2 * 1024 * 1024;
@@ -37,22 +37,17 @@ fn run_lookup_command(ip: Option<String>, file: Option<PathBuf>) -> Result<(), K
     let _config = load_config_from_file(&paths.config_file)?;
     let sources = load_lookup_sources(&paths)?;
 
-    let report = run_lookup(&targets, &sources);
+    let invalid_targets = run_lookup_streaming(&targets, &sources, |target, source| {
+        println!("{target}\t{}\t{}", source.source_label, source.source_line);
+    });
 
-    for matched in &report.matches {
-        println!(
-            "{}\t{}\t{}",
-            matched.target, matched.source_label, matched.matched_source_entry
-        );
-    }
-
-    for invalid in &report.invalid_targets {
+    for invalid in &invalid_targets {
         eprintln!("invalid target: {invalid}");
     }
 
-    if !report.invalid_targets.is_empty() {
+    if !invalid_targets.is_empty() {
         return Err(KidoboError::LookupInvalidTargets {
-            count: report.invalid_targets.len(),
+            count: invalid_targets.len(),
         });
     }
 

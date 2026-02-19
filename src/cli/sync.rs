@@ -220,7 +220,7 @@ fn fetch_remote_networks_concurrently(
         return Vec::new();
     }
 
-    let worker_count = urls.len().min(MAX_REMOTE_FETCH_WORKERS);
+    let worker_count = remote_fetch_worker_count(urls.len());
     let next_idx = AtomicUsize::new(0);
     let mut networks = Vec::new();
 
@@ -258,6 +258,19 @@ fn fetch_remote_networks_concurrently(
     networks
 }
 
+fn remote_fetch_worker_count(url_count: usize) -> usize {
+    let cpu_parallelism = std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1);
+    remote_fetch_worker_count_for(url_count, cpu_parallelism)
+}
+
+fn remote_fetch_worker_count_for(url_count: usize, cpu_parallelism: usize) -> usize {
+    let cpu_budget = cpu_parallelism.max(1);
+    let max_workers = MAX_REMOTE_FETCH_WORKERS.min(cpu_budget);
+    url_count.min(max_workers.max(1))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, VecDeque};
@@ -272,7 +285,8 @@ mod tests {
 
     use super::{
         MAX_REMOTE_FETCH_WORKERS, RESTORE_SCRIPT_READ_LIMIT, ensure_within_maxelem,
-        fetch_remote_networks_concurrently, read_to_string_with_limit, run_sync_with_dependencies,
+        fetch_remote_networks_concurrently, read_to_string_with_limit,
+        remote_fetch_worker_count_for, run_sync_with_dependencies,
     };
     use crate::adapters::command_runner::{CommandResult, CommandRunnerError};
     use crate::adapters::http_cache::{HttpClient, HttpClientError, HttpRequest, HttpResponse};
@@ -676,6 +690,17 @@ mod tests {
 
         assert_eq!(networks.len(), 7);
         assert!(http_client.max_in_flight() <= MAX_REMOTE_FETCH_WORKERS);
+    }
+
+    #[test]
+    fn remote_worker_count_respects_cpu_budget() {
+        assert_eq!(remote_fetch_worker_count_for(8, 1), 1);
+        assert_eq!(remote_fetch_worker_count_for(8, 2), 2);
+        assert_eq!(
+            remote_fetch_worker_count_for(8, MAX_REMOTE_FETCH_WORKERS + 5),
+            MAX_REMOTE_FETCH_WORKERS
+        );
+        assert_eq!(remote_fetch_worker_count_for(2, 8), 2);
     }
 
     #[test]

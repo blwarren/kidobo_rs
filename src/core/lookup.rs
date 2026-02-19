@@ -165,73 +165,119 @@ impl IntervalIndexV6 {
     }
 }
 
-pub fn run_lookup(targets: &[String], sources: &[LookupSourceEntry]) -> LookupReport {
-    let v4_index = IntervalIndexV4::from_sources(sources);
-    let v6_index = IntervalIndexV6::from_sources(sources);
-    let mut matched_entries = Vec::<(&str, &LookupSourceEntry)>::new();
+fn compare_source_entries(a: &LookupSourceEntry, b: &LookupSourceEntry) -> std::cmp::Ordering {
+    (a.source_label.as_ref(), a.source_line.as_str(), a.cidr).cmp(&(
+        b.source_label.as_ref(),
+        b.source_line.as_str(),
+        b.cidr,
+    ))
+}
+
+fn same_source_entry(a: &LookupSourceEntry, b: &LookupSourceEntry) -> bool {
+    a.source_label == b.source_label && a.source_line == b.source_line && a.cidr == b.cidr
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PreparedTarget<'a> {
+    raw: &'a str,
+    parsed: CanonicalCidr,
+}
+
+fn prepare_targets(targets: &[String]) -> (Vec<PreparedTarget<'_>>, Vec<String>) {
+    let mut prepared = Vec::with_capacity(targets.len());
     let mut invalid_targets = Vec::<&str>::new();
 
     for target in targets {
-        let Ok(parsed) = parse_target_strict(target) else {
-            invalid_targets.push(target.as_str());
-            continue;
-        };
+        match parse_target_strict(target) {
+            Ok(parsed) => prepared.push(PreparedTarget {
+                raw: target.as_str(),
+                parsed,
+            }),
+            Err(_) => invalid_targets.push(target.as_str()),
+        }
+    }
 
-        match parsed {
-            CanonicalCidr::V4(cidr) => {
-                for source_idx in v4_index.overlapping_source_indices(ipv4_to_interval(cidr)) {
-                    if let Some(source) = sources.get(source_idx) {
-                        matched_entries.push((target.as_str(), source));
-                    }
+    prepared.sort_unstable_by_key(|target| target.raw);
+    prepared.dedup_by(|left, right| left.raw == right.raw);
+
+    invalid_targets.sort_unstable();
+    invalid_targets.dedup();
+
+    (
+        prepared,
+        invalid_targets.into_iter().map(str::to_string).collect(),
+    )
+}
+
+fn emit_target_matches<F>(
+    target: PreparedTarget<'_>,
+    sources: &[LookupSourceEntry],
+    v4_index: &IntervalIndexV4,
+    v6_index: &IntervalIndexV6,
+    mut emit: F,
+) where
+    F: FnMut(&str, &LookupSourceEntry),
+{
+    let mut matched_sources = Vec::<&LookupSourceEntry>::new();
+
+    match target.parsed {
+        CanonicalCidr::V4(cidr) => {
+            for source_idx in v4_index.overlapping_source_indices(ipv4_to_interval(cidr)) {
+                if let Some(source) = sources.get(source_idx) {
+                    matched_sources.push(source);
                 }
             }
-            CanonicalCidr::V6(cidr) => {
-                for source_idx in v6_index.overlapping_source_indices(ipv6_to_interval(cidr)) {
-                    if let Some(source) = sources.get(source_idx) {
-                        matched_entries.push((target.as_str(), source));
-                    }
+        }
+        CanonicalCidr::V6(cidr) => {
+            for source_idx in v6_index.overlapping_source_indices(ipv6_to_interval(cidr)) {
+                if let Some(source) = sources.get(source_idx) {
+                    matched_sources.push(source);
                 }
             }
         }
     }
 
-    matched_entries.sort_unstable_by(|(target_a, source_a), (target_b, source_b)| {
-        (
-            *target_a,
-            source_a.source_label.as_ref(),
-            source_a.source_line.as_str(),
-            source_a.cidr,
-        )
-            .cmp(&(
-                *target_b,
-                source_b.source_label.as_ref(),
-                source_b.source_line.as_str(),
-                source_b.cidr,
-            ))
-    });
-    matched_entries.dedup_by(|(target_a, source_a), (target_b, source_b)| {
-        *target_a == *target_b
-            && source_a.source_label == source_b.source_label
-            && source_a.source_line == source_b.source_line
-            && source_a.cidr == source_b.cidr
-    });
+    matched_sources.sort_unstable_by(|left, right| compare_source_entries(left, right));
+    matched_sources.dedup_by(|left, right| same_source_entry(left, right));
 
-    let matches = matched_entries
-        .into_iter()
-        .map(|(target, source)| LookupMatch {
+    for source in matched_sources {
+        emit(target.raw, source);
+    }
+}
+
+pub fn run_lookup_streaming<F>(
+    targets: &[String],
+    sources: &[LookupSourceEntry],
+    mut emit: F,
+) -> Vec<String>
+where
+    F: FnMut(&str, &LookupSourceEntry),
+{
+    let v4_index = IntervalIndexV4::from_sources(sources);
+    let v6_index = IntervalIndexV6::from_sources(sources);
+    let (prepared_targets, invalid_targets) = prepare_targets(targets);
+
+    for target in prepared_targets {
+        emit_target_matches(target, sources, &v4_index, &v6_index, &mut emit);
+    }
+
+    invalid_targets
+}
+
+pub fn run_lookup(targets: &[String], sources: &[LookupSourceEntry]) -> LookupReport {
+    let mut matches = Vec::new();
+    let invalid_targets = run_lookup_streaming(targets, sources, |target, source| {
+        matches.push(LookupMatch {
             target: target.to_string(),
             source_label: source.source_label.to_string(),
             matched_source_entry: source.source_line.clone(),
             matched_cidr: source.cidr,
-        })
-        .collect();
-
-    invalid_targets.sort_unstable();
-    invalid_targets.dedup();
+        });
+    });
 
     LookupReport {
         matches,
-        invalid_targets: invalid_targets.into_iter().map(str::to_string).collect(),
+        invalid_targets,
     }
 }
 
@@ -239,6 +285,7 @@ pub fn run_lookup(targets: &[String], sources: &[LookupSourceEntry]) -> LookupRe
 mod tests {
     use super::{
         LookupSourceEntry, LookupTargetParseError, cidr_overlaps, parse_target_strict, run_lookup,
+        run_lookup_streaming,
     };
     use crate::core::network::{CanonicalCidr, Ipv4Cidr, Ipv6Cidr};
 
@@ -342,5 +389,38 @@ mod tests {
         let report = run_lookup(&["10.0.2.7".to_string()], &sources);
         assert_eq!(report.matches.len(), 1);
         assert_eq!(report.matches[0].source_label, "source:b");
+    }
+
+    #[test]
+    fn streaming_lookup_dedups_duplicate_targets_and_sources() {
+        let sources = vec![
+            LookupSourceEntry {
+                source_label: "source:a".into(),
+                source_line: "10.0.0.0/24".to_string(),
+                cidr: CanonicalCidr::V4(Ipv4Cidr::from_parts(0x0a000000, 24)),
+            },
+            LookupSourceEntry {
+                source_label: "source:a".into(),
+                source_line: "10.0.0.0/24".to_string(),
+                cidr: CanonicalCidr::V4(Ipv4Cidr::from_parts(0x0a000000, 24)),
+            },
+        ];
+
+        let targets = vec!["10.0.0.7".to_string(), "10.0.0.7".to_string()];
+        let mut emitted = Vec::new();
+        let invalid = run_lookup_streaming(&targets, &sources, |target, source| {
+            emitted.push((
+                target.to_string(),
+                source.source_label.to_string(),
+                source.source_line.clone(),
+                source.cidr,
+            ));
+        });
+
+        assert!(invalid.is_empty());
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].0, "10.0.0.7");
+        assert_eq!(emitted[0].1, "source:a");
+        assert_eq!(emitted[0].2, "10.0.0.0/24");
     }
 }

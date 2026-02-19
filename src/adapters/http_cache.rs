@@ -269,11 +269,14 @@ fn parse_cached_iplist(iplist: &str) -> Vec<CanonicalCidr> {
 }
 
 fn format_normalized_cidrs(cidrs: &[CanonicalCidr]) -> String {
-    cidrs
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut normalized = String::new();
+    for (idx, cidr) in cidrs.iter().enumerate() {
+        if idx > 0 {
+            normalized.push('\n');
+        }
+        normalized.push_str(&cidr.to_string());
+    }
+    normalized
 }
 
 pub fn fetch_iplist_with_cache(
