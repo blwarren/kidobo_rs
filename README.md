@@ -118,6 +118,10 @@ Logging format:
 - `KIDOBO_LOG_FORMAT=auto|human|journal` (default `auto`)
 - `auto` uses `journal` under systemd or when stderr is non-TTY, and `human`
   for interactive TTY runs
+- `KIDOBO_LOG_COLOR=auto|always|never` controls color in human format
+  (default `auto`)
+- In `auto`, human format uses colored level labels on interactive TTY output
+  and respects `NO_COLOR`
 
 ## Minimal Config
 

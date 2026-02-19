@@ -378,3 +378,21 @@ fn sync_skips_local_blocklist_normalization_when_unchanged() {
         .expect("read blocklist after second sync");
     assert_eq!(second_blocklist, expected_canonical);
 }
+
+#[test]
+fn doctor_forced_human_color_emits_ansi_level_label() {
+    let root = create_lookup_root("203.0.113.7\n");
+    let mut command = kidobo_with_root_command(root.path(), &["doctor"]);
+    command
+        .env("KIDOBO_LOG_FORMAT", "human")
+        .env("KIDOBO_LOG_COLOR", "always")
+        .env_remove("NO_COLOR");
+    let output = command.output().expect("run doctor with forced color");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        stderr.contains("\u{1b}[32mINFO\u{1b}[0m: doctor report:"),
+        "missing ANSI-colored INFO label in stderr (status {:?}): {stderr}",
+        output.status.code()
+    );
+}

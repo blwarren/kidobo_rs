@@ -8,8 +8,7 @@ use log::LevelFilter;
     name = "kidobo",
     version,
     about = "One-shot firewall blocklist manager",
-    long_about = "Manage Kidobo firewall blocklists with one-shot commands (no daemon/background service).",
-    after_help = "Examples:\n  kidobo init\n  kidobo sync\n  kidobo lookup 203.0.113.7\n  kidobo lookup --file ./targets.txt\n  kidobo ban 203.0.113.0/24\n  kidobo unban 203.0.113.7 --yes"
+    long_about = "Manage Kidobo firewall blocklists with one-shot commands (no daemon/background service)."
 )]
 pub struct Cli {
     #[arg(
@@ -48,13 +47,25 @@ impl From<LogLevel> for LevelFilter {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    #[command(about = "Create missing config/data/cache files and systemd units")]
+    #[command(
+        about = "Create missing config/data/cache files and systemd units",
+        long_about = "Create any missing Kidobo config/data/cache files and default systemd unit files.\n\nAt default system paths, this also runs systemctl daemon-reload, reset-failed, and enable --now for kidobo-sync.timer."
+    )]
     Init,
-    #[command(about = "Run environment checks and print a JSON report")]
+    #[command(
+        about = "Run environment checks and print a JSON report",
+        long_about = "Run environment and dependency checks, then print a structured JSON report to stdout.\n\nThe command exits with code 0 when overall status is ok, and 1 when any required check fails."
+    )]
     Doctor,
-    #[command(about = "Sync local+remote blocklists into firewall/ipset state")]
+    #[command(
+        about = "Sync local+remote blocklists into firewall/ipset state",
+        long_about = "Load config and sources, apply safelist subtraction, collapse entries, then atomically update ipset state and firewall wiring.\n\nThis command is one-shot and fail-fast for hard errors (for example lock contention or invalid config)."
+    )]
     Sync,
-    #[command(about = "Best-effort cleanup of kidobo runtime state")]
+    #[command(
+        about = "Best-effort cleanup of kidobo runtime state",
+        long_about = "Best-effort cleanup command for Kidobo runtime artifacts.\n\nBy default it attempts firewall/ipset cleanup and remote cache cleanup. Use --cache-only to leave firewall/ipset state unchanged."
+    )]
     Flush {
         #[arg(
             long = "cache-only",
@@ -62,12 +73,18 @@ pub enum Command {
         )]
         cache_only: bool,
     },
-    #[command(about = "Add an IP/CIDR entry to the local blocklist")]
+    #[command(
+        about = "Add an IP/CIDR entry to the local blocklist",
+        long_about = "Add one IPv4/IPv6 address or CIDR entry to the local blocklist file.\n\nThis updates local source data only; run `kidobo sync` to apply changes to firewall/ipset state."
+    )]
     Ban {
         #[arg(value_name = "IP_OR_CIDR", help = "IPv4/IPv6 address or CIDR to add")]
         target: String,
     },
-    #[command(about = "Remove an IP/CIDR entry from the local blocklist")]
+    #[command(
+        about = "Remove an IP/CIDR entry from the local blocklist",
+        long_about = "Remove one IPv4/IPv6 address or CIDR entry from the local blocklist file.\n\nThis updates local source data only; run `kidobo sync` to apply changes to firewall/ipset state."
+    )]
     Unban {
         #[arg(
             value_name = "IP_OR_CIDR",
@@ -83,7 +100,7 @@ pub enum Command {
     },
     #[command(
         about = "Offline lookup against local blocklist + cached remote sources",
-        long_about = "Lookup runs offline only and never fetches remote sources."
+        long_about = "Lookup candidate targets against local blocklist and cached remote sources.\n\nLookup runs offline only and never fetches remote sources."
     )]
     Lookup {
         #[arg(

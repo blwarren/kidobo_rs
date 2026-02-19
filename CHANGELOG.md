@@ -10,8 +10,19 @@
   `level=<LEVEL> msg=<text>` journal-friendly format.
 - `kidobo init` now writes `Environment="KIDOBO_LOG_FORMAT=journal"` into the
   generated `kidobo-sync.service` unit for deterministic systemd logging.
-- CLI help output now includes clearer command/flag descriptions and examples,
-  improving discoverability directly in `kidobo --help` and subcommand help.
+- Human log output now includes subtle colorized level labels on interactive
+  TTY runs (respects `NO_COLOR`), while journal/systemd format remains plain.
+- Added explicit `KIDOBO_LOG_COLOR=auto|always|never` control for human-format
+  color output, including a deterministic `always` override.
+- CLI help output now includes clearer command/flag descriptions and richer
+  subcommand help details, improving discoverability directly in `kidobo --help`
+  and subcommand help.
+
+### Fixed
+
+- Human log color output now correctly emits ANSI level labels when
+  `KIDOBO_LOG_COLOR=always`; output could previously stay plain because logger
+  writer style was pinned to `never`.
 
 ## [0.5.3] - 2026-02-19
 
