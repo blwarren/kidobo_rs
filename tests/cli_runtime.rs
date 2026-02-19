@@ -6,7 +6,10 @@ use std::thread;
 use std::time::Duration;
 
 use fs2::FileExt;
+use kidobo::adapters::limited_io::read_to_string_with_limit;
 use tempfile::TempDir;
+
+const BLOCKLIST_READ_LIMIT: usize = 16 * 1024 * 1024;
 
 fn run_kidobo(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_kidobo"))
@@ -319,4 +322,59 @@ fn sync_sigint_exits_with_130() {
         touched.exists(),
         "test did not reach command execution before SIGINT"
     );
+}
+
+#[test]
+fn sync_skips_local_blocklist_normalization_when_unchanged() {
+    let root = create_root(
+        "[ipset]\nset_name='kidobo'\nenable_ipv6=false\n[safe]\ninclude_github_meta=false\n",
+        "203.0.113.7\n203.0.113.0/24\n",
+    );
+    let fake_sudo = write_fake_sudo_script(&root);
+    let sidecar = root.path().join("cache/blocklist-normalize.fast-state");
+    let blocklist = root.path().join("data/blocklist.txt");
+    let expected_canonical = "203.0.113.0/24\n";
+
+    let mut first = kidobo_with_root_command(root.path(), &["sync"]);
+    first.env(
+        "PATH",
+        path_with_bin_prefix(fake_sudo.parent().expect("sudo parent")),
+    );
+    let first_output = first.output().expect("run first sync");
+    assert_eq!(
+        first_output.status.code(),
+        Some(0),
+        "first sync failed: {}",
+        String::from_utf8_lossy(&first_output.stderr)
+    );
+    assert!(
+        sidecar.exists(),
+        "fast-state sidecar was not created at {}",
+        sidecar.display()
+    );
+    let first_blocklist = read_to_string_with_limit(&blocklist, BLOCKLIST_READ_LIMIT)
+        .expect("read canonicalized blocklist");
+    assert_eq!(first_blocklist, expected_canonical);
+
+    let mut second = kidobo_with_root_command(root.path(), &["sync"]);
+    second.env(
+        "PATH",
+        path_with_bin_prefix(fake_sudo.parent().expect("sudo parent")),
+    );
+    let second_output = second.output().expect("run second sync");
+    assert_eq!(
+        second_output.status.code(),
+        Some(0),
+        "second sync failed: {}",
+        String::from_utf8_lossy(&second_output.stderr)
+    );
+    let second_stderr = String::from_utf8_lossy(&second_output.stderr);
+    assert!(
+        second_stderr.contains("sync blocklist normalization skipped: unchanged path="),
+        "missing unchanged-blocklist skip log in second sync stderr: {second_stderr}"
+    );
+
+    let second_blocklist = read_to_string_with_limit(&blocklist, BLOCKLIST_READ_LIMIT)
+        .expect("read blocklist after second sync");
+    assert_eq!(second_blocklist, expected_canonical);
 }
