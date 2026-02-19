@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-02-19
+
+
 ### Changed
 
 - `kidobo lookup` now streams matches directly to output while preserving deterministic ordering, instead of accumulating all matches in memory first. This reduces peak RAM use and avoids large global sort/dedup overhead on large target/source combinations.
@@ -9,6 +12,7 @@
 - Remote sync fetch worker selection is now CPU-aware (`available_parallelism`) while still capped by `MAX_REMOTE_FETCH_WORKERS`, reducing oversubscription pressure on single-core hosts.
 - Ipset restore script generation now skips redundant sort/dedup work when entries are already sorted and unique, reducing CPU and allocation overhead on the sync hot path.
 - Remote cache normalization now formats canonical CIDRs without building an intermediate `Vec<String>`, reducing temporary allocations during source processing.
+
 
 ## [0.5.0] - 2026-02-18
 
