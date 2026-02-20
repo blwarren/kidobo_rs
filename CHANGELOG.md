@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-02-20
+
+
 ### Added
 
 - New offline overlap analysis command: `kidobo analyze overlap`.
@@ -17,6 +20,7 @@
 - Logging behavior is more predictable and configurable:
   `KIDOBO_LOG_FORMAT=auto|human|journal` and
   `KIDOBO_LOG_COLOR=auto|always|never`.
+
 
 ## [0.5.3] - 2026-02-19
 

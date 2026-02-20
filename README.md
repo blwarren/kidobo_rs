@@ -30,7 +30,7 @@ curl -fsSL https://raw.githubusercontent.com/blwarren/kidobo/main/scripts/instal
 Install a specific release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/blwarren/kidobo/main/scripts/install.sh | sudo bash -s -- --version v0.5.3
+curl -fsSL https://raw.githubusercontent.com/blwarren/kidobo/main/scripts/install.sh | sudo bash -s -- --version v0.6.0
 ```
 
 Install and initialize in one step:
