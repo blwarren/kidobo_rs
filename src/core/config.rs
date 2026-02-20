@@ -1,5 +1,9 @@
+use std::num::NonZeroU32;
+
 use serde::Deserialize;
 use thiserror::Error;
+
+use crate::core::network::{CanonicalCidr, parse_ip_cidr_token};
 
 pub const DEFAULT_IPSET_TYPE: &str = "hash:net";
 pub const DEFAULT_CHAIN_ACTION: FirewallAction = FirewallAction::Drop;
@@ -11,6 +15,104 @@ pub const DEFAULT_REMOTE_CACHE_STALE_AFTER_SECS: u32 = 24 * 60 * 60;
 pub const DEFAULT_INCLUDE_GITHUB_META: bool = true;
 pub const DEFAULT_GITHUB_META_CATEGORIES: [&str; 4] = ["api", "git", "hooks", "packages"];
 pub const DEFAULT_GITHUB_META_URL: &str = "https://api.github.com/meta";
+pub const REMOTE_TIMEOUT_SECS_MAX: u32 = 3600;
+pub const REMOTE_CACHE_STALE_AFTER_SECS_MAX: u32 = 7 * 24 * 60 * 60;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct HashsizePow2(NonZeroU32);
+
+impl HashsizePow2 {
+    pub fn new(value: u32) -> Option<Self> {
+        let non_zero = NonZeroU32::new(value)?;
+        if value.is_power_of_two() {
+            Some(Self(non_zero))
+        } else {
+            None
+        }
+    }
+
+    pub fn get(self) -> u32 {
+        self.0.get()
+    }
+}
+
+impl From<HashsizePow2> for u32 {
+    fn from(value: HashsizePow2) -> Self {
+        value.get()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct MaxElem(NonZeroU32);
+
+impl MaxElem {
+    pub fn new(value: u32) -> Option<Self> {
+        let non_zero = NonZeroU32::new(value)?;
+        if value <= DEFAULT_MAXELEM {
+            Some(Self(non_zero))
+        } else {
+            None
+        }
+    }
+
+    pub fn get(self) -> u32 {
+        self.0.get()
+    }
+}
+
+impl From<MaxElem> for u32 {
+    fn from(value: MaxElem) -> Self {
+        value.get()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RemoteTimeoutSecs(NonZeroU32);
+
+impl RemoteTimeoutSecs {
+    pub fn new(value: u32) -> Option<Self> {
+        let non_zero = NonZeroU32::new(value)?;
+        if value <= REMOTE_TIMEOUT_SECS_MAX {
+            Some(Self(non_zero))
+        } else {
+            None
+        }
+    }
+
+    pub fn get(self) -> u32 {
+        self.0.get()
+    }
+}
+
+impl From<RemoteTimeoutSecs> for u32 {
+    fn from(value: RemoteTimeoutSecs) -> Self {
+        value.get()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CacheStaleAfterSecs(NonZeroU32);
+
+impl CacheStaleAfterSecs {
+    pub fn new(value: u32) -> Option<Self> {
+        let non_zero = NonZeroU32::new(value)?;
+        if value <= REMOTE_CACHE_STALE_AFTER_SECS_MAX {
+            Some(Self(non_zero))
+        } else {
+            None
+        }
+    }
+
+    pub fn get(self) -> u32 {
+        self.0.get()
+    }
+}
+
+impl From<CacheStaleAfterSecs> for u32 {
+    fn from(value: CacheStaleAfterSecs) -> Self {
+        value.get()
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -26,8 +128,8 @@ pub struct IpsetConfig {
     pub enable_ipv6: bool,
     pub chain_action: FirewallAction,
     pub set_type: String,
-    pub hashsize: u32,
-    pub maxelem: u32,
+    pub hashsize: HashsizePow2,
+    pub maxelem: MaxElem,
     pub timeout: u32,
 }
 
@@ -39,7 +141,7 @@ pub enum FirewallAction {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SafeConfig {
-    pub ips: Vec<String>,
+    pub ips: Vec<CanonicalCidr>,
     pub include_github_meta: bool,
     pub github_meta_url: String,
     pub github_meta_categories: Option<Vec<String>>,
@@ -48,16 +150,18 @@ pub struct SafeConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteConfig {
     pub urls: Vec<String>,
-    pub timeout_secs: u32,
-    pub cache_stale_after_secs: u32,
+    pub timeout_secs: RemoteTimeoutSecs,
+    pub cache_stale_after_secs: CacheStaleAfterSecs,
 }
 
 impl Default for RemoteConfig {
     fn default() -> Self {
         Self {
             urls: Vec::new(),
-            timeout_secs: DEFAULT_REMOTE_TIMEOUT_SECS,
-            cache_stale_after_secs: DEFAULT_REMOTE_CACHE_STALE_AFTER_SECS,
+            timeout_secs: RemoteTimeoutSecs::new(DEFAULT_REMOTE_TIMEOUT_SECS)
+                .unwrap_or(RemoteTimeoutSecs(NonZeroU32::MIN)),
+            cache_stale_after_secs: CacheStaleAfterSecs::new(DEFAULT_REMOTE_CACHE_STALE_AFTER_SECS)
+                .unwrap_or(CacheStaleAfterSecs(NonZeroU32::MIN)),
         }
     }
 }
@@ -188,6 +292,10 @@ fn parse_ipset(raw: RawIpsetConfig) -> Result<IpsetConfig, ConfigError> {
             reason: "must be a power-of-two positive integer".to_string(),
         });
     }
+    let hashsize = HashsizePow2::new(hashsize).ok_or_else(|| ConfigError::InvalidField {
+        field: "ipset.hashsize",
+        reason: "must be a power-of-two positive integer".to_string(),
+    })?;
 
     let maxelem = bounded_u32(
         raw.maxelem.unwrap_or(i64::from(DEFAULT_MAXELEM)),
@@ -195,6 +303,10 @@ fn parse_ipset(raw: RawIpsetConfig) -> Result<IpsetConfig, ConfigError> {
         1,
         DEFAULT_MAXELEM,
     )?;
+    let maxelem = MaxElem::new(maxelem).ok_or_else(|| ConfigError::InvalidField {
+        field: "ipset.maxelem",
+        reason: format!("must be between 1 and {DEFAULT_MAXELEM}"),
+    })?;
 
     let timeout = bounded_u32(
         raw.timeout.unwrap_or(i64::from(DEFAULT_TIMEOUT)),
@@ -219,7 +331,8 @@ fn parse_safe(raw: RawSafeConfig) -> Result<SafeConfig, ConfigError> {
     let mut ips = Vec::new();
     if let Some(values) = raw.ips {
         for value in values {
-            ips.push(non_empty(&value, "safe.ips")?);
+            let parsed = parse_cidr_field_strict(&non_empty(&value, "safe.ips")?, "safe.ips")?;
+            ips.push(parsed);
         }
     }
 
@@ -268,16 +381,28 @@ fn parse_remote(raw: RawRemoteConfig) -> Result<RemoteConfig, ConfigError> {
             .unwrap_or(i64::from(DEFAULT_REMOTE_TIMEOUT_SECS)),
         "remote.timeout_secs",
         1,
-        3600,
+        REMOTE_TIMEOUT_SECS_MAX,
     )?;
+    let timeout_secs =
+        RemoteTimeoutSecs::new(timeout_secs).ok_or_else(|| ConfigError::InvalidField {
+            field: "remote.timeout_secs",
+            reason: format!("must be between 1 and {REMOTE_TIMEOUT_SECS_MAX}"),
+        })?;
 
     let cache_stale_after_secs = bounded_u32(
         raw.cache_stale_after_secs
             .unwrap_or(i64::from(DEFAULT_REMOTE_CACHE_STALE_AFTER_SECS)),
         "remote.cache_stale_after_secs",
         1,
-        7 * 24 * 60 * 60,
+        REMOTE_CACHE_STALE_AFTER_SECS_MAX,
     )?;
+    let cache_stale_after_secs =
+        CacheStaleAfterSecs::new(cache_stale_after_secs).ok_or_else(|| {
+            ConfigError::InvalidField {
+                field: "remote.cache_stale_after_secs",
+                reason: format!("must be between 1 and {REMOTE_CACHE_STALE_AFTER_SECS_MAX}"),
+            }
+        })?;
 
     Ok(RemoteConfig {
         urls,
@@ -306,6 +431,21 @@ fn non_empty(value: &str, field: &'static str) -> Result<String, ConfigError> {
     }
 
     Ok(normalized)
+}
+
+fn parse_cidr_field_strict(value: &str, field: &'static str) -> Result<CanonicalCidr, ConfigError> {
+    let normalized = value.trim();
+    if normalized.split_whitespace().count() != 1 {
+        return Err(ConfigError::InvalidField {
+            field,
+            reason: "must be a single IP or CIDR token".to_string(),
+        });
+    }
+
+    parse_ip_cidr_token(normalized).ok_or_else(|| ConfigError::InvalidField {
+        field,
+        reason: format!("invalid IP/CIDR token `{normalized}`"),
+    })
 }
 
 fn bounded_u32(value: i64, field: &'static str, min: u32, max: u32) -> Result<u32, ConfigError> {
@@ -385,6 +525,8 @@ fn parse_chain_action(value: Option<String>) -> Result<FirewallAction, ConfigErr
 
 #[cfg(test)]
 mod tests {
+    use crate::core::network::{CanonicalCidr, Ipv4Cidr};
+
     use super::{
         Config, ConfigError, DEFAULT_CHAIN_ACTION, DEFAULT_GITHUB_META_CATEGORIES,
         DEFAULT_GITHUB_META_URL, DEFAULT_HASHSIZE, DEFAULT_IPSET_TYPE, DEFAULT_MAXELEM,
@@ -401,10 +543,10 @@ mod tests {
         assert!(config.ipset.enable_ipv6);
         assert_eq!(config.ipset.chain_action, DEFAULT_CHAIN_ACTION);
         assert_eq!(config.ipset.set_type, DEFAULT_IPSET_TYPE);
-        assert_eq!(config.ipset.hashsize, DEFAULT_HASHSIZE);
-        assert_eq!(config.ipset.maxelem, DEFAULT_MAXELEM);
+        assert_eq!(config.ipset.hashsize.get(), DEFAULT_HASHSIZE);
+        assert_eq!(config.ipset.maxelem.get(), DEFAULT_MAXELEM);
         assert_eq!(config.ipset.timeout, DEFAULT_TIMEOUT);
-        assert_eq!(config.safe.ips, Vec::<String>::new());
+        assert!(config.safe.ips.is_empty());
         assert!(config.safe.include_github_meta);
         assert_eq!(config.safe.github_meta_url, DEFAULT_GITHUB_META_URL);
         assert_eq!(
@@ -416,9 +558,12 @@ mod tests {
             ["api", "git", "hooks", "packages"]
         );
         assert_eq!(config.remote.urls, Vec::<String>::new());
-        assert_eq!(config.remote.timeout_secs, DEFAULT_REMOTE_TIMEOUT_SECS);
         assert_eq!(
-            config.remote.cache_stale_after_secs,
+            config.remote.timeout_secs.get(),
+            DEFAULT_REMOTE_TIMEOUT_SECS
+        );
+        assert_eq!(
+            config.remote.cache_stale_after_secs.get(),
             DEFAULT_REMOTE_CACHE_STALE_AFTER_SECS
         );
     }
@@ -482,6 +627,30 @@ mod tests {
         assert_eq!(
             config.safe.github_meta_category_mode(),
             GithubMetaCategoryMode::All
+        );
+    }
+
+    #[test]
+    fn safe_ips_are_strictly_parsed_as_cidrs() {
+        let config =
+            Config::from_toml_str("[ipset]\nset_name='kidobo'\n[safe]\nips=['10.0.0.1']\n")
+                .expect("parse");
+        assert_eq!(
+            config.safe.ips,
+            vec![CanonicalCidr::V4(Ipv4Cidr::from_parts(0x0a000001, 32))]
+        );
+    }
+
+    #[test]
+    fn safe_ips_reject_invalid_cidr_tokens() {
+        let err = Config::from_toml_str("[ipset]\nset_name='kidobo'\n[safe]\nips=['not-an-ip']\n")
+            .expect_err("must fail");
+        assert_eq!(
+            err,
+            ConfigError::InvalidField {
+                field: "safe.ips",
+                reason: "invalid IP/CIDR token `not-an-ip`".to_string(),
+            }
         );
     }
 
@@ -643,7 +812,7 @@ mod tests {
         let config =
             Config::from_toml_str("[ipset]\nset_name='kidobo'\n[remote]\ntimeout_secs=45\n")
                 .expect("parse");
-        assert_eq!(config.remote.timeout_secs, 45);
+        assert_eq!(config.remote.timeout_secs.get(), 45);
     }
 
     #[test]
@@ -676,7 +845,7 @@ mod tests {
             "[ipset]\nset_name='kidobo'\n[remote]\ncache_stale_after_secs=7200\n",
         )
         .expect("parse");
-        assert_eq!(config.remote.cache_stale_after_secs, 7200);
+        assert_eq!(config.remote.cache_stale_after_secs.get(), 7200);
     }
 
     #[test]

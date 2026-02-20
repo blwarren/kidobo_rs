@@ -2,7 +2,7 @@ use thiserror::Error;
 
 use crate::adapters::command_common::{display_command, ensure_command_succeeded};
 use crate::adapters::command_runner::{
-    CommandExecutor, CommandResult, CommandRunnerError, SudoCommandRunner,
+    CommandExecutor, CommandResult, CommandRunnerError, ProcessStatus, SudoCommandRunner,
 };
 
 pub const KIDOBO_CHAIN_NAME: &str = "kidobo-input";
@@ -48,7 +48,7 @@ pub enum FirewallError {
     #[error("firewall command failed `{command}` with status {status:?}: {stderr}")]
     CommandFailed {
         command: String,
-        status: Option<i32>,
+        status: ProcessStatus,
         stderr: String,
     },
 }
@@ -70,7 +70,7 @@ pub fn chain_exists(
 ) -> Result<bool, FirewallError> {
     let binary = family.binary();
     let result = runner.run(binary, &["-S", chain_name])?;
-    if result.success {
+    if result.status.success() {
         return Ok(true);
     }
 
@@ -141,7 +141,7 @@ pub fn remove_all_input_jumps_for_chain(
 
     loop {
         let result = runner.run(binary, &["-D", "INPUT", "-j", chain_name])?;
-        if result.success {
+        if result.status.success() {
             continue;
         }
 
@@ -216,7 +216,7 @@ fn run_checked(
 }
 
 fn is_missing_chain_result(result: &CommandResult) -> bool {
-    result.status == Some(1)
+    result.status.code() == Some(1)
         && result
             .stderr
             .to_ascii_lowercase()
@@ -224,7 +224,7 @@ fn is_missing_chain_result(result: &CommandResult) -> bool {
 }
 
 fn is_missing_rule_result(result: &CommandResult) -> bool {
-    result.status == Some(1) && result.stderr.to_ascii_lowercase().contains("bad rule")
+    result.status.code() == Some(1) && result.stderr.to_ascii_lowercase().contains("bad rule")
 }
 
 #[cfg(test)]
@@ -236,7 +236,7 @@ mod tests {
         ChainAction, FirewallCommandRunner, FirewallFamily, KIDOBO_CHAIN_NAME, chain_exists,
         ensure_firewall_wiring, ensure_firewall_wiring_for_families,
     };
-    use crate::adapters::command_runner::{CommandResult, CommandRunnerError};
+    use crate::adapters::command_runner::{CommandResult, CommandRunnerError, ProcessStatus};
 
     struct MockRunner {
         responses: RefCell<VecDeque<Result<CommandResult, CommandRunnerError>>>,
@@ -271,8 +271,7 @@ mod tests {
 
     fn ok(status: i32) -> CommandResult {
         CommandResult {
-            status: Some(status),
-            success: status == 0,
+            status: ProcessStatus::Exited(status),
             stdout: String::new(),
             stderr: String::new(),
         }
@@ -281,8 +280,7 @@ mod tests {
     #[test]
     fn chain_exists_maps_missing_chain_to_false() {
         let runner = MockRunner::new(vec![Ok(CommandResult {
-            status: Some(1),
-            success: false,
+            status: ProcessStatus::Exited(1),
             stdout: String::new(),
             stderr: "iptables: No chain/target/match by that name.".to_string(),
         })]);
@@ -296,15 +294,13 @@ mod tests {
     fn ensures_chain_jump_and_drop_rule_ordering() {
         let runner = MockRunner::new(vec![
             Ok(CommandResult {
-                status: Some(1),
-                success: false,
+                status: ProcessStatus::Exited(1),
                 stdout: String::new(),
                 stderr: "No chain/target/match by that name".to_string(),
             }),
             Ok(ok(0)), // -N chain
             Ok(CommandResult {
-                status: Some(1),
-                success: false,
+                status: ProcessStatus::Exited(1),
                 stdout: String::new(),
                 stderr: "Bad rule (does a matching rule exist in that chain?).".to_string(),
             }),
@@ -357,8 +353,7 @@ mod tests {
             Ok(ok(0)), // first -D INPUT -j chain
             Ok(ok(0)), // second -D INPUT -j chain
             Ok(CommandResult {
-                status: Some(1),
-                success: false,
+                status: ProcessStatus::Exited(1),
                 stdout: String::new(),
                 stderr: "Bad rule (does a matching rule exist in that chain?).".to_string(),
             }),
@@ -399,8 +394,7 @@ mod tests {
         let runner = MockRunner::new(vec![
             Ok(ok(0)), // iptables -S
             Ok(CommandResult {
-                status: Some(1),
-                success: false,
+                status: ProcessStatus::Exited(1),
                 stdout: String::new(),
                 stderr: "Bad rule (does a matching rule exist in that chain?).".to_string(),
             }),
@@ -409,8 +403,7 @@ mod tests {
             Ok(ok(0)),
             Ok(ok(0)), // ip6tables -S
             Ok(CommandResult {
-                status: Some(1),
-                success: false,
+                status: ProcessStatus::Exited(1),
                 stdout: String::new(),
                 stderr: "Bad rule (does a matching rule exist in that chain?).".to_string(),
             }),
@@ -438,8 +431,7 @@ mod tests {
         let runner = MockRunner::new(vec![
             Ok(ok(0)), // -S chain exists
             Ok(CommandResult {
-                status: Some(1),
-                success: false,
+                status: ProcessStatus::Exited(1),
                 stdout: String::new(),
                 stderr: "Bad rule (does a matching rule exist in that chain?).".to_string(),
             }),

@@ -1,4 +1,5 @@
 use log::warn;
+use reqwest::StatusCode;
 
 use crate::adapters::http_cache::{HttpClient, HttpRequest, HttpResponse};
 
@@ -42,7 +43,7 @@ pub fn fetch_with_conditional_cache(
         }
     };
 
-    if response.status != 304 {
+    if response.status != StatusCode::NOT_MODIFIED {
         return ConditionalFetchResult {
             outcome: ConditionalFetchOutcome::Network,
             response: Some(response),
@@ -83,6 +84,8 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
+    use reqwest::StatusCode;
+
     use super::{ConditionalFetchOutcome, ConditionalFetchResult, fetch_with_conditional_cache};
     use crate::adapters::http_cache::{HttpClient, HttpClientError, HttpRequest, HttpResponse};
 
@@ -122,7 +125,7 @@ mod tests {
     #[test]
     fn returns_network_response_for_non_304_status() {
         let client = MockHttpClient::new(vec![Ok(HttpResponse {
-            status: 200,
+            status: StatusCode::OK,
             body: b"10.0.0.1".to_vec(),
             etag: None,
             last_modified: None,
@@ -139,14 +142,14 @@ mod tests {
         ));
 
         assert_eq!(outcome, ConditionalFetchOutcome::Network);
-        assert_eq!(response.status, 200);
+        assert_eq!(response.status, StatusCode::OK);
         assert_eq!(client.requests().len(), 1);
     }
 
     #[test]
     fn returns_cache_not_modified_for_304_with_usable_cache() {
         let client = MockHttpClient::new(vec![Ok(HttpResponse {
-            status: 304,
+            status: StatusCode::NOT_MODIFIED,
             body: Vec::new(),
             etag: None,
             last_modified: None,
@@ -171,13 +174,13 @@ mod tests {
     fn refetches_unconditionally_for_304_without_cache() {
         let client = MockHttpClient::new(vec![
             Ok(HttpResponse {
-                status: 304,
+                status: StatusCode::NOT_MODIFIED,
                 body: Vec::new(),
                 etag: None,
                 last_modified: None,
             }),
             Ok(HttpResponse {
-                status: 200,
+                status: StatusCode::OK,
                 body: b"198.51.100.7".to_vec(),
                 etag: None,
                 last_modified: None,
@@ -195,7 +198,7 @@ mod tests {
         ));
 
         assert_eq!(outcome, ConditionalFetchOutcome::Network);
-        assert_eq!(response.status, 200);
+        assert_eq!(response.status, StatusCode::OK);
 
         let requests = client.requests();
         assert_eq!(requests.len(), 2);
@@ -207,7 +210,7 @@ mod tests {
     fn falls_back_when_refetch_after_304_fails() {
         let client = MockHttpClient::new(vec![
             Ok(HttpResponse {
-                status: 304,
+                status: StatusCode::NOT_MODIFIED,
                 body: Vec::new(),
                 etag: None,
                 last_modified: None,

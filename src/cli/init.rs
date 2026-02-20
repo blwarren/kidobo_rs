@@ -88,8 +88,7 @@ struct NoopInitCommandRunner;
 impl InitCommandRunner for NoopInitCommandRunner {
     fn run(&self, _command: &str, _args: &[&str]) -> Result<CommandResult, CommandRunnerError> {
         Ok(CommandResult {
-            status: Some(0),
-            success: true,
+            status: crate::adapters::command_runner::ProcessStatus::Exited(0),
             stdout: String::new(),
             stderr: String::new(),
         })
@@ -290,7 +289,7 @@ fn run_required_systemd_command(
             reason: err.to_string(),
         })?;
 
-    if result.success {
+    if result.status.success() {
         return Ok(());
     }
 
@@ -355,6 +354,7 @@ mod tests {
         render_init_summary, resolve_systemd_dir, run_init_with_paths,
         run_init_with_paths_and_runner, run_init_with_paths_with_summary,
     };
+    use crate::adapters::command_runner::ProcessStatus;
     use crate::adapters::limited_io::read_to_string_with_limit;
     use crate::adapters::path::ResolvedPaths;
     use crate::error::KidoboError;
@@ -392,8 +392,7 @@ mod tests {
 
     fn success_result() -> CommandResult {
         CommandResult {
-            status: Some(0),
-            success: true,
+            status: ProcessStatus::Exited(0),
             stdout: String::new(),
             stderr: String::new(),
         }
@@ -401,8 +400,7 @@ mod tests {
 
     fn failed_result(status: i32, stderr: &str) -> CommandResult {
         CommandResult {
-            status: Some(status),
-            success: false,
+            status: ProcessStatus::Exited(status),
             stdout: String::new(),
             stderr: stderr.to_string(),
         }
@@ -605,7 +603,7 @@ mod tests {
                     command,
                     format!("systemctl enable --now {KIDOBO_SYNC_TIMER_FILE}")
                 );
-                assert!(reason.contains("status=Some(1)"));
+                assert!(reason.contains("status=Exited(1)"));
                 assert!(reason.contains("failed to enable unit"));
             }
             _ => panic!("unexpected error variant"),

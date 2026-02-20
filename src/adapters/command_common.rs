@@ -1,4 +1,4 @@
-use crate::adapters::command_runner::CommandResult;
+use crate::adapters::command_runner::{CommandResult, ProcessStatus};
 
 pub fn display_command(command: &str, args: &[&str]) -> String {
     if args.is_empty() {
@@ -15,9 +15,9 @@ pub fn ensure_command_succeeded<E, F>(
     build_error: F,
 ) -> Result<CommandResult, E>
 where
-    F: FnOnce(String, Option<i32>, String) -> E,
+    F: FnOnce(String, ProcessStatus, String) -> E,
 {
-    if result.success {
+    if result.status.success() {
         return Ok(result);
     }
 
@@ -45,8 +45,7 @@ mod tests {
     #[test]
     fn ensure_command_succeeded_passes_success_through() {
         let result = CommandResult {
-            status: Some(0),
-            success: true,
+            status: crate::adapters::command_runner::ProcessStatus::Exited(0),
             stdout: "ok".to_string(),
             stderr: String::new(),
         };

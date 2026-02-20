@@ -382,7 +382,7 @@ fn sudo_probe_check(
 
     let command = display_command(binary, args);
     match runner.run_probe(binary, args) {
-        Ok(result) if result.success => {
+        Ok(result) if result.status.success() => {
             ok_check(check_name, format!("sudo -n {command} succeeded"))
         }
         Ok(result) => fail_check(
@@ -458,7 +458,7 @@ mod tests {
         BinaryLocator, DoctorCheck, DoctorCheckStatus, DoctorOverall, Ipv6Mode, SudoProbeRunner,
         build_doctor_report, collect_binary_checks, ipv6_skip_reason,
     };
-    use crate::adapters::command_runner::{CommandResult, CommandRunnerError};
+    use crate::adapters::command_runner::{CommandResult, CommandRunnerError, ProcessStatus};
     use crate::adapters::path::{ENV_KIDOBO_ROOT, PathResolutionInput};
 
     struct MockBinaryLocator {
@@ -549,8 +549,7 @@ mod tests {
 
     fn probe_ok() -> CommandResult {
         CommandResult {
-            status: Some(0),
-            success: true,
+            status: ProcessStatus::Exited(0),
             stdout: String::new(),
             stderr: String::new(),
         }

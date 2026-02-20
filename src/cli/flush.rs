@@ -83,7 +83,7 @@ where
 {
     let rendered = display_command(command, args);
     match run(command, args) {
-        Ok(result) if result.success => {}
+        Ok(result) if result.status.success() => {}
         Ok(result) => warn!(
             "best-effort flush command failed: {} (status={:?} stderr={})",
             rendered, result.status, result.stderr
@@ -130,10 +130,13 @@ mod tests {
     use std::path::Path;
 
     use super::{clear_remote_cache_dir, run_flush_with_runner};
-    use crate::adapters::command_runner::{CommandResult, CommandRunnerError};
+    use crate::adapters::command_runner::{CommandResult, CommandRunnerError, ProcessStatus};
     use crate::adapters::ipset::IpsetCommandRunner;
     use crate::adapters::iptables::FirewallCommandRunner;
-    use crate::core::config::{Config, FirewallAction, IpsetConfig, RemoteConfig, SafeConfig};
+    use crate::core::config::{
+        CacheStaleAfterSecs, Config, FirewallAction, HashsizePow2, IpsetConfig, MaxElem,
+        RemoteConfig, RemoteTimeoutSecs, SafeConfig,
+    };
     use tempfile::TempDir;
 
     struct MockRunner {
@@ -174,8 +177,7 @@ mod tests {
                 }
 
                 return CommandResult {
-                    status: Some(1),
-                    success: false,
+                    status: ProcessStatus::Exited(1),
                     stdout: String::new(),
                     stderr: "Bad rule (does a matching rule exist in that chain?).".to_string(),
                 };
@@ -187,8 +189,7 @@ mod tests {
                     || (command == "ipset" && args.first() == Some(&"destroy")))
             {
                 return CommandResult {
-                    status: Some(1),
-                    success: false,
+                    status: ProcessStatus::Exited(1),
                     stdout: String::new(),
                     stderr: "not found".to_string(),
                 };
@@ -212,8 +213,7 @@ mod tests {
 
     fn success() -> CommandResult {
         CommandResult {
-            status: Some(0),
-            success: true,
+            status: ProcessStatus::Exited(0),
             stdout: String::new(),
             stderr: String::new(),
         }
@@ -227,8 +227,8 @@ mod tests {
                 enable_ipv6,
                 chain_action: FirewallAction::Drop,
                 set_type: "hash:net".to_string(),
-                hashsize: 65536,
-                maxelem: 500000,
+                hashsize: HashsizePow2::new(65536).expect("valid hashsize"),
+                maxelem: MaxElem::new(500000).expect("valid maxelem"),
                 timeout: 0,
             },
             safe: SafeConfig {
@@ -239,8 +239,8 @@ mod tests {
             },
             remote: RemoteConfig {
                 urls: Vec::new(),
-                timeout_secs: 30,
-                cache_stale_after_secs: 86_400,
+                timeout_secs: RemoteTimeoutSecs::new(30).expect("valid timeout"),
+                cache_stale_after_secs: CacheStaleAfterSecs::new(86_400).expect("valid stale"),
             },
         }
     }

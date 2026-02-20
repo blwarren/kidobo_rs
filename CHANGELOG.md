@@ -2,8 +2,15 @@
 
 ## [Unreleased]
 
-## [0.6.0] - 2026-02-20
+### Fixed
 
+- Config validation now parses `safe.ips` entries as strict IP/CIDR tokens during config load and fails fast on invalid entries, instead of silently dropping invalid safelist values at sync time.
+
+### Changed
+
+- Internal runtime typing is stricter for validated config and adapter boundaries: `ipset.hashsize`/`ipset.maxelem` and remote timeout/stale windows now use validated newtypes, HTTP response status uses typed status codes, and command execution status uses an explicit process-status enum.
+
+## [0.6.0] - 2026-02-20
 
 ### Added
 

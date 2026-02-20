@@ -44,8 +44,9 @@ pub fn run_sync_command() -> Result<(), KidoboError> {
 
     let _lock = acquire_non_blocking(&paths.lock_file)?;
 
-    let http_client =
-        ReqwestHttpClient::with_timeout(Duration::from_secs(u64::from(config.remote.timeout_secs)));
+    let http_client = ReqwestHttpClient::with_timeout(Duration::from_secs(u64::from(
+        config.remote.timeout_secs.get(),
+    )));
     let sudo_runner = SudoCommandRunner::default();
 
     let summary = run_sync_with_dependencies(
@@ -107,7 +108,7 @@ pub(crate) fn run_sync_with_dependencies(
         env,
     );
 
-    let mut safelist = parse_lines_non_strict(config.safe.ips.iter().map(String::as_str));
+    let mut safelist = config.safe.ips.clone();
 
     if config.safe.include_github_meta {
         match load_github_meta_safelist(
@@ -158,8 +159,8 @@ fn ipv4_set_spec(config: &Config) -> IpsetSetSpec {
         set_name: config.ipset.set_name.clone(),
         set_type: config.ipset.set_type.clone(),
         family: IpsetFamily::Inet,
-        hashsize: config.ipset.hashsize,
-        maxelem: config.ipset.maxelem,
+        hashsize: config.ipset.hashsize.get(),
+        maxelem: config.ipset.maxelem.get(),
         timeout: config.ipset.timeout,
     }
 }
@@ -169,8 +170,8 @@ fn ipv6_set_spec(config: &Config) -> IpsetSetSpec {
         set_name: config.ipset.set_name_v6.clone(),
         set_type: config.ipset.set_type.clone(),
         family: IpsetFamily::Inet6,
-        hashsize: config.ipset.hashsize,
-        maxelem: config.ipset.maxelem,
+        hashsize: config.ipset.hashsize.get(),
+        maxelem: config.ipset.maxelem.get(),
         timeout: config.ipset.timeout,
     }
 }
@@ -291,6 +292,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    use reqwest::StatusCode;
     use tempfile::TempDir;
 
     use super::{
@@ -298,12 +300,16 @@ mod tests {
         fetch_remote_networks_concurrently, read_to_string_with_limit,
         remote_fetch_worker_count_for, run_sync_with_dependencies,
     };
-    use crate::adapters::command_runner::{CommandResult, CommandRunnerError};
+    use crate::adapters::command_runner::{CommandResult, CommandRunnerError, ProcessStatus};
     use crate::adapters::http_cache::{HttpClient, HttpClientError, HttpRequest, HttpResponse};
     use crate::adapters::ipset::{IpsetCommandRunner, IpsetFamily, IpsetSetSpec};
     use crate::adapters::iptables::FirewallCommandRunner;
     use crate::adapters::path::ResolvedPaths;
-    use crate::core::config::{Config, FirewallAction, IpsetConfig, RemoteConfig, SafeConfig};
+    use crate::core::config::{
+        CacheStaleAfterSecs, Config, FirewallAction, HashsizePow2, IpsetConfig, MaxElem,
+        RemoteConfig, RemoteTimeoutSecs, SafeConfig,
+    };
+    use crate::core::network::parse_ip_cidr_token;
     use crate::error::KidoboError;
 
     struct MockHttpClient {
@@ -469,26 +475,22 @@ mod tests {
 
             match (command, args.first().copied()) {
                 ("ipset", Some("list")) => CommandResult {
-                    status: Some(1),
-                    success: false,
+                    status: ProcessStatus::Exited(1),
                     stdout: String::new(),
                     stderr: "The set with the given name does not exist".to_string(),
                 },
                 ("ipset", Some("destroy")) => CommandResult {
-                    status: Some(1),
-                    success: false,
+                    status: ProcessStatus::Exited(1),
                     stdout: String::new(),
                     stderr: "The set with the given name does not exist".to_string(),
                 },
                 ("iptables" | "ip6tables", Some("-S")) => CommandResult {
-                    status: Some(1),
-                    success: false,
+                    status: ProcessStatus::Exited(1),
                     stdout: String::new(),
                     stderr: "No chain/target/match by that name".to_string(),
                 },
                 ("iptables" | "ip6tables", Some("-D")) => CommandResult {
-                    status: Some(1),
-                    success: false,
+                    status: ProcessStatus::Exited(1),
                     stdout: String::new(),
                     stderr: "Bad rule (does a matching rule exist in that chain?).".to_string(),
                 },
@@ -511,8 +513,7 @@ mod tests {
 
     fn success() -> CommandResult {
         CommandResult {
-            status: Some(0),
-            success: true,
+            status: ProcessStatus::Exited(0),
             stdout: String::new(),
             stderr: String::new(),
         }
@@ -538,20 +539,20 @@ mod tests {
                 enable_ipv6: true,
                 chain_action: FirewallAction::Drop,
                 set_type: "hash:net".to_string(),
-                hashsize: 65536,
-                maxelem: 500000,
+                hashsize: HashsizePow2::new(65536).expect("valid hashsize"),
+                maxelem: MaxElem::new(500000).expect("valid maxelem"),
                 timeout: 0,
             },
             safe: SafeConfig {
-                ips: vec!["10.0.0.0/25".to_string()],
+                ips: vec![parse_ip_cidr_token("10.0.0.0/25").expect("valid safe cidr")],
                 include_github_meta: false,
                 github_meta_url: "https://api.github.com/meta".to_string(),
                 github_meta_categories: None,
             },
             remote: RemoteConfig {
                 urls,
-                timeout_secs: 30,
-                cache_stale_after_secs: 86_400,
+                timeout_secs: RemoteTimeoutSecs::new(30).expect("valid timeout"),
+                cache_stale_after_secs: CacheStaleAfterSecs::new(86_400).expect("valid stale"),
             },
         }
     }
@@ -564,8 +565,8 @@ mod tests {
                 enable_ipv6,
                 chain_action: FirewallAction::Drop,
                 set_type: "hash:net".to_string(),
-                hashsize: 65536,
-                maxelem: 500000,
+                hashsize: HashsizePow2::new(65536).expect("valid hashsize"),
+                maxelem: MaxElem::new(500000).expect("valid maxelem"),
                 timeout: 0,
             },
             safe: SafeConfig {
@@ -576,8 +577,8 @@ mod tests {
             },
             remote: RemoteConfig {
                 urls,
-                timeout_secs: 30,
-                cache_stale_after_secs: 86_400,
+                timeout_secs: RemoteTimeoutSecs::new(30).expect("valid timeout"),
+                cache_stale_after_secs: CacheStaleAfterSecs::new(86_400).expect("valid stale"),
             },
         }
     }
@@ -601,7 +602,7 @@ mod tests {
         responses.insert(
             url_a.clone(),
             VecDeque::from([Ok(HttpResponse {
-                status: 200,
+                status: StatusCode::OK,
                 body: b"198.51.100.7\n".to_vec(),
                 etag: None,
                 last_modified: None,
@@ -610,7 +611,7 @@ mod tests {
         responses.insert(
             url_b.clone(),
             VecDeque::from([Ok(HttpResponse {
-                status: 200,
+                status: StatusCode::OK,
                 body: b"2001:db8:1::/64\n".to_vec(),
                 etag: None,
                 last_modified: None,
@@ -686,7 +687,7 @@ mod tests {
                 responses.insert(
                     url.clone(),
                     VecDeque::from([Ok(HttpResponse {
-                        status: 200,
+                        status: StatusCode::OK,
                         body: format!("198.51.100.{}\n", idx + 1).into_bytes(),
                         etag: None,
                         last_modified: None,
@@ -726,13 +727,13 @@ mod tests {
 
         let url = "https://example.com/minimal.txt".to_string();
         let mut config = test_config(vec![url.clone()]);
-        config.safe.ips = vec!["10.0.0.0/25".to_string()];
+        config.safe.ips = vec![parse_ip_cidr_token("10.0.0.0/25").expect("valid safe cidr")];
 
         let events = Arc::new(Mutex::new(Vec::new()));
         let responses = BTreeMap::from([(
             url,
             VecDeque::from([Ok(HttpResponse {
-                status: 200,
+                status: StatusCode::OK,
                 body: b"10.0.0.128/25\n198.51.100.7\n".to_vec(),
                 etag: None,
                 last_modified: None,
@@ -824,7 +825,7 @@ mod tests {
         let responses = BTreeMap::from([(
             url,
             VecDeque::from([Ok(HttpResponse {
-                status: 200,
+                status: StatusCode::OK,
                 body: b"198.51.100.7\n2001:db8:ffff::/48\n".to_vec(),
                 etag: None,
                 last_modified: None,
@@ -869,7 +870,7 @@ mod tests {
         fs::write(&paths.blocklist_file, "10.0.0.0/24\n198.51.100.7\n").expect("write blocklist");
 
         let mut config = test_config_with_ipv6(Vec::new(), false);
-        config.ipset.maxelem = 1;
+        config.ipset.maxelem = MaxElem::new(1).expect("valid maxelem");
 
         let events = Arc::new(Mutex::new(Vec::new()));
         let http_client = MockHttpClient::new(BTreeMap::new(), events, 0);

@@ -12,7 +12,7 @@ use thiserror::Error;
 
 use crate::adapters::command_common::{display_command, ensure_command_succeeded};
 use crate::adapters::command_runner::{
-    CommandExecutor, CommandResult, CommandRunnerError, SudoCommandRunner,
+    CommandExecutor, CommandResult, CommandRunnerError, ProcessStatus, SudoCommandRunner,
 };
 use crate::adapters::hash::hex_lower;
 
@@ -56,7 +56,7 @@ pub enum IpsetError {
     #[error("ipset command failed `{command}` with status {status:?}: {stderr}")]
     CommandFailed {
         command: String,
-        status: Option<i32>,
+        status: ProcessStatus,
         stderr: String,
     },
 
@@ -80,7 +80,7 @@ impl<E: CommandExecutor> IpsetCommandRunner for SudoCommandRunner<E> {
 pub fn ipset_exists(runner: &dyn IpsetCommandRunner, set_name: &str) -> Result<bool, IpsetError> {
     let terse_args = ["list", set_name, "-terse"];
     let terse_result = runner.run("ipset", &terse_args)?;
-    if terse_result.success {
+    if terse_result.status.success() {
         return Ok(true);
     }
 
@@ -98,7 +98,7 @@ pub fn ipset_exists(runner: &dyn IpsetCommandRunner, set_name: &str) -> Result<b
 
     let list_args = ["list", set_name];
     let result = runner.run("ipset", &list_args)?;
-    if result.success {
+    if result.status.success() {
         return Ok(true);
     }
 
@@ -368,7 +368,7 @@ fn is_sorted_and_unique<T: Ord>(entries: &[T]) -> bool {
 }
 
 fn is_missing_set_result(result: &CommandResult) -> bool {
-    result.status == Some(1)
+    result.status.code() == Some(1)
         && result
             .stderr
             .to_ascii_lowercase()
@@ -453,7 +453,7 @@ mod tests {
         IpsetCommandRunner, IpsetError, IpsetFamily, IpsetSetSpec, RESTORE_SCRIPT_READ_LIMIT,
         atomic_replace_ipset, build_restore_script, generate_temp_set_name, ipset_exists,
     };
-    use crate::adapters::command_runner::{CommandResult, CommandRunnerError};
+    use crate::adapters::command_runner::{CommandResult, CommandRunnerError, ProcessStatus};
     use crate::adapters::limited_io::read_to_string_with_limit;
 
     struct MockRunner {
@@ -505,8 +505,7 @@ mod tests {
 
     fn ok(status: i32) -> CommandResult {
         CommandResult {
-            status: Some(status),
-            success: status == 0,
+            status: ProcessStatus::Exited(status),
             stdout: String::new(),
             stderr: String::new(),
         }
@@ -549,8 +548,7 @@ mod tests {
     #[test]
     fn ipset_exists_maps_missing_set_to_false() {
         let runner = MockRunner::new(vec![Ok(CommandResult {
-            status: Some(1),
-            success: false,
+            status: ProcessStatus::Exited(1),
             stdout: String::new(),
             stderr: "The set with the given name does not exist".to_string(),
         })]);
@@ -562,8 +560,7 @@ mod tests {
     #[test]
     fn ipset_exists_errors_on_unexpected_failure() {
         let runner = MockRunner::new(vec![Ok(CommandResult {
-            status: Some(2),
-            success: false,
+            status: ProcessStatus::Exited(2),
             stdout: String::new(),
             stderr: "permission denied".to_string(),
         })]);
@@ -576,14 +573,12 @@ mod tests {
     fn ipset_exists_falls_back_when_terse_flag_is_unsupported() {
         let runner = MockRunner::new(vec![
             Ok(CommandResult {
-                status: Some(2),
-                success: false,
+                status: ProcessStatus::Exited(2),
                 stdout: String::new(),
                 stderr: "Unknown argument: -terse".to_string(),
             }),
             Ok(CommandResult {
-                status: Some(0),
-                success: true,
+                status: ProcessStatus::Exited(0),
                 stdout: "Name: kidobo".to_string(),
                 stderr: String::new(),
             }),
@@ -657,8 +652,7 @@ mod tests {
         let runner = MockRunner::new(vec![
             Ok(ok(0)), // best-effort stale temp destroy
             Ok(CommandResult {
-                status: Some(1),
-                success: false,
+                status: ProcessStatus::Exited(1),
                 stdout: String::new(),
                 stderr: "restore failed".to_string(),
             }),

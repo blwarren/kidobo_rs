@@ -124,7 +124,7 @@ fn run_analyze_overlap_command(
     let path_input = PathResolutionInput::from_process(None);
     let paths = resolve_paths(&path_input)?;
     let config = load_config_from_file(&paths.config_file)?;
-    let stale_after_secs = u64::from(config.remote.cache_stale_after_secs);
+    let stale_after_secs = u64::from(config.remote.cache_stale_after_secs.get());
     let sources = load_analysis_sources(&paths, stale_after_secs).map_err(KidoboError::from)?;
 
     let local = collapse_by_family(&sources.local_cidrs);

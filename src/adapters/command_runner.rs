@@ -1,5 +1,5 @@
 use std::io::Read;
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -16,10 +16,49 @@ pub struct CommandRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandResult {
-    pub status: Option<i32>,
-    pub success: bool,
+    pub status: ProcessStatus,
     pub stdout: String,
     pub stderr: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessStatus {
+    Exited(i32),
+    #[cfg(unix)]
+    Signaled(i32),
+    Other,
+}
+
+impl ProcessStatus {
+    pub fn code(self) -> Option<i32> {
+        match self {
+            Self::Exited(code) => Some(code),
+            #[cfg(unix)]
+            Self::Signaled(_) => None,
+            Self::Other => None,
+        }
+    }
+
+    pub fn success(self) -> bool {
+        matches!(self, Self::Exited(0))
+    }
+
+    fn from_exit_status(status: ExitStatus) -> Self {
+        if let Some(code) = status.code() {
+            return Self::Exited(code);
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+
+            if let Some(signal) = status.signal() {
+                return Self::Signaled(signal);
+            }
+        }
+
+        Self::Other
+    }
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -84,8 +123,7 @@ impl CommandExecutor for SystemCommandExecutor {
                     let stderr = join_output_reader(stderr_reader, &command)?;
 
                     return Ok(CommandResult {
-                        status: status.code(),
-                        success: status.success(),
+                        status: ProcessStatus::from_exit_status(status),
                         stdout: String::from_utf8_lossy(&stdout).to_string(),
                         stderr: String::from_utf8_lossy(&stderr).to_string(),
                     });
@@ -216,7 +254,7 @@ mod tests {
 
     use super::{
         CommandExecutor, CommandRequest, CommandResult, CommandRunnerError,
-        DEFAULT_COMMAND_TIMEOUT, SudoCommandRunner, SystemCommandExecutor,
+        DEFAULT_COMMAND_TIMEOUT, ProcessStatus, SudoCommandRunner, SystemCommandExecutor,
     };
 
     struct MockExecutor {
@@ -250,8 +288,7 @@ mod tests {
     #[test]
     fn wraps_commands_with_sudo_n_and_captures_output() {
         let executor = MockExecutor::new(vec![Ok(CommandResult {
-            status: Some(0),
-            success: true,
+            status: ProcessStatus::Exited(0),
             stdout: "ok".to_string(),
             stderr: String::new(),
         })]);
@@ -260,7 +297,7 @@ mod tests {
         let result = runner
             .run("ipset", &["list", "kidobo"])
             .expect("command result");
-        assert_eq!(result.status, Some(0));
+        assert_eq!(result.status.code(), Some(0));
         assert_eq!(result.stdout, "ok");
         assert_eq!(result.stderr, "");
 
@@ -274,8 +311,7 @@ mod tests {
     #[test]
     fn custom_timeout_overrides_default() {
         let executor = MockExecutor::new(vec![Ok(CommandResult {
-            status: Some(0),
-            success: true,
+            status: ProcessStatus::Exited(0),
             stdout: String::new(),
             stderr: String::new(),
         })]);
@@ -327,7 +363,7 @@ mod tests {
     fn system_executor_drains_large_stdout_without_timeout() {
         let result = run_system_shell("yes kidobo | head -n 70000")
             .expect("command should succeed without pipe blocking");
-        assert!(result.success);
+        assert!(result.status.success());
         assert!(result.stdout.len() > 64 * 1024);
     }
 
@@ -336,7 +372,7 @@ mod tests {
     fn system_executor_drains_large_stderr_without_timeout() {
         let result = run_system_shell("yes kidobo | head -n 70000 1>&2")
             .expect("command should succeed without pipe blocking");
-        assert!(result.success);
+        assert!(result.status.success());
         assert!(result.stderr.len() > 64 * 1024);
     }
 

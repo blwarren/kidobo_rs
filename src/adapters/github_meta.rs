@@ -193,7 +193,7 @@ fn handle_network_response(
     cached: CachedFallback<'_>,
     selection: &CategorySelection,
 ) -> Result<GithubMetaLoadResult, GithubMetaLoadError> {
-    if !(200..300).contains(&response.status) {
+    if !response.status.is_success() {
         warn!(
             "github meta fetch failed: unexpected status {}",
             response.status
@@ -506,6 +506,7 @@ mod tests {
     use std::collections::{BTreeMap, VecDeque};
     use std::fs;
 
+    use reqwest::StatusCode;
     use tempfile::TempDir;
 
     use super::{
@@ -551,7 +552,7 @@ mod tests {
 
     fn network_response(body: &[u8]) -> HttpResponse {
         HttpResponse {
-            status: 200,
+            status: StatusCode::OK,
             body: body.to_vec(),
             etag: Some("etag-1".to_string()),
             last_modified: Some("Mon, 01 Jan 2024 00:00:00 GMT".to_string()),
@@ -816,7 +817,7 @@ mod tests {
         .expect("write sidecar");
 
         let client = MockHttpClient::new(vec![Ok(HttpResponse {
-            status: 304,
+            status: StatusCode::NOT_MODIFIED,
             body: Vec::new(),
             etag: None,
             last_modified: None,
@@ -846,7 +847,7 @@ mod tests {
         let temp = TempDir::new().expect("tempdir");
         let client = MockHttpClient::new(vec![
             Ok(HttpResponse {
-                status: 304,
+                status: StatusCode::NOT_MODIFIED,
                 body: Vec::new(),
                 etag: None,
                 last_modified: None,

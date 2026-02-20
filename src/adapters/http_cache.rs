@@ -6,6 +6,7 @@ use std::sync::Once;
 use std::time::Duration;
 
 use log::warn;
+use reqwest::StatusCode;
 use reqwest::header::{ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -67,7 +68,7 @@ pub struct HttpRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpResponse {
-    pub status: u16,
+    pub status: StatusCode,
     pub body: Vec<u8>,
     pub etag: Option<String>,
     pub last_modified: Option<String>,
@@ -140,7 +141,7 @@ impl HttpClient for ReqwestHttpClient {
             reason: err.to_string(),
         })?;
 
-        let status = response.status().as_u16();
+        let status = response.status();
         let headers = response.headers().clone();
         let body = read_response_body_capped(&mut response, request.max_body_bytes)?;
 
@@ -345,7 +346,7 @@ fn handle_network_response(
     cached_networks: Option<Vec<CanonicalCidr>>,
     cached_meta: Option<RemoteCacheMetadata>,
 ) -> Result<CachedIplist, HttpCacheError> {
-    if !(200..300).contains(&response.status) {
+    if !response.status.is_success() {
         warn!(
             "remote fetch failed for {url}: unexpected status {}",
             response.status
@@ -513,6 +514,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    use reqwest::StatusCode;
     use tempfile::TempDir;
 
     use super::{
@@ -624,7 +626,7 @@ mod tests {
         .expect("write meta");
 
         let client = MockHttpClient::new(vec![Ok(HttpResponse {
-            status: 304,
+            status: StatusCode::NOT_MODIFIED,
             body: Vec::new(),
             etag: None,
             last_modified: None,
@@ -652,13 +654,13 @@ mod tests {
 
         let client = MockHttpClient::new(vec![
             Ok(HttpResponse {
-                status: 304,
+                status: StatusCode::NOT_MODIFIED,
                 body: Vec::new(),
                 etag: None,
                 last_modified: None,
             }),
             Ok(HttpResponse {
-                status: 200,
+                status: StatusCode::OK,
                 body: b"198.51.100.7".to_vec(),
                 etag: Some("etag-2".to_string()),
                 last_modified: Some("Tue, 02 Jan 2024 00:00:00 GMT".to_string()),
@@ -735,7 +737,7 @@ mod tests {
         let url = "https://example.com/feed.txt";
 
         let client = MockHttpClient::new(vec![Ok(HttpResponse {
-            status: 200,
+            status: StatusCode::OK,
             body: b"10.0.0.1\n".to_vec(),
             etag: None,
             last_modified: None,
