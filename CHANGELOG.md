@@ -14,8 +14,8 @@
   `KIDOBO_LOG_COLOR=auto|always|never` control and `NO_COLOR` support.
 - CLI help output now uses clearer command/flag descriptions and richer
   subcommand details for better discoverability in `kidobo --help`.
-- Added offline blocklist-overlap analysis mode via
-  `kidobo lookup --analyze-overlap`, including per-remote overlap counts and
+- Added offline blocklist-overlap analysis command
+  `kidobo analyze overlap`, including per-remote overlap counts and
   optional output of fully-covered local entries /
   reduced local suggestions (`--print-fully-covered-local`,
   `--print-reduced-local`) based only on local + cached remote sources.

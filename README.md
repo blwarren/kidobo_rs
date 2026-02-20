@@ -105,9 +105,9 @@ sudo kidobo sync
 kidobo lookup 203.0.113.7
 kidobo lookup --file targets.txt
 # analyze overlap vs cached remote sources only (offline)
-kidobo lookup --analyze-overlap
+kidobo analyze overlap
 # print optional reduction candidate lists
-kidobo lookup --analyze-overlap --print-fully-covered-local --print-reduced-local
+kidobo analyze overlap --print-fully-covered-local --print-reduced-local
 ```
 
 9. Remove kidobo firewall/ipset artifacts (optional):
@@ -127,7 +127,7 @@ kidobo flush [--cache-only]
 kidobo ban <ip-or-cidr>
 kidobo unban <ip-or-cidr> [--yes]
 kidobo lookup [ip | --file <path>]
-kidobo lookup --analyze-overlap [--print-fully-covered-local] [--print-reduced-local]
+kidobo analyze overlap [--print-fully-covered-local] [--print-reduced-local]
 ```
 
 Global flags:
@@ -193,7 +193,7 @@ At default paths it also runs `systemctl daemon-reload` and enables
 - `ban` and `unban` only modify the local blocklist file; run `sync` to apply
   those changes to firewall/ipset runtime state.
 - `lookup` does not fetch remote data; it only uses local and cached sources.
-- `lookup --analyze-overlap` is offline-only and warns when cached remote
+- `analyze overlap` is offline-only and warns when cached remote
   `.iplist` files are older than `remote.cache_stale_after_secs`.
 - `KIDOBO_ROOT` relocates config/data/cache paths under a custom root.
 

@@ -7,7 +7,7 @@ use crate::adapters::config::load_config_from_file;
 use crate::adapters::limited_io::read_to_string_with_limit;
 use crate::adapters::lookup_sources::load_lookup_sources;
 use crate::adapters::path::{PathResolutionInput, resolve_paths};
-use crate::cli::args::Command;
+use crate::cli::args::{AnalyzeCommand, Command};
 use crate::cli::blocklist::{run_ban_command, run_unban_command};
 use crate::cli::doctor::run_doctor_command;
 use crate::cli::flush::run_flush_command;
@@ -27,36 +27,20 @@ pub fn dispatch(command: Command) -> Result<(), KidoboError> {
         Command::Doctor => run_doctor_command(),
         Command::Sync => run_sync_command(),
         Command::Flush { cache_only } => run_flush_command(cache_only),
-        Command::Lookup {
-            ip,
-            file,
-            analyze_overlap,
-            print_fully_covered_local,
-            print_reduced_local,
-        } => run_lookup_command(
-            ip,
-            file,
-            analyze_overlap,
-            print_fully_covered_local,
-            print_reduced_local,
-        ),
+        Command::Lookup { ip, file } => run_lookup_command(ip, file),
+        Command::Analyze { command } => match command {
+            AnalyzeCommand::Overlap {
+                print_fully_covered_local,
+                print_reduced_local,
+            } => run_analyze_overlap_command(print_fully_covered_local, print_reduced_local),
+        },
         Command::Ban { target } => run_ban_command(&target),
         Command::Unban { target, yes } => run_unban_command(&target, yes),
     }
 }
 
 #[allow(clippy::print_stdout, clippy::print_stderr)]
-fn run_lookup_command(
-    ip: Option<String>,
-    file: Option<PathBuf>,
-    analyze_overlap: bool,
-    print_fully_covered_local: bool,
-    print_reduced_local: bool,
-) -> Result<(), KidoboError> {
-    if analyze_overlap {
-        return run_lookup_overlap_analysis(print_fully_covered_local, print_reduced_local);
-    }
-
+fn run_lookup_command(ip: Option<String>, file: Option<PathBuf>) -> Result<(), KidoboError> {
     let targets = collect_lookup_targets(ip, file)?;
 
     let path_input = PathResolutionInput::from_process(None);
@@ -83,7 +67,7 @@ fn run_lookup_command(
 }
 
 #[allow(clippy::print_stdout, clippy::print_stderr)]
-fn run_lookup_overlap_analysis(
+fn run_analyze_overlap_command(
     print_fully_covered_local: bool,
     print_reduced_local: bool,
 ) -> Result<(), KidoboError> {
@@ -124,7 +108,7 @@ fn run_lookup_overlap_analysis(
         }
     }
 
-    println!("lookup overlap analysis (offline cache only)");
+    println!("analyze overlap (offline cache only)");
     println!(
         "local collapsed entries: ipv4={} ipv6={} total={}",
         local.ipv4.len(),

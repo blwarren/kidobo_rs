@@ -100,14 +100,14 @@ pub enum Command {
     },
     #[command(
         about = "Offline lookup against local blocklist + cached remote sources",
-        long_about = "Lookup candidate targets against local blocklist and cached remote sources.\n\nLookup runs offline only and never fetches remote sources.\n\nUse --analyze-overlap to inspect overlap between local and cached remote blocklists."
+        long_about = "Lookup candidate targets against local blocklist and cached remote sources.\n\nLookup runs offline only and never fetches remote sources."
     )]
     Lookup {
         #[arg(
             value_name = "IP_OR_CIDR",
             help = "Single target IP/CIDR to match",
             conflicts_with = "file",
-            required_unless_present_any = ["file", "analyze_overlap"]
+            required_unless_present = "file"
         )]
         ip: Option<String>,
 
@@ -116,28 +116,37 @@ pub enum Command {
             value_name = "PATH",
             help = "File with one target IP/CIDR per line",
             conflicts_with = "ip",
-            required_unless_present_any = ["ip", "analyze_overlap"]
+            required_unless_present = "ip"
         )]
         file: Option<PathBuf>,
+    },
 
+    #[command(
+        about = "Analyze local blocklist overlap against cached remote blocklists",
+        long_about = "Analyze overlap between local blocklist entries and cached remote blocklists without performing any remote fetch.\n\nUse this command to identify local entries already covered by remote cached sources and generate reduced local suggestions."
+    )]
+    Analyze {
+        #[command(subcommand)]
+        command: AnalyzeCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AnalyzeCommand {
+    #[command(
+        about = "Analyze overlap between local blocklist and cached remote blocklists",
+        long_about = "Offline-only overlap analysis using local blocklist and cached remote `.iplist` sources."
+    )]
+    Overlap {
         #[arg(
             long,
-            help = "Analyze overlap between local blocklist and cached remote blocklists (offline only)",
-            conflicts_with_all = ["ip", "file"]
-        )]
-        analyze_overlap: bool,
-
-        #[arg(
-            long,
-            help = "Print local entries fully covered by cached remote union (requires --analyze-overlap)",
-            requires = "analyze_overlap"
+            help = "Print local entries fully covered by cached remote union"
         )]
         print_fully_covered_local: bool,
 
         #[arg(
             long,
-            help = "Print suggested reduced local blocklist (local minus cached remote union; requires --analyze-overlap)",
-            requires = "analyze_overlap"
+            help = "Print suggested reduced local blocklist (local minus cached remote union)"
         )]
         print_reduced_local: bool,
     },
@@ -145,7 +154,7 @@ pub enum Command {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Command, LogLevel};
+    use super::{AnalyzeCommand, Cli, Command, LogLevel};
     use clap::Parser;
     use log::LevelFilter;
 
@@ -190,23 +199,18 @@ mod tests {
     }
 
     #[test]
-    fn lookup_analyze_overlap_mode_parses() {
-        let cli = Cli::try_parse_from(["kidobo", "lookup", "--analyze-overlap"])
-            .expect("lookup analyze parse");
+    fn analyze_overlap_mode_parses() {
+        let cli = Cli::try_parse_from(["kidobo", "analyze", "overlap"]).expect("analyze parse");
         match cli.command {
-            Command::Lookup {
-                ip,
-                file,
-                analyze_overlap,
-                print_fully_covered_local,
-                print_reduced_local,
-            } => {
-                assert!(ip.is_none());
-                assert!(file.is_none());
-                assert!(analyze_overlap);
-                assert!(!print_fully_covered_local);
-                assert!(!print_reduced_local);
-            }
+            Command::Analyze { command } => match command {
+                AnalyzeCommand::Overlap {
+                    print_fully_covered_local,
+                    print_reduced_local,
+                } => {
+                    assert!(!print_fully_covered_local);
+                    assert!(!print_reduced_local);
+                }
+            },
             _ => panic!("unexpected command variant"),
         }
     }

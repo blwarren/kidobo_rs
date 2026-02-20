@@ -235,7 +235,7 @@ fn lookup_invalid_target_exits_with_one() {
 }
 
 #[test]
-fn lookup_analyze_overlap_uses_cached_sources_only_and_exits_zero() {
+fn analyze_overlap_uses_cached_sources_only_and_exits_zero() {
     let root = create_root(
         "[ipset]\nset_name='kidobo'\n[remote]\ncache_stale_after_secs=86400\n",
         "203.0.113.0/24\n198.51.100.7\n",
@@ -251,12 +251,12 @@ fn lookup_analyze_overlap_uses_cached_sources_only_and_exits_zero() {
     )
     .expect("write remote meta");
 
-    let output = run_kidobo_with_root(root.path(), &["lookup", "--analyze-overlap"]);
+    let output = run_kidobo_with_root(root.path(), &["analyze", "overlap"]);
     assert_eq!(output.status.code(), Some(0));
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("lookup overlap analysis (offline cache only)"),
+        stdout.contains("analyze overlap (offline cache only)"),
         "unexpected analyze output: {stdout}"
     );
     assert!(
