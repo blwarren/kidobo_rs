@@ -221,8 +221,8 @@ fn load_internal_blocklist(path: &Path) -> Result<Vec<CanonicalCidr>, KidoboErro
     Ok(parse_lines_non_strict(contents.lines()))
 }
 
-fn fetch_remote_networks_concurrently(
-    urls: &[String],
+fn fetch_remote_networks_concurrently<S: AsRef<str> + Sync>(
+    urls: &[S],
     http_client: &(dyn HttpClient + Sync),
     cache_dir: &Path,
     env: &BTreeMap<String, String>,
@@ -246,6 +246,7 @@ fn fetch_remote_networks_concurrently(
                         break;
                     };
 
+                    let url = url.as_ref();
                     match fetch_iplist_with_cache(http_client, url, cache_dir, env) {
                         Ok(cached) => local.extend(cached.networks),
                         Err(err) => warn!("remote source fetch failed softly for {url}: {err}"),

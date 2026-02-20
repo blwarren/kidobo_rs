@@ -183,17 +183,15 @@ struct PreparedTarget<'a> {
     parsed: CanonicalCidr,
 }
 
-fn prepare_targets(targets: &[String]) -> (Vec<PreparedTarget<'_>>, Vec<String>) {
+fn prepare_targets<S: AsRef<str>>(targets: &[S]) -> (Vec<PreparedTarget<'_>>, Vec<String>) {
     let mut prepared = Vec::with_capacity(targets.len());
     let mut invalid_targets = Vec::<&str>::new();
 
     for target in targets {
-        match parse_target_strict(target) {
-            Ok(parsed) => prepared.push(PreparedTarget {
-                raw: target.as_str(),
-                parsed,
-            }),
-            Err(_) => invalid_targets.push(target.as_str()),
+        let raw = target.as_ref();
+        match parse_target_strict(raw) {
+            Ok(parsed) => prepared.push(PreparedTarget { raw, parsed }),
+            Err(_) => invalid_targets.push(raw),
         }
     }
 
@@ -245,12 +243,13 @@ fn emit_target_matches<F>(
     }
 }
 
-pub fn run_lookup_streaming<F>(
-    targets: &[String],
+pub fn run_lookup_streaming<S, F>(
+    targets: &[S],
     sources: &[LookupSourceEntry],
     mut emit: F,
 ) -> Vec<String>
 where
+    S: AsRef<str>,
     F: FnMut(&str, &LookupSourceEntry),
 {
     let v4_index = IntervalIndexV4::from_sources(sources);
@@ -264,7 +263,7 @@ where
     invalid_targets
 }
 
-pub fn run_lookup(targets: &[String], sources: &[LookupSourceEntry]) -> LookupReport {
+pub fn run_lookup<S: AsRef<str>>(targets: &[S], sources: &[LookupSourceEntry]) -> LookupReport {
     let mut matches = Vec::new();
     let invalid_targets = run_lookup_streaming(targets, sources, |target, source| {
         matches.push(LookupMatch {

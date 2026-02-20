@@ -1,10 +1,11 @@
 use crate::adapters::command_runner::{CommandResult, ProcessStatus};
 
-pub fn display_command(command: &str, args: &[&str]) -> String {
+pub fn display_command<S: AsRef<str>>(command: &str, args: &[S]) -> String {
     if args.is_empty() {
         command.to_string()
     } else {
-        format!("{} {}", command, args.join(" "))
+        let rendered_args = args.iter().map(AsRef::as_ref).collect::<Vec<_>>().join(" ");
+        format!("{command} {rendered_args}")
     }
 }
 
@@ -35,10 +36,21 @@ mod tests {
 
     #[test]
     fn display_command_renders_command_and_args() {
-        assert_eq!(display_command("ipset", &[]), "ipset");
+        assert_eq!(display_command("ipset", &[] as &[&str]), "ipset");
         assert_eq!(
             display_command("iptables", &["-A", "INPUT", "-j", "DROP"]),
             "iptables -A INPUT -j DROP"
+        );
+        assert_eq!(
+            display_command(
+                "sudo",
+                &[
+                    "ipset".to_string(),
+                    "list".to_string(),
+                    "kidobo".to_string()
+                ]
+            ),
+            "sudo ipset list kidobo"
         );
     }
 

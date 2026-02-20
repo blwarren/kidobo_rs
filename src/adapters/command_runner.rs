@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
+use crate::adapters::command_common::display_command;
+
 pub const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -231,14 +233,6 @@ impl<E: CommandExecutor> SudoCommandRunner<E> {
 impl Default for SudoCommandRunner<SystemCommandExecutor> {
     fn default() -> Self {
         Self::new(SystemCommandExecutor, DEFAULT_COMMAND_TIMEOUT)
-    }
-}
-
-fn display_command(program: &str, args: &[String]) -> String {
-    if args.is_empty() {
-        program.to_string()
-    } else {
-        format!("{} {}", program, args.join(" "))
     }
 }
 
