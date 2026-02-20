@@ -108,6 +108,8 @@ kidobo lookup --file targets.txt
 kidobo analyze overlap
 # print optional reduction candidate lists
 kidobo analyze overlap --print-fully-covered-local --print-reduced-local
+# automatically remove fully covered local entries
+kidobo analyze overlap --apply-fully-covered-local
 ```
 
 9. Remove kidobo firewall/ipset artifacts (optional):
@@ -127,7 +129,7 @@ kidobo flush [--cache-only]
 kidobo ban <ip-or-cidr>
 kidobo unban <ip-or-cidr> [--yes]
 kidobo lookup [ip | --file <path>]
-kidobo analyze overlap [--print-fully-covered-local] [--print-reduced-local]
+kidobo analyze overlap [--print-fully-covered-local] [--print-reduced-local] [--apply-fully-covered-local]
 ```
 
 Global flags:
@@ -195,6 +197,8 @@ At default paths it also runs `systemctl daemon-reload` and enables
 - `lookup` does not fetch remote data; it only uses local and cached sources.
 - `analyze overlap` is offline-only and warns when cached remote
   `.iplist` files are older than `remote.cache_stale_after_secs`.
+- `analyze overlap --apply-fully-covered-local` removes local entries that are
+  fully covered by cached remote union; run `kidobo sync` afterward to apply.
 - `KIDOBO_ROOT` relocates config/data/cache paths under a custom root.
 
 ## License

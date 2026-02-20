@@ -270,6 +270,51 @@ fn analyze_overlap_uses_cached_sources_only_and_exits_zero() {
 }
 
 #[test]
+fn analyze_overlap_apply_fully_covered_local_updates_blocklist_file() {
+    let root = create_root(
+        "[ipset]\nset_name='kidobo'\n[remote]\ncache_stale_after_secs=86400\n",
+        "# local blocklist\n203.0.113.7\n198.51.100.0/24\n",
+    );
+    fs::write(
+        root.path().join("cache/remote/a.iplist"),
+        "203.0.113.0/24\n",
+    )
+    .expect("write remote iplist");
+
+    let output = run_kidobo_with_root(
+        root.path(),
+        &["analyze", "overlap", "--apply-fully-covered-local"],
+    );
+    assert_eq!(output.status.code(), Some(0));
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("applied removal: removed_entries=1"),
+        "missing apply-removal summary: {stdout}"
+    );
+    assert!(
+        stdout.contains("changes take effect after running `sudo kidobo sync`"),
+        "missing sync reminder: {stdout}"
+    );
+
+    let blocklist = root.path().join("data/blocklist.txt");
+    let contents =
+        read_to_string_with_limit(&blocklist, BLOCKLIST_READ_LIMIT).expect("read blocklist");
+    assert!(
+        !contents.contains("203.0.113.7"),
+        "covered entry should be removed: {contents}"
+    );
+    assert!(
+        contents.contains("198.51.100.0/24"),
+        "uncovered entry should remain: {contents}"
+    );
+    assert!(
+        contents.contains("# local blocklist"),
+        "comment should remain: {contents}"
+    );
+}
+
+#[test]
 fn sync_reports_config_parse_error_before_lock_check() {
     let root = create_sync_root("not valid = [");
     let _held_lock = hold_lock(&root.path().join("cache/sync.lock"));

@@ -135,7 +135,7 @@ pub enum Command {
 pub enum AnalyzeCommand {
     #[command(
         about = "Analyze overlap between local blocklist and cached remote blocklists",
-        long_about = "Offline-only overlap analysis using local blocklist and cached remote `.iplist` sources."
+        long_about = "Offline-only overlap analysis using local blocklist and cached remote `.iplist` sources.\n\n`ov*` means local entries that intersect a remote source.\n`covered*` means local entries fully contained by a remote source (safe removal candidates)."
     )]
     Overlap {
         #[arg(
@@ -149,6 +149,12 @@ pub enum AnalyzeCommand {
             help = "Print suggested reduced local blocklist (local minus cached remote union)"
         )]
         print_reduced_local: bool,
+
+        #[arg(
+            long,
+            help = "Apply removal of local entries fully covered by cached remote union"
+        )]
+        apply_fully_covered_local: bool,
     },
 }
 
@@ -206,9 +212,11 @@ mod tests {
                 AnalyzeCommand::Overlap {
                     print_fully_covered_local,
                     print_reduced_local,
+                    apply_fully_covered_local,
                 } => {
                     assert!(!print_fully_covered_local);
                     assert!(!print_reduced_local);
+                    assert!(!apply_fully_covered_local);
                 }
             },
             _ => panic!("unexpected command variant"),
