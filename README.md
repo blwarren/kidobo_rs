@@ -104,6 +104,10 @@ sudo kidobo sync
 ```bash
 kidobo lookup 203.0.113.7
 kidobo lookup --file targets.txt
+# analyze overlap vs cached remote sources only (offline)
+kidobo lookup --analyze-overlap
+# print optional reduction candidate lists
+kidobo lookup --analyze-overlap --print-fully-covered-local --print-reduced-local
 ```
 
 9. Remove kidobo firewall/ipset artifacts (optional):
@@ -123,6 +127,7 @@ kidobo flush [--cache-only]
 kidobo ban <ip-or-cidr>
 kidobo unban <ip-or-cidr> [--yes]
 kidobo lookup [ip | --file <path>]
+kidobo lookup --analyze-overlap [--print-fully-covered-local] [--print-reduced-local]
 ```
 
 Global flags:
@@ -155,6 +160,7 @@ github_meta_url = "https://api.github.com/meta"
 
 [remote]
 timeout_secs = 30
+cache_stale_after_secs = 86400
 urls = []
 ```
 
@@ -165,6 +171,8 @@ Useful options:
 - `ipset.chain_action`: `DROP` (default) or `REJECT`
 - `ipset.maxelem`: range `[1, 500000]`
 - `remote.timeout_secs`: range `[1, 3600]`
+- `remote.cache_stale_after_secs`: remote cache staleness threshold for overlap
+  analysis warnings (default `86400`, range `[1, 604800]`)
 
 ## Defaults
 
@@ -185,6 +193,8 @@ At default paths it also runs `systemctl daemon-reload` and enables
 - `ban` and `unban` only modify the local blocklist file; run `sync` to apply
   those changes to firewall/ipset runtime state.
 - `lookup` does not fetch remote data; it only uses local and cached sources.
+- `lookup --analyze-overlap` is offline-only and warns when cached remote
+  `.iplist` files are older than `remote.cache_stale_after_secs`.
 - `KIDOBO_ROOT` relocates config/data/cache paths under a custom root.
 
 ## License

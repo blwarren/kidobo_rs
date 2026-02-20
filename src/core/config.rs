@@ -7,6 +7,7 @@ pub const DEFAULT_HASHSIZE: u32 = 65_536;
 pub const DEFAULT_MAXELEM: u32 = 500_000;
 pub const DEFAULT_TIMEOUT: u32 = 0;
 pub const DEFAULT_REMOTE_TIMEOUT_SECS: u32 = 30;
+pub const DEFAULT_REMOTE_CACHE_STALE_AFTER_SECS: u32 = 24 * 60 * 60;
 pub const DEFAULT_INCLUDE_GITHUB_META: bool = true;
 pub const DEFAULT_GITHUB_META_CATEGORIES: [&str; 4] = ["api", "git", "hooks", "packages"];
 pub const DEFAULT_GITHUB_META_URL: &str = "https://api.github.com/meta";
@@ -48,6 +49,7 @@ pub struct SafeConfig {
 pub struct RemoteConfig {
     pub urls: Vec<String>,
     pub timeout_secs: u32,
+    pub cache_stale_after_secs: u32,
 }
 
 impl Default for RemoteConfig {
@@ -55,6 +57,7 @@ impl Default for RemoteConfig {
         Self {
             urls: Vec::new(),
             timeout_secs: DEFAULT_REMOTE_TIMEOUT_SECS,
+            cache_stale_after_secs: DEFAULT_REMOTE_CACHE_STALE_AFTER_SECS,
         }
     }
 }
@@ -119,6 +122,7 @@ struct RawSafeConfig {
 struct RawRemoteConfig {
     urls: Option<Vec<String>>,
     timeout_secs: Option<i64>,
+    cache_stale_after_secs: Option<i64>,
 }
 
 impl Config {
@@ -267,7 +271,19 @@ fn parse_remote(raw: RawRemoteConfig) -> Result<RemoteConfig, ConfigError> {
         3600,
     )?;
 
-    Ok(RemoteConfig { urls, timeout_secs })
+    let cache_stale_after_secs = bounded_u32(
+        raw.cache_stale_after_secs
+            .unwrap_or(i64::from(DEFAULT_REMOTE_CACHE_STALE_AFTER_SECS)),
+        "remote.cache_stale_after_secs",
+        1,
+        7 * 24 * 60 * 60,
+    )?;
+
+    Ok(RemoteConfig {
+        urls,
+        timeout_secs,
+        cache_stale_after_secs,
+    })
 }
 
 fn required_non_empty(value: Option<String>, field: &'static str) -> Result<String, ConfigError> {
@@ -372,7 +388,8 @@ mod tests {
     use super::{
         Config, ConfigError, DEFAULT_CHAIN_ACTION, DEFAULT_GITHUB_META_CATEGORIES,
         DEFAULT_GITHUB_META_URL, DEFAULT_HASHSIZE, DEFAULT_IPSET_TYPE, DEFAULT_MAXELEM,
-        DEFAULT_REMOTE_TIMEOUT_SECS, DEFAULT_TIMEOUT, FirewallAction, GithubMetaCategoryMode,
+        DEFAULT_REMOTE_CACHE_STALE_AFTER_SECS, DEFAULT_REMOTE_TIMEOUT_SECS, DEFAULT_TIMEOUT,
+        FirewallAction, GithubMetaCategoryMode,
     };
 
     #[test]
@@ -400,6 +417,10 @@ mod tests {
         );
         assert_eq!(config.remote.urls, Vec::<String>::new());
         assert_eq!(config.remote.timeout_secs, DEFAULT_REMOTE_TIMEOUT_SECS);
+        assert_eq!(
+            config.remote.cache_stale_after_secs,
+            DEFAULT_REMOTE_CACHE_STALE_AFTER_SECS
+        );
     }
 
     #[test]
@@ -645,6 +666,30 @@ mod tests {
             ConfigError::InvalidField {
                 field: "remote.timeout_secs",
                 reason: "must be between 1 and 3600".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn remote_cache_stale_after_secs_can_be_overridden() {
+        let config = Config::from_toml_str(
+            "[ipset]\nset_name='kidobo'\n[remote]\ncache_stale_after_secs=7200\n",
+        )
+        .expect("parse");
+        assert_eq!(config.remote.cache_stale_after_secs, 7200);
+    }
+
+    #[test]
+    fn remote_cache_stale_after_secs_must_be_within_allowed_range() {
+        let err = Config::from_toml_str(
+            "[ipset]\nset_name='kidobo'\n[remote]\ncache_stale_after_secs=0\n",
+        )
+        .expect_err("must fail");
+        assert_eq!(
+            err,
+            ConfigError::InvalidField {
+                field: "remote.cache_stale_after_secs",
+                reason: "must be between 1 and 604800".to_string(),
             }
         );
     }

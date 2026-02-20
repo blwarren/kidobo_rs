@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use crate::adapters::blocklist_analysis_sources::AnalysisSourceLoadError;
 use crate::adapters::ipset::IpsetError;
 use crate::adapters::iptables::FirewallError;
 use crate::adapters::lock::LockError;
@@ -87,6 +88,12 @@ pub enum KidoboError {
     LookupSourceLoad {
         #[from]
         source: LookupSourceLoadError,
+    },
+
+    #[error("blocklist analysis source loading failed: {source}")]
+    AnalysisSourceLoad {
+        #[from]
+        source: AnalysisSourceLoadError,
     },
 
     #[error("lock operation failed: {source}")]

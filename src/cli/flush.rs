@@ -240,6 +240,7 @@ mod tests {
             remote: RemoteConfig {
                 urls: Vec::new(),
                 timeout_secs: 30,
+                cache_stale_after_secs: 86_400,
             },
         }
     }

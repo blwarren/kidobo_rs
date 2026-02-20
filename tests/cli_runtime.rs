@@ -235,6 +235,41 @@ fn lookup_invalid_target_exits_with_one() {
 }
 
 #[test]
+fn lookup_analyze_overlap_uses_cached_sources_only_and_exits_zero() {
+    let root = create_root(
+        "[ipset]\nset_name='kidobo'\n[remote]\ncache_stale_after_secs=86400\n",
+        "203.0.113.0/24\n198.51.100.7\n",
+    );
+    fs::write(
+        root.path().join("cache/remote/a.iplist"),
+        "203.0.113.0/25\n192.0.2.0/24\n",
+    )
+    .expect("write remote iplist");
+    fs::write(
+        root.path().join("cache/remote/a.meta.json"),
+        r#"{"url":"https://example.com/a.txt"}"#,
+    )
+    .expect("write remote meta");
+
+    let output = run_kidobo_with_root(root.path(), &["lookup", "--analyze-overlap"]);
+    assert_eq!(output.status.code(), Some(0));
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("lookup overlap analysis (offline cache only)"),
+        "unexpected analyze output: {stdout}"
+    );
+    assert!(
+        stdout.contains("per-remote overlap:"),
+        "missing per-remote overlap section: {stdout}"
+    );
+    assert!(
+        stdout.contains("https://example.com/a.txt"),
+        "missing remote source label: {stdout}"
+    );
+}
+
+#[test]
 fn sync_reports_config_parse_error_before_lock_check() {
     let root = create_sync_root("not valid = [");
     let _held_lock = hold_lock(&root.path().join("cache/sync.lock"));

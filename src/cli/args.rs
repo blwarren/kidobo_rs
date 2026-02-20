@@ -100,14 +100,14 @@ pub enum Command {
     },
     #[command(
         about = "Offline lookup against local blocklist + cached remote sources",
-        long_about = "Lookup candidate targets against local blocklist and cached remote sources.\n\nLookup runs offline only and never fetches remote sources."
+        long_about = "Lookup candidate targets against local blocklist and cached remote sources.\n\nLookup runs offline only and never fetches remote sources.\n\nUse --analyze-overlap to inspect overlap between local and cached remote blocklists."
     )]
     Lookup {
         #[arg(
             value_name = "IP_OR_CIDR",
             help = "Single target IP/CIDR to match",
             conflicts_with = "file",
-            required_unless_present = "file"
+            required_unless_present_any = ["file", "analyze_overlap"]
         )]
         ip: Option<String>,
 
@@ -116,9 +116,30 @@ pub enum Command {
             value_name = "PATH",
             help = "File with one target IP/CIDR per line",
             conflicts_with = "ip",
-            required_unless_present = "ip"
+            required_unless_present_any = ["ip", "analyze_overlap"]
         )]
         file: Option<PathBuf>,
+
+        #[arg(
+            long,
+            help = "Analyze overlap between local blocklist and cached remote blocklists (offline only)",
+            conflicts_with_all = ["ip", "file"]
+        )]
+        analyze_overlap: bool,
+
+        #[arg(
+            long,
+            help = "Print local entries fully covered by cached remote union (requires --analyze-overlap)",
+            requires = "analyze_overlap"
+        )]
+        print_fully_covered_local: bool,
+
+        #[arg(
+            long,
+            help = "Print suggested reduced local blocklist (local minus cached remote union; requires --analyze-overlap)",
+            requires = "analyze_overlap"
+        )]
+        print_reduced_local: bool,
     },
 }
 
@@ -163,6 +184,28 @@ mod tests {
             Command::Unban { target, yes } => {
                 assert_eq!(target, "203.0.113.0/24");
                 assert!(yes);
+            }
+            _ => panic!("unexpected command variant"),
+        }
+    }
+
+    #[test]
+    fn lookup_analyze_overlap_mode_parses() {
+        let cli = Cli::try_parse_from(["kidobo", "lookup", "--analyze-overlap"])
+            .expect("lookup analyze parse");
+        match cli.command {
+            Command::Lookup {
+                ip,
+                file,
+                analyze_overlap,
+                print_fully_covered_local,
+                print_reduced_local,
+            } => {
+                assert!(ip.is_none());
+                assert!(file.is_none());
+                assert!(analyze_overlap);
+                assert!(!print_fully_covered_local);
+                assert!(!print_reduced_local);
             }
             _ => panic!("unexpected command variant"),
         }

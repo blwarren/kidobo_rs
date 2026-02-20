@@ -1,3 +1,4 @@
+pub mod blocklist_analysis;
 pub mod config;
 pub mod lookup;
 pub mod network;

@@ -551,6 +551,7 @@ mod tests {
             remote: RemoteConfig {
                 urls,
                 timeout_secs: 30,
+                cache_stale_after_secs: 86_400,
             },
         }
     }
@@ -576,6 +577,7 @@ mod tests {
             remote: RemoteConfig {
                 urls,
                 timeout_secs: 30,
+                cache_stale_after_secs: 86_400,
             },
         }
     }
