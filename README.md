@@ -1,25 +1,27 @@
 # kidobo
 
 `kidobo` is a one-shot Linux firewall blocklist manager.
-It builds IPv4/IPv6 blocklists from local and remote sources, subtracts safelist
-entries, and updates `ipset` atomically with deterministic
+It builds IPv4/IPv6 blocklists from local and remote sources, subtracts
+safelist entries, and updates `ipset` atomically with deterministic
 `iptables`/`ip6tables` wiring.
 
-## Requirements
+## Features
 
-- Linux
-- `sudo`
-- `ipset`
-- `iptables`, `iptables-save`, `iptables-restore`
-- `ip6tables` (only when IPv6 is enabled)
-
-`doctor`, `sync`, and `flush` run privileged commands via `sudo -n ...`.
-With default system paths, `init` is also typically run with `sudo`.
+- Easily manage and update both local and remote IP/CIDR blocklists.
+- Utilizes ipset to harness the efficiency of the Linux kernel in enforcing blocklists.
+- Automatic dedupe and consolidation of blocklists before ipset creation.
+- Sync happens **fast**: in testing on a Linode Nanode (Single core CPU VM with 1 GB RAM)
+  updates involving multiple blocklists totalling 400,000 lines happen in less than
+  five seconds.
+- Stay in control: identify safe IP's that are carved out of blocklists.
+- Local blocklist entries can be managed through manual editing of text
+  file or through use of CLI ban/unban commands.
 
 ## Install
 
-Release artifacts are currently published for Linux `x86_64`.
-For other targets, build from source.
+Release binaries are currently published for Linux x86_64.
+
+No testing has been performed on other CPU architectures, but feel free to run the test suite and build from source when using this on other platforms.
 
 Install latest release:
 
@@ -45,61 +47,57 @@ Uninstall:
 curl -fsSL https://raw.githubusercontent.com/blwarren/kidobo/main/scripts/install.sh | sudo bash -s -- --uninstall
 ```
 
-Build from source:
-
-```bash
-cargo build --release --locked
-./target/release/kidobo --help
-```
+Security note: piping a script to `sudo bash` is convenient, but you should
+review the script (and pin a version) if you need a stricter install policy.
 
 ## Quick Start
 
-1. Initialize files:
+Initialize default files and (optionally) systemd units:
 
 ```bash
 sudo kidobo init
 ```
 
-2. Edit config:
+Configure your sources and safelist:
 
 ```bash
 sudoedit /etc/kidobo/config.toml
 ```
 
-3. (Optional) add local entries:
+Add local entries (optional):
+
+Use commands:
+
+```bash
+kidobo ban 203.0.113.7
+kidobo unban 203.0.113.7
+```
+
+Or edit the local blocklist file directly:
 
 ```bash
 echo "203.0.113.0/24" | sudo tee -a /var/lib/kidobo/blocklist.txt
 ```
 
-4. Check environment:
+Check prerequisites and system wiring:
 
 ```bash
 sudo kidobo doctor
 ```
 
-5. Apply blocklists:
+Apply blocklists to `ipset` and firewall rules:
 
 ```bash
 sudo kidobo sync
 ```
 
-6. Add or remove a local blocklist entry:
-
-```bash
-kidobo ban 203.0.113.7
-kidobo unban 203.0.113.7
-# skip interactive confirmation when removing overlapping entries
-kidobo unban 203.0.113.0/24 --yes
-```
-
-7. Re-apply after local blocklist changes:
+Re-apply after local blocklist changes:
 
 ```bash
 sudo kidobo sync
 ```
 
-8. Check whether targets match (offline):
+Check whether targets match (offline):
 
 ```bash
 kidobo lookup 203.0.113.7
@@ -112,40 +110,12 @@ kidobo analyze overlap --print-fully-covered-local --print-reduced-local
 kidobo analyze overlap --apply-fully-covered-local
 ```
 
-9. Remove kidobo firewall/ipset artifacts (optional):
+Remove kidobo firewall/ipset artifacts (optional):
 
 ```bash
 sudo kidobo flush
 sudo kidobo flush --cache-only
 ```
-
-## Commands
-
-```text
-kidobo init
-kidobo doctor
-kidobo sync
-kidobo flush [--cache-only]
-kidobo ban <ip-or-cidr>
-kidobo unban <ip-or-cidr> [--yes]
-kidobo lookup [ip | --file <path>]
-kidobo analyze overlap [--print-fully-covered-local] [--print-reduced-local] [--apply-fully-covered-local]
-```
-
-Global flags:
-
-- `--version`
-- `--log-level <trace|debug|info|warn|error>`
-
-Logging format:
-
-- `KIDOBO_LOG_FORMAT=auto|human|journal` (default `auto`)
-- `auto` uses `journal` under systemd or when stderr is non-TTY, and `human`
-  for interactive TTY runs
-- `KIDOBO_LOG_COLOR=auto|always|never` controls color in human format
-  (default `auto`)
-- In `auto`, human format uses colored level labels on interactive TTY output
-  and respects `NO_COLOR`
 
 ## Minimal Config
 
@@ -194,7 +164,8 @@ At default paths it also runs `systemctl daemon-reload` and enables
 
 - `ban` and `unban` only modify the local blocklist file; run `sync` to apply
   those changes to firewall/ipset runtime state.
-- `lookup` does not fetch remote data; it only uses local and cached sources.
+- `lookup` runs only against cached blocklists - run `sync` first if you need latest list
+  data.
 - `analyze overlap` is offline-only and warns when cached remote
   `.iplist` files are older than `remote.cache_stale_after_secs`.
 - `analyze overlap --apply-fully-covered-local` removes local entries that are
