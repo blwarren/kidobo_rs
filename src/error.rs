@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use crate::adapters::asn::AsnError;
 use crate::adapters::blocklist_analysis_sources::AnalysisSourceLoadError;
 use crate::adapters::ipset::IpsetError;
 use crate::adapters::iptables::FirewallError;
@@ -44,8 +45,14 @@ pub enum KidoboError {
     #[error("systemd setup failed during init for `{command}`: {reason}")]
     InitSystemd { command: String, reason: String },
 
+    #[error("required binary not found on PATH: {binary}")]
+    MissingRequiredBinary { binary: &'static str },
+
     #[error("failed to read config file {path}: {reason}")]
     ConfigRead { path: PathBuf, reason: String },
+
+    #[error("failed to write config file {path}: {reason}")]
+    ConfigWrite { path: PathBuf, reason: String },
 
     #[error("failed to read blocklist file {path}: {reason}")]
     BlocklistRead { path: PathBuf, reason: String },
@@ -58,6 +65,12 @@ pub enum KidoboError {
 
     #[error("blocklist prompt failed: {reason}")]
     BlocklistPrompt { reason: String },
+
+    #[error("ASN operation failed: {source}")]
+    Asn {
+        #[from]
+        source: AsnError,
+    },
 
     #[error("failed to clear remote cache at {path}: {reason}")]
     FlushCacheIo { path: PathBuf, reason: String },

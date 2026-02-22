@@ -1,4 +1,5 @@
 use std::env;
+use std::ffi::OsString;
 use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -24,6 +25,10 @@ github_meta_url = "https://api.github.com/meta"
 [remote]
 timeout_secs = 30
 urls = []
+
+[asn]
+banned = []
+cache_stale_after_secs = 86400
 "#;
 
 const DEFAULT_BLOCKLIST_TEMPLATE: &str =
@@ -97,6 +102,7 @@ impl InitCommandRunner for NoopInitCommandRunner {
 
 #[allow(clippy::print_stdout)]
 pub fn run_init_command() -> Result<(), KidoboError> {
+    ensure_init_binaries_available(env::var_os("PATH"))?;
     let path_input = PathResolutionInput::from_process(None);
     let paths = resolve_paths_for_init(&path_input)?;
     let executable_path =
@@ -111,6 +117,24 @@ pub fn run_init_command() -> Result<(), KidoboError> {
     )?;
     print_init_summary(&summary);
     Ok(())
+}
+
+fn ensure_init_binaries_available(path: Option<OsString>) -> Result<(), KidoboError> {
+    if find_binary_in_path("bgpq4", path).is_none() {
+        return Err(KidoboError::MissingRequiredBinary { binary: "bgpq4" });
+    }
+    Ok(())
+}
+
+fn find_binary_in_path(binary: &str, path: Option<OsString>) -> Option<PathBuf> {
+    let path = path?;
+    for directory in env::split_paths(&path) {
+        let candidate = directory.join(binary);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 #[cfg(test)]

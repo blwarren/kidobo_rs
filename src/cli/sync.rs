@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use log::{error, info, warn};
 
+use crate::adapters::asn::{Bgpq4AsnPrefixResolver, load_asn_prefixes_with_cache};
 use crate::adapters::command_runner::SudoCommandRunner;
 use crate::adapters::config::load_config_from_file;
 use crate::adapters::github_meta::load_github_meta_safelist;
@@ -125,10 +126,31 @@ pub(crate) fn run_sync_with_dependencies(
 
     let internal_count = internal.len();
     let remote_count = remote.len();
+    let asn_cache_stale_after =
+        Duration::from_secs(u64::from(config.asn.cache_stale_after_secs.get()));
+    let asn_cache_dir = paths.cache_dir.join("asn");
+    let asn_resolver = Bgpq4AsnPrefixResolver::with_default_timeout();
+    let mut asn_networks = Vec::new();
+    for asn in &config.asn.banned {
+        let cached = load_asn_prefixes_with_cache(
+            *asn,
+            &asn_cache_dir,
+            asn_cache_stale_after,
+            &asn_resolver,
+        )?;
+        if cached.stale {
+            warn!("ASN cache refresh failed; using stale prefixes for AS{asn}");
+        }
+        asn_networks.extend(cached.prefixes);
+    }
+    asn_networks.sort_unstable();
+    asn_networks.dedup();
+    let asn_count = asn_networks.len();
     let safelist_count = safelist.len();
 
     let mut candidates = internal;
     candidates.extend(remote);
+    candidates.extend(asn_networks);
 
     let effective = compute_effective_blocklists(&candidates, &safelist, config.ipset.enable_ipv6);
 
@@ -140,7 +162,7 @@ pub(crate) fn run_sync_with_dependencies(
     atomic_replace_ipset_values(ipset_runner, &ipv4_spec, &effective.ipv4)?;
 
     info!(
-        "sync source counts: internal={internal_count} remote={remote_count} safelist={safelist_count}"
+        "sync source counts: internal={internal_count} remote={remote_count} asn={asn_count} safelist={safelist_count}"
     );
     info!(
         "sync final ipset counts: ipv4={pv4} ipv6={pv6}",
@@ -307,7 +329,7 @@ mod tests {
     use crate::adapters::iptables::FirewallCommandRunner;
     use crate::adapters::path::ResolvedPaths;
     use crate::core::config::{
-        CacheStaleAfterSecs, Config, FirewallAction, HashsizePow2, IpsetConfig, MaxElem,
+        AsnConfig, CacheStaleAfterSecs, Config, FirewallAction, HashsizePow2, IpsetConfig, MaxElem,
         RemoteConfig, RemoteTimeoutSecs, SafeConfig,
     };
     use crate::core::network::parse_ip_cidr_token;
@@ -555,6 +577,10 @@ mod tests {
                 timeout_secs: RemoteTimeoutSecs::new(30).expect("valid timeout"),
                 cache_stale_after_secs: CacheStaleAfterSecs::new(86_400).expect("valid stale"),
             },
+            asn: AsnConfig {
+                banned: Vec::new(),
+                cache_stale_after_secs: CacheStaleAfterSecs::new(86_400).expect("valid stale"),
+            },
         }
     }
 
@@ -579,6 +605,10 @@ mod tests {
             remote: RemoteConfig {
                 urls,
                 timeout_secs: RemoteTimeoutSecs::new(30).expect("valid timeout"),
+                cache_stale_after_secs: CacheStaleAfterSecs::new(86_400).expect("valid stale"),
+            },
+            asn: AsnConfig {
+                banned: Vec::new(),
                 cache_stale_after_secs: CacheStaleAfterSecs::new(86_400).expect("valid stale"),
             },
         }

@@ -83,8 +83,10 @@ pub fn dispatch(command: Command) -> Result<(), KidoboError> {
                 apply_fully_covered_local,
             ),
         },
-        Command::Ban { target } => run_ban_command(&target),
-        Command::Unban { target, yes } => run_unban_command(&target, yes),
+        Command::Ban { target, asn } => run_ban_command(target.as_deref(), asn.as_deref()),
+        Command::Unban { target, asn, yes } => {
+            run_unban_command(target.as_deref(), asn.as_deref(), yes)
+        }
     }
 }
 

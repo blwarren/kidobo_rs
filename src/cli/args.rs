@@ -75,22 +75,49 @@ pub enum Command {
     },
     #[command(
         about = "Add an IP/CIDR entry to the local blocklist",
-        long_about = "Add one IPv4/IPv6 address or CIDR entry to the local blocklist file.\n\nThis updates local source data only; run `kidobo sync` to apply changes to firewall/ipset state."
+        long_about = "Add one IPv4/IPv6 address or CIDR entry to the local blocklist file, or ban one or more ASNs with `--asn`.\n\nThis updates local source data only; run `kidobo sync` to apply changes to firewall/ipset state."
     )]
     Ban {
-        #[arg(value_name = "IP_OR_CIDR", help = "IPv4/IPv6 address or CIDR to add")]
-        target: String,
+        #[arg(
+            value_name = "IP_OR_CIDR",
+            help = "IPv4/IPv6 address or CIDR to add",
+            conflicts_with = "asn",
+            required_unless_present = "asn"
+        )]
+        target: Option<String>,
+
+        #[arg(
+            long = "asn",
+            value_name = "ASN",
+            num_args = 1..,
+            help = "ASN(s) to ban (e.g. 213412 or AS213412)",
+            conflicts_with = "target",
+            required_unless_present = "target"
+        )]
+        asn: Option<Vec<String>>,
     },
     #[command(
         about = "Remove an IP/CIDR entry from the local blocklist",
-        long_about = "Remove one IPv4/IPv6 address or CIDR entry from the local blocklist file.\n\nThis updates local source data only; run `kidobo sync` to apply changes to firewall/ipset state."
+        long_about = "Remove one IPv4/IPv6 address or CIDR entry from the local blocklist file, or remove one or more ASNs with `--asn`.\n\nThis updates local source data only; run `kidobo sync` to apply changes to firewall/ipset state."
     )]
     Unban {
         #[arg(
             value_name = "IP_OR_CIDR",
-            help = "IPv4/IPv6 address or CIDR to remove"
+            help = "IPv4/IPv6 address or CIDR to remove",
+            conflicts_with = "asn",
+            required_unless_present = "asn"
         )]
-        target: String,
+        target: Option<String>,
+
+        #[arg(
+            long = "asn",
+            value_name = "ASN",
+            num_args = 1..,
+            help = "ASN(s) to unban (e.g. 213412 or AS213412)",
+            conflicts_with = "target",
+            required_unless_present = "target"
+        )]
+        asn: Option<Vec<String>>,
 
         #[arg(
             long,
@@ -186,7 +213,10 @@ mod tests {
     fn ban_command_parses_target() {
         let cli = Cli::try_parse_from(["kidobo", "ban", "203.0.113.7"]).expect("ban parse");
         match cli.command {
-            Command::Ban { target } => assert_eq!(target, "203.0.113.7"),
+            Command::Ban { target, asn } => {
+                assert_eq!(target, Some("203.0.113.7".to_string()));
+                assert!(asn.is_none());
+            }
             _ => panic!("unexpected command variant"),
         }
     }
@@ -196,9 +226,23 @@ mod tests {
         let cli = Cli::try_parse_from(["kidobo", "unban", "203.0.113.0/24", "--yes"])
             .expect("unban parse");
         match cli.command {
-            Command::Unban { target, yes } => {
-                assert_eq!(target, "203.0.113.0/24");
+            Command::Unban { target, asn, yes } => {
+                assert_eq!(target, Some("203.0.113.0/24".to_string()));
+                assert!(asn.is_none());
                 assert!(yes);
+            }
+            _ => panic!("unexpected command variant"),
+        }
+    }
+
+    #[test]
+    fn ban_command_parses_multiple_asns() {
+        let cli =
+            Cli::try_parse_from(["kidobo", "ban", "--asn", "AS213412", "64512"]).expect("parse");
+        match cli.command {
+            Command::Ban { target, asn } => {
+                assert!(target.is_none());
+                assert_eq!(asn, Some(vec!["AS213412".to_string(), "64512".to_string()]));
             }
             _ => panic!("unexpected command variant"),
         }

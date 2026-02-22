@@ -71,6 +71,8 @@ Use commands:
 ```bash
 kidobo ban 203.0.113.7
 kidobo unban 203.0.113.7
+kidobo ban --asn 213412
+kidobo unban --asn AS213412
 ```
 
 Or edit the local blocklist file directly:
@@ -134,6 +136,10 @@ github_meta_url = "https://api.github.com/meta"
 timeout_secs = 30
 cache_stale_after_secs = 86400
 urls = []
+
+[asn]
+banned = []
+cache_stale_after_secs = 86400
 ```
 
 Useful options:
@@ -145,6 +151,9 @@ Useful options:
 - `remote.timeout_secs`: range `[1, 3600]`
 - `remote.cache_stale_after_secs`: remote cache staleness threshold for overlap
   analysis warnings (default `86400`, range `[1, 604800]`)
+- `asn.banned`: ASN bans that are resolved to prefixes during `sync`
+- `asn.cache_stale_after_secs`: ASN prefix cache refresh threshold
+  (default `86400`, range `[1, 604800]`)
 
 ## Defaults
 
@@ -162,8 +171,9 @@ At default paths it also runs `systemctl daemon-reload` and enables
 
 ## Notes
 
-- `ban` and `unban` only modify the local blocklist file; run `sync` to apply
-  those changes to firewall/ipset runtime state.
+- `ban` and `unban` modify local source state only:
+  blocklist entries for IP/CIDR targets and config `[asn].banned` for ASN targets.
+  Run `sync` to apply changes to firewall/ipset runtime state.
 - `lookup` runs only against cached blocklists - run `sync` first if you need latest list
   data.
 - `analyze overlap` is offline-only and warns when cached remote

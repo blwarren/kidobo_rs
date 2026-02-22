@@ -134,7 +134,7 @@ mod tests {
     use crate::adapters::ipset::IpsetCommandRunner;
     use crate::adapters::iptables::FirewallCommandRunner;
     use crate::core::config::{
-        CacheStaleAfterSecs, Config, FirewallAction, HashsizePow2, IpsetConfig, MaxElem,
+        AsnConfig, CacheStaleAfterSecs, Config, FirewallAction, HashsizePow2, IpsetConfig, MaxElem,
         RemoteConfig, RemoteTimeoutSecs, SafeConfig,
     };
     use tempfile::TempDir;
@@ -240,6 +240,10 @@ mod tests {
             remote: RemoteConfig {
                 urls: Vec::new(),
                 timeout_secs: RemoteTimeoutSecs::new(30).expect("valid timeout"),
+                cache_stale_after_secs: CacheStaleAfterSecs::new(86_400).expect("valid stale"),
+            },
+            asn: AsnConfig {
+                banned: Vec::new(),
                 cache_stale_after_secs: CacheStaleAfterSecs::new(86_400).expect("valid stale"),
             },
         }

@@ -74,8 +74,9 @@ enum Ipv6Mode {
 type BinaryAvailability = BTreeMap<&'static str, bool>;
 type PathsResult = Result<ResolvedPaths, PathResolutionError>;
 
-const REQUIRED_BINARY_CHECKS: [(&str, &str); 5] = [
+const REQUIRED_BINARY_CHECKS: [(&str, &str); 6] = [
     ("binary_sudo", "sudo"),
+    ("binary_bgpq4", "bgpq4"),
     ("binary_ipset", "ipset"),
     ("binary_iptables", "iptables"),
     ("binary_iptables_save", "iptables-save"),
@@ -579,6 +580,7 @@ mod tests {
     fn collect_binary_checks_skips_ipv6_when_config_is_unknown() {
         let locator = MockBinaryLocator::new(&[
             "sudo",
+            "bgpq4",
             "ipset",
             "iptables",
             "iptables-save",
@@ -604,6 +606,7 @@ mod tests {
 
         let locator = MockBinaryLocator::new(&[
             "sudo",
+            "bgpq4",
             "ipset",
             "iptables",
             "iptables-save",
@@ -639,6 +642,7 @@ mod tests {
 
         let locator = MockBinaryLocator::new(&[
             "sudo",
+            "bgpq4",
             "iptables",
             "iptables-save",
             "iptables-restore",
@@ -676,6 +680,7 @@ mod tests {
 
         let locator = MockBinaryLocator::new(&[
             "sudo",
+            "bgpq4",
             "ipset",
             "iptables",
             "iptables-save",
@@ -707,6 +712,7 @@ mod tests {
 
         let locator = MockBinaryLocator::new(&[
             "sudo",
+            "bgpq4",
             "ipset",
             "iptables",
             "iptables-save",

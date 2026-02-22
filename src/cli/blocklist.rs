@@ -1,13 +1,21 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
+use std::time::Duration;
 use std::time::UNIX_EPOCH;
 
-use log::warn;
+use log::{info, warn};
+use toml::Value;
 
+use crate::adapters::asn::{
+    Bgpq4AsnPrefixResolver, delete_asn_cache_file, load_asn_prefixes_with_cache,
+    normalize_asn_tokens,
+};
+use crate::adapters::config::load_config_from_file;
 use crate::adapters::limited_io::read_to_string_with_limit;
 use crate::adapters::path::{PathResolutionInput, resolve_paths};
+use crate::core::config::{ConfigError, DEFAULT_ASN_CACHE_STALE_AFTER_SECS};
 use crate::core::network::{
     CanonicalCidr, cidr_overlaps, collapse_ipv4, collapse_ipv6, parse_ip_cidr_non_strict,
     split_by_family,
@@ -71,9 +79,23 @@ impl BlocklistFastState {
 }
 
 #[allow(clippy::print_stdout, clippy::print_stderr)]
-pub fn run_ban_command(target: &str) -> Result<(), KidoboError> {
+pub fn run_ban_command(target: Option<&str>, asn: Option<&[String]>) -> Result<(), KidoboError> {
     let path_input = PathResolutionInput::from_process(None);
     let paths = resolve_paths(&path_input)?;
+    if let Some(asn_tokens) = asn {
+        return run_ban_asn_command(
+            &paths.config_file,
+            &paths.blocklist_file,
+            &paths.cache_dir,
+            asn_tokens,
+        );
+    }
+
+    let Some(target) = target else {
+        return Err(KidoboError::BlocklistTargetParse {
+            input: String::new(),
+        });
+    };
     let outcome = ban_target_in_file(&paths.blocklist_file, target)?;
 
     match outcome {
@@ -93,9 +115,21 @@ pub enum BanOutcome {
 }
 
 #[allow(clippy::print_stdout, clippy::print_stderr)]
-pub fn run_unban_command(target: &str, yes: bool) -> Result<(), KidoboError> {
+pub fn run_unban_command(
+    target: Option<&str>,
+    asn: Option<&[String]>,
+    yes: bool,
+) -> Result<(), KidoboError> {
     let path_input = PathResolutionInput::from_process(None);
     let paths = resolve_paths(&path_input)?;
+    if let Some(asn_tokens) = asn {
+        return run_unban_asn_command(&paths.config_file, &paths.cache_dir, asn_tokens);
+    }
+    let Some(target) = target else {
+        return Err(KidoboError::BlocklistTargetParse {
+            input: String::new(),
+        });
+    };
     let mut plan = build_unban_plan(&paths.blocklist_file, target)?;
 
     if !plan.partial_matches.is_empty() {
@@ -128,6 +162,223 @@ pub fn run_unban_command(target: &str, yes: bool) -> Result<(), KidoboError> {
     );
     println!("changes take effect after running `sudo kidobo sync`");
     Ok(())
+}
+
+#[allow(clippy::print_stdout)]
+fn run_ban_asn_command(
+    config_path: &Path,
+    blocklist_path: &Path,
+    cache_dir: &Path,
+    asn_tokens: &[String],
+) -> Result<(), KidoboError> {
+    let requested_asns = normalize_asn_tokens(asn_tokens)?;
+    let config = load_config_from_file(config_path)?;
+    let stale_after = Duration::from_secs(u64::from(config.asn.cache_stale_after_secs.get()));
+    let asn_cache_dir = cache_dir.join("asn");
+    let resolver = Bgpq4AsnPrefixResolver::with_default_timeout();
+
+    let mut resolved_prefixes = Vec::new();
+    for asn in &requested_asns {
+        let cached = load_asn_prefixes_with_cache(*asn, &asn_cache_dir, stale_after, &resolver)?;
+        if cached.stale {
+            warn!("ASN cache stale fallback used for AS{asn}");
+        }
+        resolved_prefixes.extend(cached.prefixes);
+    }
+    resolved_prefixes.sort_unstable();
+    resolved_prefixes.dedup();
+
+    let update = update_banned_asns_in_config(config_path, &requested_asns, &[])?;
+    let removed_dups = remove_exact_blocklist_duplicates(blocklist_path, &resolved_prefixes)?;
+
+    println!(
+        "added {} ASN ban(s): {}",
+        update.added.len(),
+        format_asn_list(&update.added)
+    );
+    if removed_dups > 0 {
+        println!("removed {removed_dups} duplicate IP/CIDR entry(ies) from local blocklist");
+    }
+    println!("changes take effect after running `sudo kidobo sync`");
+    Ok(())
+}
+
+#[allow(clippy::print_stdout)]
+fn run_unban_asn_command(
+    config_path: &Path,
+    cache_dir: &Path,
+    asn_tokens: &[String],
+) -> Result<(), KidoboError> {
+    let requested_asns = normalize_asn_tokens(asn_tokens)?;
+    let update = update_banned_asns_in_config(config_path, &[], &requested_asns)?;
+    let asn_cache_dir = cache_dir.join("asn");
+    let mut deleted_cache_count = 0_usize;
+    for asn in &requested_asns {
+        if delete_asn_cache_file(*asn, &asn_cache_dir)? {
+            deleted_cache_count += 1;
+        }
+    }
+
+    println!(
+        "removed {} ASN ban(s): {}",
+        update.removed.len(),
+        format_asn_list(&update.removed)
+    );
+    println!("deleted {deleted_cache_count} ASN cache file(s)");
+    println!("changes take effect after running `sudo kidobo sync`");
+    Ok(())
+}
+
+fn format_asn_list(asns: &[u32]) -> String {
+    asns.iter()
+        .map(|asn| format!("AS{asn}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct AsnBanUpdateResult {
+    added: Vec<u32>,
+    removed: Vec<u32>,
+}
+
+fn update_banned_asns_in_config(
+    config_path: &Path,
+    add: &[u32],
+    remove: &[u32],
+) -> Result<AsnBanUpdateResult, KidoboError> {
+    let mut doc = load_config_value(config_path)?;
+    let table = doc.as_table_mut().ok_or_else(|| KidoboError::ConfigParse {
+        source: ConfigError::Parse {
+            reason: "config root must be a TOML table".to_string(),
+        },
+    })?;
+    let asn_value = table
+        .entry("asn")
+        .or_insert_with(|| Value::Table(toml::Table::new()));
+    let asn_table = asn_value
+        .as_table_mut()
+        .ok_or_else(|| KidoboError::ConfigParse {
+            source: ConfigError::InvalidField {
+                field: "asn",
+                reason: "must be a TOML table".to_string(),
+            },
+        })?;
+    let existing = asn_table
+        .get("banned")
+        .map(parse_asn_list_from_toml)
+        .transpose()?
+        .unwrap_or_default();
+
+    let mut before = BTreeSet::new();
+    before.extend(existing);
+    let mut after = before.clone();
+    for asn in add {
+        after.insert(*asn);
+    }
+    for asn in remove {
+        after.remove(asn);
+    }
+
+    let added = after.difference(&before).copied().collect::<Vec<_>>();
+    let removed = before.difference(&after).copied().collect::<Vec<_>>();
+    let values = after
+        .into_iter()
+        .map(|asn| Value::Integer(i64::from(asn)))
+        .collect::<Vec<_>>();
+    asn_table.insert("banned".to_string(), Value::Array(values));
+    if !asn_table.contains_key("cache_stale_after_secs") {
+        asn_table.insert(
+            "cache_stale_after_secs".to_string(),
+            Value::Integer(i64::from(DEFAULT_ASN_CACHE_STALE_AFTER_SECS)),
+        );
+    }
+
+    let rendered = toml::to_string_pretty(&doc).map_err(|err| KidoboError::ConfigParse {
+        source: ConfigError::Parse {
+            reason: err.to_string(),
+        },
+    })?;
+    fs::write(config_path, rendered).map_err(|err| KidoboError::ConfigWrite {
+        path: config_path.to_path_buf(),
+        reason: err.to_string(),
+    })?;
+    Ok(AsnBanUpdateResult { added, removed })
+}
+
+fn load_config_value(path: &Path) -> Result<Value, KidoboError> {
+    let contents =
+        read_to_string_with_limit(path, 64 * 1024).map_err(|err| KidoboError::ConfigRead {
+            path: path.to_path_buf(),
+            reason: err.to_string(),
+        })?;
+    toml::from_str::<Value>(&contents).map_err(|err| KidoboError::ConfigParse {
+        source: ConfigError::Parse {
+            reason: err.to_string(),
+        },
+    })
+}
+
+fn parse_asn_list_from_toml(value: &Value) -> Result<Vec<u32>, KidoboError> {
+    let array = value.as_array().ok_or_else(|| KidoboError::ConfigParse {
+        source: ConfigError::InvalidField {
+            field: "asn.banned",
+            reason: "must be an array".to_string(),
+        },
+    })?;
+    let mut parsed = Vec::new();
+    for raw in array {
+        let Some(num) = raw.as_integer() else {
+            return Err(KidoboError::ConfigParse {
+                source: ConfigError::InvalidField {
+                    field: "asn.banned",
+                    reason: "must contain positive integers".to_string(),
+                },
+            });
+        };
+        if num <= 0 || num > i64::from(u32::MAX) {
+            return Err(KidoboError::ConfigParse {
+                source: ConfigError::InvalidField {
+                    field: "asn.banned",
+                    reason: "must contain positive integers".to_string(),
+                },
+            });
+        }
+        let parsed_asn = u32::try_from(num).map_err(|_| KidoboError::ConfigParse {
+            source: ConfigError::InvalidField {
+                field: "asn.banned",
+                reason: "must contain positive integers".to_string(),
+            },
+        })?;
+        parsed.push(parsed_asn);
+    }
+    Ok(parsed)
+}
+
+fn remove_exact_blocklist_duplicates(
+    path: &Path,
+    duplicates: &[CanonicalCidr],
+) -> Result<usize, KidoboError> {
+    if duplicates.is_empty() || !path.exists() {
+        return Ok(0);
+    }
+    let duplicate_set = duplicates.iter().copied().collect::<HashSet<_>>();
+    let blocklist = BlocklistFile::load(path)?;
+    let kept_lines = blocklist
+        .lines
+        .iter()
+        .filter_map(|line| match line.canonical {
+            Some(canonical) if duplicate_set.contains(&canonical) => None,
+            _ => Some(line.original.clone()),
+        })
+        .collect::<Vec<_>>();
+
+    let removed = blocklist.lines.len().saturating_sub(kept_lines.len());
+    if removed > 0 {
+        write_blocklist_lines(path, &kept_lines)?;
+        info!("removed duplicate local blocklist entries covered by ASN bans: removed={removed}");
+    }
+    Ok(removed)
 }
 
 fn ban_target_in_file(path: &Path, input: &str) -> Result<BanOutcome, KidoboError> {
@@ -542,7 +793,8 @@ mod tests {
         BLOCKLIST_READ_LIMIT, BanOutcome, BlocklistFile, BlocklistNormalizeResult, KidoboError,
         append_blocklist_entry, apply_unban_plan, ban_target_in_file, build_unban_plan,
         ensure_blocklist_parent, normalize_local_blocklist,
-        normalize_local_blocklist_with_fast_state, parse_blocklist_target, write_blocklist_lines,
+        normalize_local_blocklist_with_fast_state, parse_blocklist_target,
+        remove_exact_blocklist_duplicates, update_banned_asns_in_config, write_blocklist_lines,
     };
     use crate::adapters::limited_io::read_to_string_with_limit;
 
@@ -813,6 +1065,42 @@ mod tests {
                 .expect("read")
                 .as_str(),
             "10.0.0.0/24\n"
+        );
+    }
+
+    #[test]
+    fn update_banned_asns_in_config_adds_and_removes_values() {
+        let temp = TempDir::new().expect("tempdir");
+        let config_path = temp.path().join("config.toml");
+        fs::write(
+            &config_path,
+            "[ipset]\nset_name='kidobo'\n[asn]\nbanned=[64512]\n",
+        )
+        .expect("write");
+
+        let added = update_banned_asns_in_config(&config_path, &[64513, 64514], &[]).expect("add");
+        assert_eq!(added.added, vec![64513, 64514]);
+        assert!(added.removed.is_empty());
+
+        let removed =
+            update_banned_asns_in_config(&config_path, &[], &[64512, 64514]).expect("remove");
+        assert_eq!(removed.removed, vec![64512, 64514]);
+    }
+
+    #[test]
+    fn remove_exact_blocklist_duplicates_keeps_non_exact_entries() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("blocklist.txt");
+        fs::write(&path, "203.0.113.0/24\n203.0.113.7\n").expect("write");
+
+        let duplicates = vec![parse_ip_cidr_non_strict("203.0.113.0/24").expect("cidr")];
+        let removed = remove_exact_blocklist_duplicates(&path, &duplicates).expect("remove");
+        assert_eq!(removed, 1);
+        assert_eq!(
+            read_to_string_with_limit(&path, BLOCKLIST_READ_LIMIT)
+                .expect("read")
+                .as_str(),
+            "203.0.113.7\n"
         );
     }
 }

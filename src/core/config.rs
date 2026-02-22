@@ -12,11 +12,13 @@ pub const DEFAULT_MAXELEM: u32 = 500_000;
 pub const DEFAULT_TIMEOUT: u32 = 0;
 pub const DEFAULT_REMOTE_TIMEOUT_SECS: u32 = 30;
 pub const DEFAULT_REMOTE_CACHE_STALE_AFTER_SECS: u32 = 24 * 60 * 60;
+pub const DEFAULT_ASN_CACHE_STALE_AFTER_SECS: u32 = 24 * 60 * 60;
 pub const DEFAULT_INCLUDE_GITHUB_META: bool = true;
 pub const DEFAULT_GITHUB_META_CATEGORIES: [&str; 4] = ["api", "git", "hooks", "packages"];
 pub const DEFAULT_GITHUB_META_URL: &str = "https://api.github.com/meta";
 pub const REMOTE_TIMEOUT_SECS_MAX: u32 = 3600;
 pub const REMOTE_CACHE_STALE_AFTER_SECS_MAX: u32 = 7 * 24 * 60 * 60;
+pub const ASN_CACHE_STALE_AFTER_SECS_MAX: u32 = 7 * 24 * 60 * 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct HashsizePow2(NonZeroU32);
@@ -119,6 +121,7 @@ pub struct Config {
     pub ipset: IpsetConfig,
     pub safe: SafeConfig,
     pub remote: RemoteConfig,
+    pub asn: AsnConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,6 +154,12 @@ pub struct SafeConfig {
 pub struct RemoteConfig {
     pub urls: Vec<String>,
     pub timeout_secs: RemoteTimeoutSecs,
+    pub cache_stale_after_secs: CacheStaleAfterSecs,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AsnConfig {
+    pub banned: Vec<u32>,
     pub cache_stale_after_secs: CacheStaleAfterSecs,
 }
 
@@ -200,6 +209,7 @@ struct RawConfig {
     ipset: Option<RawIpsetConfig>,
     safe: Option<RawSafeConfig>,
     remote: Option<RawRemoteConfig>,
+    asn: Option<RawAsnConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -229,6 +239,12 @@ struct RawRemoteConfig {
     cache_stale_after_secs: Option<i64>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct RawAsnConfig {
+    banned: Option<Vec<i64>>,
+    cache_stale_after_secs: Option<i64>,
+}
+
 impl Config {
     pub fn from_toml_str(contents: &str) -> Result<Self, ConfigError> {
         let raw: RawConfig = toml::from_str(contents).map_err(|err| ConfigError::Parse {
@@ -243,11 +259,13 @@ impl Config {
         let ipset = parse_ipset(raw_ipset)?;
         let safe = parse_safe(raw.safe.unwrap_or_default())?;
         let remote = parse_remote(raw.remote.unwrap_or_default())?;
+        let asn = parse_asn(raw.asn.unwrap_or_default())?;
 
         Ok(Self {
             ipset,
             safe,
             remote,
+            asn,
         })
     }
 }
@@ -411,6 +429,38 @@ fn parse_remote(raw: RawRemoteConfig) -> Result<RemoteConfig, ConfigError> {
     })
 }
 
+fn parse_asn(raw: RawAsnConfig) -> Result<AsnConfig, ConfigError> {
+    let mut banned = Vec::new();
+    if let Some(values) = raw.banned {
+        for value in values {
+            let parsed = bounded_u32(value, "asn.banned", 1, u32::MAX)?;
+            banned.push(parsed);
+        }
+    }
+    banned.sort_unstable();
+    banned.dedup();
+
+    let cache_stale_after_secs = bounded_u32(
+        raw.cache_stale_after_secs
+            .unwrap_or(i64::from(DEFAULT_ASN_CACHE_STALE_AFTER_SECS)),
+        "asn.cache_stale_after_secs",
+        1,
+        ASN_CACHE_STALE_AFTER_SECS_MAX,
+    )?;
+    let cache_stale_after_secs =
+        CacheStaleAfterSecs::new(cache_stale_after_secs).ok_or_else(|| {
+            ConfigError::InvalidField {
+                field: "asn.cache_stale_after_secs",
+                reason: format!("must be between 1 and {ASN_CACHE_STALE_AFTER_SECS_MAX}"),
+            }
+        })?;
+
+    Ok(AsnConfig {
+        banned,
+        cache_stale_after_secs,
+    })
+}
+
 fn required_non_empty(value: Option<String>, field: &'static str) -> Result<String, ConfigError> {
     match value {
         Some(value) => non_empty(&value, field),
@@ -528,8 +578,9 @@ mod tests {
     use crate::core::network::{CanonicalCidr, Ipv4Cidr};
 
     use super::{
-        Config, ConfigError, DEFAULT_CHAIN_ACTION, DEFAULT_GITHUB_META_CATEGORIES,
-        DEFAULT_GITHUB_META_URL, DEFAULT_HASHSIZE, DEFAULT_IPSET_TYPE, DEFAULT_MAXELEM,
+        ASN_CACHE_STALE_AFTER_SECS_MAX, Config, ConfigError, DEFAULT_ASN_CACHE_STALE_AFTER_SECS,
+        DEFAULT_CHAIN_ACTION, DEFAULT_GITHUB_META_CATEGORIES, DEFAULT_GITHUB_META_URL,
+        DEFAULT_HASHSIZE, DEFAULT_IPSET_TYPE, DEFAULT_MAXELEM,
         DEFAULT_REMOTE_CACHE_STALE_AFTER_SECS, DEFAULT_REMOTE_TIMEOUT_SECS, DEFAULT_TIMEOUT,
         FirewallAction, GithubMetaCategoryMode,
     };
@@ -565,6 +616,11 @@ mod tests {
         assert_eq!(
             config.remote.cache_stale_after_secs.get(),
             DEFAULT_REMOTE_CACHE_STALE_AFTER_SECS
+        );
+        assert!(config.asn.banned.is_empty());
+        assert_eq!(
+            config.asn.cache_stale_after_secs.get(),
+            DEFAULT_ASN_CACHE_STALE_AFTER_SECS
         );
     }
 
@@ -687,6 +743,49 @@ mod tests {
             ConfigError::InvalidField {
                 field: "safe.github_meta_url",
                 reason: "must start with http:// or https://".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn asn_banned_values_are_deduped_and_sorted() {
+        let config = Config::from_toml_str(
+            "[ipset]\nset_name='kidobo'\n[asn]\nbanned=[64513,64512,64513]\n",
+        )
+        .expect("parse");
+        assert_eq!(config.asn.banned, vec![64512, 64513]);
+    }
+
+    #[test]
+    fn asn_cache_stale_after_secs_can_be_overridden() {
+        let config = Config::from_toml_str(
+            "[ipset]\nset_name='kidobo'\n[asn]\ncache_stale_after_secs=7200\n",
+        )
+        .expect("parse");
+        assert_eq!(config.asn.cache_stale_after_secs.get(), 7200);
+    }
+
+    #[test]
+    fn asn_rejects_invalid_values() {
+        let err = Config::from_toml_str("[ipset]\nset_name='kidobo'\n[asn]\nbanned=[0]\n")
+            .expect_err("must fail");
+        assert_eq!(
+            err,
+            ConfigError::InvalidField {
+                field: "asn.banned",
+                reason: format!("must be between {} and {}", 1, u32::MAX),
+            }
+        );
+
+        let err = Config::from_toml_str(
+            "[ipset]\nset_name='kidobo'\n[asn]\ncache_stale_after_secs=999999999\n",
+        )
+        .expect_err("must fail");
+        assert_eq!(
+            err,
+            ConfigError::InvalidField {
+                field: "asn.cache_stale_after_secs",
+                reason: format!("must be between 1 and {ASN_CACHE_STALE_AFTER_SECS_MAX}"),
             }
         );
     }
