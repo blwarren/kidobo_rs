@@ -805,6 +805,78 @@ mod tests {
     }
 
     #[test]
+    fn safelist_carves_all_candidate_routes_including_asn_cache() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = test_paths(temp.path());
+        fs::create_dir_all(paths.blocklist_file.parent().expect("parent")).expect("mkdir data");
+        fs::create_dir_all(&paths.remote_cache_dir).expect("mkdir remote cache");
+        fs::create_dir_all(paths.cache_dir.join("asn")).expect("mkdir asn cache");
+
+        fs::write(&paths.blocklist_file, "10.1.0.0/24\n2001:db8:1::/64\n")
+            .expect("write blocklist");
+        fs::write(
+            paths.cache_dir.join("asn/as64512.iplist"),
+            "10.3.0.0/24\n2001:db8:3::/64\n",
+        )
+        .expect("write asn cache");
+
+        let url = "https://example.com/safe-carve.txt".to_string();
+        let mut config = test_config(vec![url.clone()]);
+        config.asn.banned = vec![64512];
+        config.safe.ips = vec![
+            parse_ip_cidr_token("10.1.0.0/25").expect("safe"),
+            parse_ip_cidr_token("10.2.0.0/25").expect("safe"),
+            parse_ip_cidr_token("10.3.0.0/25").expect("safe"),
+            parse_ip_cidr_token("2001:db8:1::/65").expect("safe"),
+            parse_ip_cidr_token("2001:db8:2::/65").expect("safe"),
+            parse_ip_cidr_token("2001:db8:3::/65").expect("safe"),
+        ];
+
+        let responses = BTreeMap::from([(
+            url,
+            VecDeque::from([Ok(HttpResponse {
+                status: StatusCode::OK,
+                body: b"10.2.0.0/24\n2001:db8:2::/64\n".to_vec(),
+                etag: None,
+                last_modified: None,
+            })]),
+        )]);
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let http_client = MockHttpClient::new(responses, Arc::clone(&events), 0);
+        let runner = MockCommandRunner::new(events);
+
+        let summary = run_sync_with_dependencies(
+            &paths,
+            &config,
+            &BTreeMap::new(),
+            &http_client,
+            &runner,
+            &runner,
+        )
+        .expect("sync");
+        assert_eq!(summary.ipv4_entries, 3);
+        assert_eq!(summary.ipv6_entries, 3);
+
+        assert_eq!(
+            runner.entries_for_target_set("kidobo"),
+            vec![
+                "10.1.0.128/25".to_string(),
+                "10.2.0.128/25".to_string(),
+                "10.3.0.128/25".to_string(),
+            ]
+        );
+        assert_eq!(
+            runner.entries_for_target_set("kidobo-v6"),
+            vec![
+                "2001:db8:1:0:8000::/65".to_string(),
+                "2001:db8:2:0:8000::/65".to_string(),
+                "2001:db8:3:0:8000::/65".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn sync_applies_reject_target_when_configured() {
         let temp = TempDir::new().expect("tempdir");
         let paths = test_paths(temp.path());
