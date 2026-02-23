@@ -1,12 +1,19 @@
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use kidobo::adapters::config::load_config_from_file;
+use kidobo::adapters::limited_io::read_to_string_with_limit;
 use kidobo::core::lookup::{LookupSourceEntry, run_lookup};
 use kidobo::core::network::{
-    CanonicalCidr, IntervalU32, Ipv4Cidr, Ipv6Cidr, merge_intervals_u32, subtract_safelist_ipv4,
-    subtract_safelist_ipv6,
+    CanonicalCidr, IntervalU32, Ipv4Cidr, Ipv6Cidr, ipv4_to_interval, merge_intervals_u32,
+    parse_lines_non_strict, subtract_safelist_ipv4, subtract_safelist_ipv6,
 };
 use kidobo::core::sync::compute_effective_blocklists;
+
+const BENCH_BLOCKLIST_READ_LIMIT: usize = 8 * 1024 * 1024;
+const BENCH_REMOTE_IPLIST_READ_LIMIT: usize = 16 * 1024 * 1024;
 
 fn generate_ipv4_cidrs(count: usize) -> Vec<Ipv4Cidr> {
     let mut cidrs = Vec::with_capacity(count);
@@ -232,9 +239,132 @@ fn benchmark_lookup(c: &mut Criterion) {
     group.finish();
 }
 
+#[derive(Clone)]
+struct RealWorldDataset {
+    candidates: Vec<CanonicalCidr>,
+    safelist: Vec<CanonicalCidr>,
+    ipv4_intervals: Vec<IntervalU32>,
+}
+
+fn find_real_world_config(root: &Path) -> Option<PathBuf> {
+    let root_config = root.join("config.toml");
+    if root_config.exists() {
+        return Some(root_config);
+    }
+
+    let nested = root.join("config/config.toml");
+    if nested.exists() {
+        return Some(nested);
+    }
+
+    None
+}
+
+fn load_real_world_dataset() -> Option<RealWorldDataset> {
+    let root = std::env::var("KIDOBO_BENCH_ROOT")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(".local-scenarios/real"));
+
+    let config_path = find_real_world_config(&root)?;
+    let config = load_config_from_file(&config_path).ok()?;
+
+    let blocklist_path = root.join("data/blocklist.txt");
+    let blocklist_text =
+        read_to_string_with_limit(&blocklist_path, BENCH_BLOCKLIST_READ_LIMIT).ok()?;
+    let mut candidates = parse_lines_non_strict(blocklist_text.lines());
+
+    let remote_cache_dir = root.join("cache/remote");
+    if remote_cache_dir.is_dir() {
+        let mut files = fs::read_dir(remote_cache_dir)
+            .ok()?
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "iplist"))
+            .collect::<Vec<_>>();
+        files.sort();
+        for file in files {
+            if let Ok(text) = read_to_string_with_limit(&file, BENCH_REMOTE_IPLIST_READ_LIMIT) {
+                candidates.extend(parse_lines_non_strict(text.lines()));
+            }
+        }
+    }
+
+    let ipv4_intervals = candidates
+        .iter()
+        .filter_map(|cidr| match cidr {
+            CanonicalCidr::V4(v4) => Some(ipv4_to_interval(*v4)),
+            CanonicalCidr::V6(_) => None,
+        })
+        .collect::<Vec<_>>();
+
+    Some(RealWorldDataset {
+        candidates,
+        safelist: config.safe.ips,
+        ipv4_intervals,
+    })
+}
+
+fn benchmark_real_world(c: &mut Criterion) {
+    let Some(dataset) = load_real_world_dataset() else {
+        eprintln!(
+            "Skipping real-world benches: set KIDOBO_BENCH_ROOT (default .local-scenarios/real)"
+        );
+        return;
+    };
+
+    let mut merge_group = c.benchmark_group("real_world_merge_intervals_ipv4");
+    merge_group.throughput(Throughput::Elements(dataset.ipv4_intervals.len() as u64));
+    merge_group.bench_function("as_loaded", |b| {
+        b.iter(|| {
+            black_box(merge_intervals_u32(black_box(&dataset.ipv4_intervals)));
+        });
+    });
+    let mut sorted = dataset.ipv4_intervals.clone();
+    sorted.sort_unstable();
+    merge_group.bench_function("pre_sorted", |b| {
+        b.iter(|| {
+            black_box(merge_intervals_u32(black_box(&sorted)));
+        });
+    });
+    let mut shuffled = dataset.ipv4_intervals.clone();
+    deterministic_shuffle_u32(&mut shuffled);
+    merge_group.bench_function("shuffled", |b| {
+        b.iter(|| {
+            black_box(merge_intervals_u32(black_box(&shuffled)));
+        });
+    });
+    merge_group.finish();
+
+    let mut effective_group = c.benchmark_group("real_world_compute_effective_blocklists");
+    effective_group.throughput(Throughput::Elements(
+        (dataset.candidates.len() + dataset.safelist.len()) as u64,
+    ));
+    effective_group.bench_function("ipv4_ipv6_enabled", |b| {
+        b.iter(|| {
+            black_box(compute_effective_blocklists(
+                black_box(&dataset.candidates),
+                black_box(&dataset.safelist),
+                black_box(true),
+            ));
+        });
+    });
+    effective_group.bench_function("ipv4_only", |b| {
+        b.iter(|| {
+            black_box(compute_effective_blocklists(
+                black_box(&dataset.candidates),
+                black_box(&dataset.safelist),
+                black_box(false),
+            ));
+        });
+    });
+    effective_group.finish();
+}
+
 criterion_group!(
     core_perf,
     benchmark_merge_intervals_ipv4,
+    benchmark_real_world,
     benchmark_effective_blocklists,
     benchmark_subtract_safelist,
     benchmark_lookup

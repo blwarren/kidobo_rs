@@ -8,6 +8,7 @@
 - `kidobo lookup` CLI argument validation now uses an explicit one-of input mode (`<IP_OR_CIDR>` or `--file <PATH>`) so usage/help and missing-argument errors reflect the intended mutually exclusive modes.
 - `kidobo doctor` now logs a compact summary line (`overall`, total checks, failed checks, skipped checks) instead of logging the full JSON payload a second time; stdout remains the single source for full JSON report output.
 - Core performance benchmarks now include a dedicated `merge_intervals_ipv4` Criterion group to isolate `merge_intervals_u32` behavior across deterministic interval shapes (`disjoint_sorted`, `disjoint_shuffled`, `overlap_sorted`) at larger input sizes.
+- Core performance benchmarks now also support a real-world dataset mode (via `KIDOBO_BENCH_ROOT`, default `.local-scenarios/real`) that benchmarks `merge_intervals_u32` and `compute_effective_blocklists` against local blocklist + cached remote `.iplist` inputs and parsed safelist config.
 
 ## [0.7.0] - 2026-02-23
 
