@@ -4,7 +4,6 @@
 
 ## [0.7.0] - 2026-02-23
 
-
 ### Added
 
 - `kidobo ban` / `kidobo unban` now support ASN targets via `--asn` (accepting
@@ -24,7 +23,6 @@
 - `kidobo doctor` now includes a required binary check for `bgpq4`, and
   `kidobo init` now fails fast when `bgpq4` is missing from `PATH`.
 
-
 ## [0.6.0] - 2026-02-20
 
 ### Added
@@ -42,7 +40,6 @@
 - Logging behavior is more predictable and configurable:
   `KIDOBO_LOG_FORMAT=auto|human|journal` and
   `KIDOBO_LOG_COLOR=auto|always|never`.
-
 
 ## [0.5.3] - 2026-02-19
 
