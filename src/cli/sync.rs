@@ -332,7 +332,7 @@ mod tests {
         AsnConfig, CacheStaleAfterSecs, Config, FirewallAction, HashsizePow2, IpsetConfig, MaxElem,
         RemoteConfig, RemoteTimeoutSecs, SafeConfig,
     };
-    use crate::core::network::parse_ip_cidr_token;
+    use crate::core::network::{CanonicalCidr, cidr_overlaps, parse_ip_cidr_token};
     use crate::error::KidoboError;
 
     struct MockHttpClient {
@@ -614,6 +614,24 @@ mod tests {
         }
     }
 
+    fn assert_entries_disjoint_from_safelist(entries: &[String], safelist: &[CanonicalCidr]) {
+        for entry in entries {
+            let parsed = parse_ip_cidr_token(entry).expect("restore entry must parse as CIDR");
+            for safe in safelist {
+                match (parsed, *safe) {
+                    (CanonicalCidr::V4(_), CanonicalCidr::V4(_))
+                    | (CanonicalCidr::V6(_), CanonicalCidr::V6(_)) => {
+                        assert!(
+                            !cidr_overlaps(parsed, *safe),
+                            "restore entry {parsed} overlaps safelist entry {safe}"
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
     #[test]
     fn sync_orders_firewall_before_remote_fetch_and_restores_ipv6_first() {
         let temp = TempDir::new().expect("tempdir");
@@ -874,6 +892,71 @@ mod tests {
                 "2001:db8:3:0:8000::/65".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn sync_restore_scripts_are_disjoint_from_safelist_hosts_and_prefixes() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = test_paths(temp.path());
+        fs::create_dir_all(paths.blocklist_file.parent().expect("parent")).expect("mkdir data");
+        fs::create_dir_all(&paths.remote_cache_dir).expect("mkdir remote cache");
+        fs::create_dir_all(paths.cache_dir.join("asn")).expect("mkdir asn cache");
+
+        fs::write(
+            &paths.blocklist_file,
+            "0.0.0.0/0\n10.0.0.0/8\n::/0\n2001:db8::/32\n",
+        )
+        .expect("write blocklist");
+        fs::write(
+            paths.cache_dir.join("asn/as64512.iplist"),
+            "192.0.2.0/24\n2001:4860:1::/48\n",
+        )
+        .expect("write asn cache");
+
+        let url = "https://example.com/edge-safe.txt".to_string();
+        let mut config = test_config(vec![url.clone()]);
+        config.asn.banned = vec![64512];
+        config.safe.ips = vec![
+            parse_ip_cidr_token("0.0.0.0/32").expect("safe"),
+            parse_ip_cidr_token("255.255.255.255/32").expect("safe"),
+            parse_ip_cidr_token("10.0.0.0/8").expect("safe"),
+            parse_ip_cidr_token("192.0.2.0/24").expect("safe"),
+            parse_ip_cidr_token("::/128").expect("safe"),
+            parse_ip_cidr_token("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff/128").expect("safe"),
+            parse_ip_cidr_token("2001:db8::/32").expect("safe"),
+            parse_ip_cidr_token("2001:4860:1::/48").expect("safe"),
+        ];
+
+        let responses = BTreeMap::from([(
+            url,
+            VecDeque::from([Ok(HttpResponse {
+                status: StatusCode::OK,
+                body: b"198.51.100.0/24\n2001:4860::/32\n".to_vec(),
+                etag: None,
+                last_modified: None,
+            })]),
+        )]);
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let http_client = MockHttpClient::new(responses, Arc::clone(&events), 0);
+        let runner = MockCommandRunner::new(events);
+
+        let summary = run_sync_with_dependencies(
+            &paths,
+            &config,
+            &BTreeMap::new(),
+            &http_client,
+            &runner,
+            &runner,
+        )
+        .expect("sync");
+        assert!(summary.ipv4_entries > 0);
+        assert!(summary.ipv6_entries > 0);
+
+        let ipv4_entries = runner.entries_for_target_set("kidobo");
+        let ipv6_entries = runner.entries_for_target_set("kidobo-v6");
+        assert_entries_disjoint_from_safelist(&ipv4_entries, &config.safe.ips);
+        assert_entries_disjoint_from_safelist(&ipv6_entries, &config.safe.ips);
     }
 
     #[test]
