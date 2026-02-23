@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-02-23
+
+
 ### Changed
 
 - `kidobo lookup --file` now prints a `NO_MATCH` line for each valid target IP/CIDR that has no overlap with any loaded local/cached source, and ends with a brief summary line: total unique valid targets, unique matched targets, and matched percentage.
@@ -14,6 +17,7 @@
 - Benchmark coverage now includes `disjoint_almost_sorted` and real-world scale-up variants (`1x/2x/5x/10x`) for merge and effective blocklist computations to better characterize sort sensitivity and growth behavior.
 - `merge_intervals_ipv4` benchmarks now include a radix-sort prototype path (`*_radix`) to compare radix-vs-`sort_unstable` tradeoffs under deterministic and real-world interval orders.
 - Real-world merge benchmarks now include `source_sorted_concat` (and radix equivalent), modeling source-wise sorted lists concatenated in deterministic source order.
+
 
 ## [0.7.0] - 2026-02-23
 
