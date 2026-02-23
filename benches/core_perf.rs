@@ -1,9 +1,12 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use kidobo::adapters::config::load_config_from_file;
+use kidobo::adapters::http_cache::{ReqwestHttpClient, fetch_iplist_with_cache};
 use kidobo::adapters::limited_io::read_to_string_with_limit;
 use kidobo::core::lookup::{LookupSourceEntry, run_lookup};
 use kidobo::core::network::{
@@ -85,6 +88,71 @@ fn generate_overlapping_intervals(count: usize) -> Vec<IntervalU32> {
     out
 }
 
+fn radix_sort_intervals_by_start_u32(intervals: &mut [IntervalU32]) {
+    if intervals.len() < 2 {
+        return;
+    }
+
+    let len = intervals.len();
+    let mut src = intervals.to_vec();
+    let mut dst = vec![IntervalU32 { start: 0, end: 0 }; len];
+    let mut counts = vec![0_usize; 1 << 16];
+
+    for shift in [0_u32, 16_u32] {
+        counts.fill(0);
+
+        for interval in &src {
+            let bucket = ((interval.start >> shift) & 0xFFFF) as usize;
+            counts[bucket] += 1;
+        }
+
+        let mut running = 0_usize;
+        for count in &mut counts {
+            let current = *count;
+            *count = running;
+            running += current;
+        }
+
+        for interval in &src {
+            let bucket = ((interval.start >> shift) & 0xFFFF) as usize;
+            let out_idx = counts[bucket];
+            dst[out_idx] = *interval;
+            counts[bucket] += 1;
+        }
+
+        std::mem::swap(&mut src, &mut dst);
+    }
+
+    intervals.copy_from_slice(&src);
+}
+
+fn merge_intervals_u32_radix(intervals: &[IntervalU32]) -> Vec<IntervalU32> {
+    if intervals.is_empty() {
+        return Vec::new();
+    }
+
+    let mut sorted = intervals.to_vec();
+    radix_sort_intervals_by_start_u32(&mut sorted);
+
+    let mut iter = sorted.into_iter();
+    let Some(mut current) = iter.next() else {
+        return Vec::new();
+    };
+    let mut merged = Vec::new();
+
+    for interval in iter {
+        if interval.start <= current.end.saturating_add(1) {
+            current.end = current.end.max(interval.end);
+        } else {
+            merged.push(current);
+            current = interval;
+        }
+    }
+
+    merged.push(current);
+    merged
+}
+
 fn generate_almost_sorted_intervals(count: usize) -> Vec<IntervalU32> {
     let mut out = generate_disjoint_intervals(count);
     if out.len() < 4 {
@@ -119,11 +187,29 @@ fn benchmark_merge_intervals_ipv4(c: &mut Criterion) {
             },
         );
         group.bench_with_input(
+            BenchmarkId::new("disjoint_sorted_radix", size),
+            &disjoint_sorted,
+            |b, intervals| {
+                b.iter(|| {
+                    black_box(merge_intervals_u32_radix(black_box(intervals)));
+                });
+            },
+        );
+        group.bench_with_input(
             BenchmarkId::new("disjoint_almost_sorted", size),
             &disjoint_almost_sorted,
             |b, intervals| {
                 b.iter(|| {
                     black_box(merge_intervals_u32(black_box(intervals)));
+                });
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("disjoint_almost_sorted_radix", size),
+            &disjoint_almost_sorted,
+            |b, intervals| {
+                b.iter(|| {
+                    black_box(merge_intervals_u32_radix(black_box(intervals)));
                 });
             },
         );
@@ -137,11 +223,29 @@ fn benchmark_merge_intervals_ipv4(c: &mut Criterion) {
             },
         );
         group.bench_with_input(
+            BenchmarkId::new("disjoint_shuffled_radix", size),
+            &disjoint_shuffled,
+            |b, intervals| {
+                b.iter(|| {
+                    black_box(merge_intervals_u32_radix(black_box(intervals)));
+                });
+            },
+        );
+        group.bench_with_input(
             BenchmarkId::new("overlap_sorted", size),
             &overlap_sorted,
             |b, intervals| {
                 b.iter(|| {
                     black_box(merge_intervals_u32(black_box(intervals)));
+                });
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("overlap_sorted_radix", size),
+            &overlap_sorted,
+            |b, intervals| {
+                b.iter(|| {
+                    black_box(merge_intervals_u32_radix(black_box(intervals)));
                 });
             },
         );
@@ -268,6 +372,7 @@ struct RealWorldDataset {
     candidates: Vec<CanonicalCidr>,
     safelist: Vec<CanonicalCidr>,
     ipv4_intervals: Vec<IntervalU32>,
+    ipv4_intervals_by_source: Vec<Vec<IntervalU32>>,
 }
 
 fn repeat_vec<T: Clone>(values: &[T], scale: usize) -> Vec<T> {
@@ -276,6 +381,15 @@ fn repeat_vec<T: Clone>(values: &[T], scale: usize) -> Vec<T> {
         out.extend_from_slice(values);
     }
     out
+}
+
+fn env_truthy(name: &str) -> bool {
+    std::env::var(name).ok().is_some_and(|raw| {
+        matches!(
+            raw.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
 }
 
 fn find_real_world_config(root: &Path) -> Option<PathBuf> {
@@ -292,6 +406,38 @@ fn find_real_world_config(root: &Path) -> Option<PathBuf> {
     None
 }
 
+fn fetch_remote_cache_from_config(root: &Path, config: &kidobo::core::config::Config) {
+    if config.remote.urls.is_empty() {
+        return;
+    }
+
+    if let Err(err) = fs::create_dir_all(root.join("cache/remote")) {
+        eprintln!("real-world bench: failed to create remote cache dir: {err}");
+        return;
+    }
+
+    let timeout = Duration::from_secs(u64::from(config.remote.timeout_secs.get()));
+    let client = ReqwestHttpClient::with_timeout(timeout);
+    let env_map: BTreeMap<String, String> = std::env::vars().collect();
+    let mut fetched = 0_usize;
+    let mut failed = 0_usize;
+
+    for url in &config.remote.urls {
+        match fetch_iplist_with_cache(&client, url, &root.join("cache/remote"), &env_map) {
+            Ok(_) => fetched += 1,
+            Err(err) => {
+                failed += 1;
+                eprintln!("real-world bench: remote fetch failed softly for {url}: {err}");
+            }
+        }
+    }
+
+    eprintln!(
+        "real-world bench: remote fetch complete fetched={fetched} failed={failed} urls_total={}",
+        config.remote.urls.len()
+    );
+}
+
 fn load_real_world_dataset() -> Option<RealWorldDataset> {
     let root = std::env::var("KIDOBO_BENCH_ROOT")
         .ok()
@@ -300,11 +446,24 @@ fn load_real_world_dataset() -> Option<RealWorldDataset> {
 
     let config_path = find_real_world_config(&root)?;
     let config = load_config_from_file(&config_path).ok()?;
+    if env_truthy("KIDOBO_BENCH_FETCH_REMOTE") {
+        fetch_remote_cache_from_config(&root, &config);
+    }
 
     let blocklist_path = root.join("data/blocklist.txt");
     let blocklist_text =
         read_to_string_with_limit(&blocklist_path, BENCH_BLOCKLIST_READ_LIMIT).ok()?;
     let mut candidates = parse_lines_non_strict(blocklist_text.lines());
+    let mut ipv4_intervals_by_source = Vec::new();
+    let mut local_intervals = parse_lines_non_strict(blocklist_text.lines())
+        .into_iter()
+        .filter_map(|cidr| match cidr {
+            CanonicalCidr::V4(v4) => Some(ipv4_to_interval(v4)),
+            CanonicalCidr::V6(_) => None,
+        })
+        .collect::<Vec<_>>();
+    local_intervals.sort_unstable();
+    ipv4_intervals_by_source.push(local_intervals);
 
     let remote_cache_dir = root.join("cache/remote");
     if remote_cache_dir.is_dir() {
@@ -317,7 +476,17 @@ fn load_real_world_dataset() -> Option<RealWorldDataset> {
         files.sort();
         for file in files {
             if let Ok(text) = read_to_string_with_limit(&file, BENCH_REMOTE_IPLIST_READ_LIMIT) {
-                candidates.extend(parse_lines_non_strict(text.lines()));
+                let parsed = parse_lines_non_strict(text.lines());
+                let mut source_intervals = parsed
+                    .iter()
+                    .filter_map(|cidr| match cidr {
+                        CanonicalCidr::V4(v4) => Some(ipv4_to_interval(*v4)),
+                        CanonicalCidr::V6(_) => None,
+                    })
+                    .collect::<Vec<_>>();
+                source_intervals.sort_unstable();
+                ipv4_intervals_by_source.push(source_intervals);
+                candidates.extend(parsed);
             }
         }
     }
@@ -330,10 +499,18 @@ fn load_real_world_dataset() -> Option<RealWorldDataset> {
         })
         .collect::<Vec<_>>();
 
+    eprintln!(
+        "real-world bench dataset: candidates={} safelist={} ipv4_intervals={}",
+        candidates.len(),
+        config.safe.ips.len(),
+        ipv4_intervals.len()
+    );
+
     Some(RealWorldDataset {
         candidates,
         safelist: config.safe.ips,
         ipv4_intervals,
+        ipv4_intervals_by_source,
     })
 }
 
@@ -347,9 +524,22 @@ fn benchmark_real_world(c: &mut Criterion) {
 
     let mut merge_group = c.benchmark_group("real_world_merge_intervals_ipv4");
     merge_group.throughput(Throughput::Elements(dataset.ipv4_intervals.len() as u64));
+    let source_sorted_concat = dataset
+        .ipv4_intervals_by_source
+        .iter()
+        .flatten()
+        .copied()
+        .collect::<Vec<_>>();
     merge_group.bench_function("as_loaded", |b| {
         b.iter(|| {
             black_box(merge_intervals_u32(black_box(&dataset.ipv4_intervals)));
+        });
+    });
+    merge_group.bench_function("as_loaded_radix", |b| {
+        b.iter(|| {
+            black_box(merge_intervals_u32_radix(black_box(
+                &dataset.ipv4_intervals,
+            )));
         });
     });
     let mut sorted = dataset.ipv4_intervals.clone();
@@ -359,11 +549,31 @@ fn benchmark_real_world(c: &mut Criterion) {
             black_box(merge_intervals_u32(black_box(&sorted)));
         });
     });
+    merge_group.bench_function("pre_sorted_radix", |b| {
+        b.iter(|| {
+            black_box(merge_intervals_u32_radix(black_box(&sorted)));
+        });
+    });
     let mut shuffled = dataset.ipv4_intervals.clone();
     deterministic_shuffle_u32(&mut shuffled);
     merge_group.bench_function("shuffled", |b| {
         b.iter(|| {
             black_box(merge_intervals_u32(black_box(&shuffled)));
+        });
+    });
+    merge_group.bench_function("shuffled_radix", |b| {
+        b.iter(|| {
+            black_box(merge_intervals_u32_radix(black_box(&shuffled)));
+        });
+    });
+    merge_group.bench_function("source_sorted_concat", |b| {
+        b.iter(|| {
+            black_box(merge_intervals_u32(black_box(&source_sorted_concat)));
+        });
+    });
+    merge_group.bench_function("source_sorted_concat_radix", |b| {
+        b.iter(|| {
+            black_box(merge_intervals_u32_radix(black_box(&source_sorted_concat)));
         });
     });
     merge_group.finish();
@@ -407,6 +617,15 @@ fn benchmark_real_world(c: &mut Criterion) {
                 });
             },
         );
+        merge_scaled_group.bench_with_input(
+            BenchmarkId::new("as_loaded_radix", scale),
+            &intervals,
+            |b, input| {
+                b.iter(|| {
+                    black_box(merge_intervals_u32_radix(black_box(input)));
+                });
+            },
+        );
 
         let mut shuffled = intervals.clone();
         deterministic_shuffle_u32(&mut shuffled);
@@ -416,6 +635,15 @@ fn benchmark_real_world(c: &mut Criterion) {
             |b, input| {
                 b.iter(|| {
                     black_box(merge_intervals_u32(black_box(input)));
+                });
+            },
+        );
+        merge_scaled_group.bench_with_input(
+            BenchmarkId::new("shuffled_radix", scale),
+            &shuffled,
+            |b, input| {
+                b.iter(|| {
+                    black_box(merge_intervals_u32_radix(black_box(input)));
                 });
             },
         );

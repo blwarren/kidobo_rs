@@ -9,7 +9,10 @@
 - `kidobo doctor` now logs a compact summary line (`overall`, total checks, failed checks, skipped checks) instead of logging the full JSON payload a second time; stdout remains the single source for full JSON report output.
 - Core performance benchmarks now include a dedicated `merge_intervals_ipv4` Criterion group to isolate `merge_intervals_u32` behavior across deterministic interval shapes (`disjoint_sorted`, `disjoint_shuffled`, `overlap_sorted`) at larger input sizes.
 - Core performance benchmarks now also support a real-world dataset mode (via `KIDOBO_BENCH_ROOT`, default `.local-scenarios/real`) that benchmarks `merge_intervals_u32` and `compute_effective_blocklists` against local blocklist + cached remote `.iplist` inputs and parsed safelist config.
+- Real-world benchmark mode now supports optional remote cache population from configured feeds (`KIDOBO_BENCH_FETCH_REMOTE=1`) before measurement, so benchmark datasets can mirror configured local+remote source volume.
 - Benchmark coverage now includes `disjoint_almost_sorted` and real-world scale-up variants (`1x/2x/5x/10x`) for merge and effective blocklist computations to better characterize sort sensitivity and growth behavior.
+- `merge_intervals_ipv4` benchmarks now include a radix-sort prototype path (`*_radix`) to compare radix-vs-`sort_unstable` tradeoffs under deterministic and real-world interval orders.
+- Real-world merge benchmarks now include `source_sorted_concat` (and radix equivalent), modeling source-wise sorted lists concatenated in deterministic source order.
 
 ## [0.7.0] - 2026-02-23
 
