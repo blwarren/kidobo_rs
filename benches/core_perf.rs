@@ -3,7 +3,8 @@ use std::sync::Arc;
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use kidobo::core::lookup::{LookupSourceEntry, run_lookup};
 use kidobo::core::network::{
-    CanonicalCidr, Ipv4Cidr, Ipv6Cidr, subtract_safelist_ipv4, subtract_safelist_ipv6,
+    CanonicalCidr, IntervalU32, Ipv4Cidr, Ipv6Cidr, merge_intervals_u32, subtract_safelist_ipv4,
+    subtract_safelist_ipv6,
 };
 use kidobo::core::sync::compute_effective_blocklists;
 
@@ -40,6 +41,81 @@ fn generate_candidates(v4_count: usize, v6_count: usize) -> Vec<CanonicalCidr> {
             .map(CanonicalCidr::V6),
     );
     out
+}
+
+fn deterministic_shuffle_u32(data: &mut [IntervalU32]) {
+    let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+    for i in (1..data.len()).rev() {
+        state ^= state << 7;
+        state ^= state >> 9;
+        state ^= state << 8;
+        let j = (state as usize) % (i + 1);
+        data.swap(i, j);
+    }
+}
+
+fn generate_disjoint_intervals(count: usize) -> Vec<IntervalU32> {
+    let mut out = Vec::with_capacity(count);
+    for i in 0..count {
+        let start = (i as u32) * 4;
+        out.push(IntervalU32 {
+            start,
+            end: start + 1,
+        });
+    }
+    out
+}
+
+fn generate_overlapping_intervals(count: usize) -> Vec<IntervalU32> {
+    let mut out = Vec::with_capacity(count);
+    for i in 0..count {
+        let start = i as u32;
+        out.push(IntervalU32 {
+            start,
+            end: start + 32,
+        });
+    }
+    out
+}
+
+fn benchmark_merge_intervals_ipv4(c: &mut Criterion) {
+    let mut group = c.benchmark_group("merge_intervals_ipv4");
+    for size in [10_000_usize, 50_000_usize, 100_000_usize] {
+        let disjoint_sorted = generate_disjoint_intervals(size);
+        let mut disjoint_shuffled = disjoint_sorted.clone();
+        deterministic_shuffle_u32(&mut disjoint_shuffled);
+        let overlap_sorted = generate_overlapping_intervals(size);
+
+        group.throughput(Throughput::Elements(size as u64));
+        group.bench_with_input(
+            BenchmarkId::new("disjoint_sorted", size),
+            &disjoint_sorted,
+            |b, intervals| {
+                b.iter(|| {
+                    black_box(merge_intervals_u32(black_box(intervals)));
+                });
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("disjoint_shuffled", size),
+            &disjoint_shuffled,
+            |b, intervals| {
+                b.iter(|| {
+                    black_box(merge_intervals_u32(black_box(intervals)));
+                });
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("overlap_sorted", size),
+            &overlap_sorted,
+            |b, intervals| {
+                b.iter(|| {
+                    black_box(merge_intervals_u32(black_box(intervals)));
+                });
+            },
+        );
+    }
+    group.finish();
 }
 
 fn benchmark_effective_blocklists(c: &mut Criterion) {
@@ -158,6 +234,7 @@ fn benchmark_lookup(c: &mut Criterion) {
 
 criterion_group!(
     core_perf,
+    benchmark_merge_intervals_ipv4,
     benchmark_effective_blocklists,
     benchmark_subtract_safelist,
     benchmark_lookup
