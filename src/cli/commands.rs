@@ -1,5 +1,5 @@
 use std::cmp::Reverse;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::path::PathBuf;
 
@@ -21,7 +21,7 @@ use crate::cli::sync::run_sync_command;
 use crate::core::blocklist_analysis::{
     collapse_by_family, fully_covered_local, overlap_counts, subtract_remote_from_local,
 };
-use crate::core::lookup::run_lookup_streaming;
+use crate::core::lookup::{parse_target_strict, run_lookup_streaming};
 use crate::core::network::{CanonicalCidr, parse_ip_cidr_token, split_by_family};
 use crate::error::KidoboError;
 
@@ -92,6 +92,7 @@ pub fn dispatch(command: Command) -> Result<(), KidoboError> {
 
 #[allow(clippy::print_stdout, clippy::print_stderr)]
 fn run_lookup_command(ip: Option<String>, file: Option<PathBuf>) -> Result<(), KidoboError> {
+    let file_mode = file.is_some();
     let targets = collect_lookup_targets(ip, file)?;
 
     let path_input = PathResolutionInput::from_process(None);
@@ -100,9 +101,30 @@ fn run_lookup_command(ip: Option<String>, file: Option<PathBuf>) -> Result<(), K
     let _config = load_config_from_file(&paths.config_file)?;
     let sources = load_lookup_sources(&paths)?;
 
+    let mut matched_targets = BTreeSet::new();
     let invalid_targets = run_lookup_streaming(&targets, &sources, |target, source| {
+        matched_targets.insert(target.to_string());
         println!("{target}\t{}\t{}", source.source_label, source.source_line);
     });
+
+    if file_mode {
+        let valid_targets = collect_unique_valid_lookup_targets(&targets);
+        for target in &valid_targets {
+            if !matched_targets.contains(target) {
+                println!("{target}\tNO_MATCH");
+            }
+        }
+
+        let total_targets = valid_targets.len();
+        let matched_count = matched_targets
+            .iter()
+            .filter(|target| valid_targets.contains(*target))
+            .count();
+        println!(
+            "summary: total_ips={total_targets} matched_ips={matched_count} matched_pct={}",
+            percent_str(matched_count, total_targets)
+        );
+    }
 
     for invalid in &invalid_targets {
         eprintln!("invalid target: {invalid}");
@@ -115,6 +137,13 @@ fn run_lookup_command(ip: Option<String>, file: Option<PathBuf>) -> Result<(), K
     }
 
     Ok(())
+}
+
+fn collect_unique_valid_lookup_targets(targets: &[String]) -> BTreeSet<String> {
+    targets
+        .iter()
+        .filter_map(|target| parse_target_strict(target).ok().map(|_| target.clone()))
+        .collect()
 }
 
 #[allow(clippy::print_stdout, clippy::print_stderr)]
@@ -456,7 +485,10 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{collect_lookup_targets, format_family_cidrs, read_target_lines};
+    use super::{
+        collect_lookup_targets, collect_unique_valid_lookup_targets, format_family_cidrs,
+        read_target_lines,
+    };
     use crate::core::network::CanonicalCidr;
     use crate::error::KidoboError;
 
@@ -498,5 +530,20 @@ mod tests {
             )],
         );
         assert_eq!(lines, vec!["203.0.113.7/32", "2001:db8::1/128"]);
+    }
+
+    #[test]
+    fn collect_unique_valid_lookup_targets_skips_invalid_and_dedups() {
+        let targets = vec![
+            "203.0.113.7".to_string(),
+            "not-an-ip".to_string(),
+            "203.0.113.7".to_string(),
+            "2001:db8::1".to_string(),
+        ];
+        let unique = collect_unique_valid_lookup_targets(&targets);
+        assert_eq!(
+            unique.into_iter().collect::<Vec<_>>(),
+            vec!["2001:db8::1", "203.0.113.7"]
+        );
     }
 }

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `kidobo lookup --file` now prints a `NO_MATCH` line for each valid target IP/CIDR that has no overlap with any loaded local/cached source, and ends with a brief summary line: total unique valid targets, unique matched targets, and matched percentage.
+
 ## [0.7.0] - 2026-02-23
 
 ### Added

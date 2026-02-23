@@ -202,7 +202,7 @@ fn lookup_uses_local_sources_and_exits_zero() {
 fn lookup_file_mode_uses_local_sources_and_exits_zero() {
     let root = create_lookup_root("203.0.113.7\n");
     let targets = root.path().join("targets.txt");
-    fs::write(&targets, "203.0.113.7\n").expect("write lookup targets");
+    fs::write(&targets, "203.0.113.7\n198.51.100.9\n").expect("write lookup targets");
     let target_path = targets.display().to_string();
     let args = vec!["lookup", "--file", target_path.as_str()];
     let output = run_kidobo_with_root(root.path(), &args);
@@ -213,6 +213,14 @@ fn lookup_file_mode_uses_local_sources_and_exits_zero() {
     assert!(
         stdout.contains("203.0.113.7\tinternal:blocklist\t203.0.113.7"),
         "unexpected lookup output: {stdout}"
+    );
+    assert!(
+        stdout.contains("198.51.100.9\tNO_MATCH"),
+        "missing no-match output: {stdout}"
+    );
+    assert!(
+        stdout.contains("summary: total_ips=2 matched_ips=1 matched_pct=50%"),
+        "missing lookup summary output: {stdout}"
     );
 }
 
