@@ -5,10 +5,8 @@
 ### Changed
 
 - `kidobo sync` now supports `--timer`, which emits per-stage timing logs (`stage_ms` and cumulative `total_ms`) across path/config/lock setup and major sync pipeline phases.
-- Changelog maintenance now uses `release-notes/unreleased.md` as the manual edit target and generates `CHANGELOG.md` via `./scripts/changelog/generate.sh`, with pre-commit and CI checks enforcing up-to-date generated output.
 
 ## [0.8.0] - 2026-02-23
-
 
 ### Changed
 
@@ -24,7 +22,6 @@
 - Real-world merge benchmarks now include `source_sorted_concat` (and radix equivalent), modeling source-wise sorted lists concatenated in deterministic source order.
 
 ## [0.7.0] - 2026-02-23
-
 
 ### Added
 

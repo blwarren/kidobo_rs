@@ -28,11 +28,14 @@ jobs:
       - name: cargo fmt
         run: cargo fmt --all --check
 
+      - name: normalize release notes markdown
+        run: ./scripts/changelog/format-release-notes.sh
+
       - name: regenerate changelog
         run: ./scripts/changelog/generate.sh
 
-      - name: verify changelog is up to date
-        run: git diff --exit-code -- CHANGELOG.md
+      - name: verify release notes/changelog are up to date
+        run: git diff --exit-code -- CHANGELOG.md release-notes
 
       - name: cargo clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
