@@ -925,6 +925,45 @@ mod tests {
     }
 
     #[test]
+    fn merge_intervals_matches_for_sorted_and_unsorted_inputs() {
+        let sorted_v4 = vec![
+            IntervalU32 { start: 1, end: 2 },
+            IntervalU32 { start: 3, end: 5 },
+            IntervalU32 { start: 10, end: 12 },
+        ];
+        let unsorted_v4 = vec![
+            IntervalU32 { start: 10, end: 12 },
+            IntervalU32 { start: 1, end: 2 },
+            IntervalU32 { start: 3, end: 5 },
+        ];
+        assert_eq!(
+            merge_intervals_u32(&sorted_v4),
+            merge_intervals_u32(&unsorted_v4)
+        );
+
+        let sorted_v6 = vec![
+            IntervalU128 { start: 40, end: 50 },
+            IntervalU128 { start: 51, end: 53 },
+            IntervalU128 {
+                start: 100,
+                end: 110,
+            },
+        ];
+        let unsorted_v6 = vec![
+            IntervalU128 {
+                start: 100,
+                end: 110,
+            },
+            IntervalU128 { start: 40, end: 50 },
+            IntervalU128 { start: 51, end: 53 },
+        ];
+        assert_eq!(
+            merge_intervals_u128(&sorted_v6),
+            merge_intervals_u128(&unsorted_v6)
+        );
+    }
+
+    #[test]
     fn safelist_subtraction_carves_ipv4_ranges() {
         let carved = subtract_safelist_ipv4(
             &[Ipv4Cidr::from_parts(0x0a000000, 24)],

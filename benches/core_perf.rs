@@ -85,10 +85,25 @@ fn generate_overlapping_intervals(count: usize) -> Vec<IntervalU32> {
     out
 }
 
+fn generate_almost_sorted_intervals(count: usize) -> Vec<IntervalU32> {
+    let mut out = generate_disjoint_intervals(count);
+    if out.len() < 4 {
+        return out;
+    }
+
+    let stride = 100_usize;
+    for i in (stride..out.len()).step_by(stride) {
+        out.swap(i - 1, i);
+    }
+
+    out
+}
+
 fn benchmark_merge_intervals_ipv4(c: &mut Criterion) {
     let mut group = c.benchmark_group("merge_intervals_ipv4");
     for size in [10_000_usize, 50_000_usize, 100_000_usize] {
         let disjoint_sorted = generate_disjoint_intervals(size);
+        let disjoint_almost_sorted = generate_almost_sorted_intervals(size);
         let mut disjoint_shuffled = disjoint_sorted.clone();
         deterministic_shuffle_u32(&mut disjoint_shuffled);
         let overlap_sorted = generate_overlapping_intervals(size);
@@ -97,6 +112,15 @@ fn benchmark_merge_intervals_ipv4(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("disjoint_sorted", size),
             &disjoint_sorted,
+            |b, intervals| {
+                b.iter(|| {
+                    black_box(merge_intervals_u32(black_box(intervals)));
+                });
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("disjoint_almost_sorted", size),
+            &disjoint_almost_sorted,
             |b, intervals| {
                 b.iter(|| {
                     black_box(merge_intervals_u32(black_box(intervals)));
@@ -246,6 +270,14 @@ struct RealWorldDataset {
     ipv4_intervals: Vec<IntervalU32>,
 }
 
+fn repeat_vec<T: Clone>(values: &[T], scale: usize) -> Vec<T> {
+    let mut out = Vec::with_capacity(values.len() * scale);
+    for _ in 0..scale {
+        out.extend_from_slice(values);
+    }
+    out
+}
+
 fn find_real_world_config(root: &Path) -> Option<PathBuf> {
     let root_config = root.join("config.toml");
     if root_config.exists() {
@@ -359,6 +391,60 @@ fn benchmark_real_world(c: &mut Criterion) {
         });
     });
     effective_group.finish();
+
+    let scales = [1_usize, 2_usize, 5_usize, 10_usize];
+
+    let mut merge_scaled_group = c.benchmark_group("real_world_merge_intervals_ipv4_scaled");
+    for scale in scales {
+        let intervals = repeat_vec(&dataset.ipv4_intervals, scale);
+        merge_scaled_group.throughput(Throughput::Elements(intervals.len() as u64));
+        merge_scaled_group.bench_with_input(
+            BenchmarkId::new("as_loaded", scale),
+            &intervals,
+            |b, input| {
+                b.iter(|| {
+                    black_box(merge_intervals_u32(black_box(input)));
+                });
+            },
+        );
+
+        let mut shuffled = intervals.clone();
+        deterministic_shuffle_u32(&mut shuffled);
+        merge_scaled_group.bench_with_input(
+            BenchmarkId::new("shuffled", scale),
+            &shuffled,
+            |b, input| {
+                b.iter(|| {
+                    black_box(merge_intervals_u32(black_box(input)));
+                });
+            },
+        );
+    }
+    merge_scaled_group.finish();
+
+    let mut effective_scaled_group =
+        c.benchmark_group("real_world_compute_effective_blocklists_scaled");
+    for scale in scales {
+        let candidates = repeat_vec(&dataset.candidates, scale);
+        let safelist = repeat_vec(&dataset.safelist, scale);
+        effective_scaled_group.throughput(Throughput::Elements(
+            (candidates.len() + safelist.len()) as u64,
+        ));
+        effective_scaled_group.bench_with_input(
+            BenchmarkId::new("ipv4_only", scale),
+            &(candidates, safelist),
+            |b, input| {
+                b.iter(|| {
+                    black_box(compute_effective_blocklists(
+                        black_box(&input.0),
+                        black_box(&input.1),
+                        black_box(false),
+                    ));
+                });
+            },
+        );
+    }
+    effective_scaled_group.finish();
 }
 
 criterion_group!(
