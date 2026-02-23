@@ -311,6 +311,9 @@ pub fn cidr_overlaps(a: CanonicalCidr, b: CanonicalCidr) -> bool {
     }
 }
 
+const RADIX_SORT_MIN_LEN: usize = 16_384;
+const RADIX_BUCKETS_U16: usize = 1 << 16;
+
 fn intervals_to_ipv4_cidrs_from_merged(intervals: &[IntervalU32]) -> Vec<Ipv4Cidr> {
     let mut out = Vec::new();
 
@@ -367,7 +370,7 @@ fn merge_intervals_u32_owned(mut intervals: Vec<IntervalU32>) -> Vec<IntervalU32
         return Vec::new();
     }
 
-    intervals.sort_unstable();
+    sort_intervals_u32_for_merge(&mut intervals);
     let mut iter = intervals.into_iter();
     let Some(mut current) = iter.next() else {
         return Vec::new();
@@ -385,6 +388,68 @@ fn merge_intervals_u32_owned(mut intervals: Vec<IntervalU32>) -> Vec<IntervalU32
 
     merged.push(current);
     merged
+}
+
+fn sort_intervals_u32_for_merge(intervals: &mut [IntervalU32]) {
+    if intervals.is_sorted() {
+        return;
+    }
+
+    if intervals.len() < RADIX_SORT_MIN_LEN {
+        intervals.sort_unstable();
+        return;
+    }
+
+    // Two-pass LSD radix sort over 32-bit starts (16 bits per pass).
+    radix_sort_intervals_u32_by_start(intervals);
+}
+
+fn radix_sort_intervals_u32_by_start(intervals: &mut [IntervalU32]) {
+    if intervals.len() < 2 {
+        return;
+    }
+
+    let mut src = intervals.to_vec();
+    let mut dst = vec![IntervalU32 { start: 0, end: 0 }; intervals.len()];
+    let mut counts = vec![0_usize; RADIX_BUCKETS_U16];
+
+    for shift in [0_u32, 16_u32] {
+        counts.fill(0);
+
+        for interval in &src {
+            let bucket = ((interval.start >> shift) & 0xFFFF) as usize;
+            let Some(count) = counts.get_mut(bucket) else {
+                return;
+            };
+            *count += 1;
+        }
+
+        let mut running = 0_usize;
+        for count in &mut counts {
+            let current = *count;
+            *count = running;
+            running += current;
+        }
+
+        for interval in &src {
+            let bucket = ((interval.start >> shift) & 0xFFFF) as usize;
+            let Some(out_idx) = counts.get(bucket).copied() else {
+                return;
+            };
+            let Some(slot) = dst.get_mut(out_idx) else {
+                return;
+            };
+            *slot = *interval;
+            let Some(count) = counts.get_mut(bucket) else {
+                return;
+            };
+            *count += 1;
+        }
+
+        std::mem::swap(&mut src, &mut dst);
+    }
+
+    intervals.copy_from_slice(&src);
 }
 
 fn merge_intervals_u128_owned(mut intervals: Vec<IntervalU128>) -> Vec<IntervalU128> {
@@ -960,6 +1025,37 @@ mod tests {
         assert_eq!(
             merge_intervals_u128(&sorted_v6),
             merge_intervals_u128(&unsorted_v6)
+        );
+    }
+
+    #[test]
+    fn merge_intervals_handles_equal_starts_with_mixed_ends() {
+        let intervals = vec![
+            IntervalU32 {
+                start: 100,
+                end: 100,
+            },
+            IntervalU32 {
+                start: 100,
+                end: 140,
+            },
+            IntervalU32 {
+                start: 101,
+                end: 110,
+            },
+            IntervalU32 {
+                start: 141,
+                end: 141,
+            },
+        ];
+
+        let merged = merge_intervals_u32(&intervals);
+        assert_eq!(
+            merged,
+            vec![IntervalU32 {
+                start: 100,
+                end: 141
+            }]
         );
     }
 
