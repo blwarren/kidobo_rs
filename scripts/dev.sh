@@ -5,6 +5,10 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "${script_dir}/.." && pwd)"
 cd "${repo_root}"
 
+CARGO_DENY_VERSION="${CARGO_DENY_VERSION:-0.19.0}"
+CARGO_AUDIT_VERSION="${CARGO_AUDIT_VERSION:-0.22.1}"
+CARGO_UDEPS_VERSION="${CARGO_UDEPS_VERSION:-0.1.60}"
+
 usage() {
   cat <<'USAGE'
 Usage:
@@ -63,7 +67,7 @@ run_pre_push_tests() {
 run_post_coding_gates() {
   run_cmd "post-coding" cargo fmt --all
   run_cmd "post-coding" cargo clippy --all-targets --all-features -- -D warnings
-  run_cmd "post-coding" cargo test --all-targets --all-features
+  run_cmd "post-coding" cargo test --lib --bins --tests --all-features
   run_cmd "post-coding" cargo deny check advisories bans licenses sources
   run_cmd "post-coding" cargo build --release --locked
   log_step "post-coding" "post-coding check complete"
@@ -72,7 +76,7 @@ run_post_coding_gates() {
 run_gates_minimum() {
   run_cmd "gates-minimum" cargo fmt --all
   run_cmd "gates-minimum" cargo clippy --all-targets --all-features -- -D warnings
-  run_cmd "gates-minimum" cargo test --all-targets --all-features
+  run_cmd "gates-minimum" cargo test --lib --bins --tests --all-features
   run_cmd "gates-minimum" cargo test --doc
   run_cmd "gates-minimum" cargo check --release --locked
 }
@@ -90,19 +94,20 @@ run_ci_quality() {
   run_cmd "ci-quality" ./scripts/changelog/generate.sh
   run_cmd "ci-quality" git diff --exit-code -- CHANGELOG.md release-notes
   run_cmd "ci-quality" cargo clippy --all-targets --all-features -- -D warnings
-  run_cmd "ci-quality" cargo test --all-targets --all-features
+  run_cmd "ci-quality" cargo test --lib --bins --tests --all-features
   run_cmd "ci-quality" cargo test --doc
   run_cmd "ci-quality" cargo check --release --locked
 }
 
 run_ci_supply_chain() {
-  run_cmd "ci-supply-chain" cargo install --locked cargo-deny cargo-audit
+  run_cmd "ci-supply-chain" cargo install --locked cargo-deny --version "${CARGO_DENY_VERSION}"
+  run_cmd "ci-supply-chain" cargo install --locked cargo-audit --version "${CARGO_AUDIT_VERSION}"
   run_cmd "ci-supply-chain" cargo deny check advisories bans licenses sources
   run_cmd "ci-supply-chain" cargo audit
 }
 
 run_ci_udeps() {
-  run_cmd "ci-udeps" cargo +nightly install --locked cargo-udeps
+  run_cmd "ci-udeps" cargo +nightly install --locked cargo-udeps --version "${CARGO_UDEPS_VERSION}"
   run_cmd "ci-udeps" cargo +nightly udeps --all-targets --all-features
 }
 

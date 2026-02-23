@@ -66,6 +66,9 @@ jobs:
             exit 1
           fi
 
+      - name: Run quality gates
+        run: ./scripts/dev.sh ci-quality
+
       - name: Build release binary
         run: cargo build --release --locked --bin kidobo
 
