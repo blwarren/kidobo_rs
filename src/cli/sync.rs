@@ -895,6 +895,113 @@ mod tests {
     }
 
     #[test]
+    fn sync_restore_scripts_exclude_combined_config_and_github_meta_safelist() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = test_paths(temp.path());
+        fs::create_dir_all(paths.blocklist_file.parent().expect("parent")).expect("mkdir data");
+        fs::create_dir_all(&paths.remote_cache_dir).expect("mkdir remote cache");
+        fs::create_dir_all(paths.cache_dir.join("asn")).expect("mkdir asn cache");
+
+        fs::write(
+            &paths.blocklist_file,
+            "10.10.0.0/24\n2001:db8:10::/64\n2001:db8:20::/64\n",
+        )
+        .expect("write blocklist");
+        fs::write(
+            paths.cache_dir.join("asn/as64512.iplist"),
+            "10.30.0.0/24\n2001:db8:40::/64\n",
+        )
+        .expect("write asn cache");
+
+        let remote_url = "https://example.com/combined-safe-remote.txt".to_string();
+        let github_meta_url = "https://example.com/github-meta.json".to_string();
+        let mut config = test_config(vec![remote_url.clone()]);
+        config.asn.banned = vec![64512];
+        config.safe.ips = vec![
+            parse_ip_cidr_token("10.10.0.0/25").expect("safe"),
+            parse_ip_cidr_token("10.20.0.0/25").expect("safe"),
+            parse_ip_cidr_token("10.30.0.0/25").expect("safe"),
+            parse_ip_cidr_token("2001:db8:10::/65").expect("safe"),
+            parse_ip_cidr_token("2001:db8:30::/65").expect("safe"),
+            parse_ip_cidr_token("2001:db8:40::/65").expect("safe"),
+        ];
+        config.safe.include_github_meta = true;
+        config.safe.github_meta_url = github_meta_url.clone();
+        config.safe.github_meta_categories = Some(vec!["hooks".to_string()]);
+
+        let github_safelist = vec![
+            parse_ip_cidr_token("10.10.0.128/25").expect("safe"),
+            parse_ip_cidr_token("10.20.0.128/25").expect("safe"),
+            parse_ip_cidr_token("10.30.0.128/25").expect("safe"),
+            parse_ip_cidr_token("2001:db8:10:0:8000::/65").expect("safe"),
+            parse_ip_cidr_token("2001:db8:20::/64").expect("safe"),
+            parse_ip_cidr_token("2001:db8:30:0:8000::/65").expect("safe"),
+            parse_ip_cidr_token("2001:db8:40:0:8000::/65").expect("safe"),
+        ];
+
+        let responses = BTreeMap::from([
+            (
+                remote_url,
+                VecDeque::from([Ok(HttpResponse {
+                    status: StatusCode::OK,
+                    body: b"10.20.0.0/24\n198.51.100.0/24\n2001:db8:30::/64\n2001:db8:50::/64\n"
+                        .to_vec(),
+                    etag: None,
+                    last_modified: None,
+                })]),
+            ),
+            (
+                github_meta_url,
+                VecDeque::from([Ok(HttpResponse {
+                    status: StatusCode::OK,
+                    body: br#"{
+                        "hooks": [
+                            "10.10.0.128/25",
+                            "10.20.0.128/25",
+                            "10.30.0.128/25",
+                            "2001:db8:10:0:8000::/65",
+                            "2001:db8:20::/64",
+                            "2001:db8:30:0:8000::/65",
+                            "2001:db8:40:0:8000::/65"
+                        ],
+                        "api": ["198.51.100.0/24", "2001:db8:50::/64"]
+                    }"#
+                    .to_vec(),
+                    etag: None,
+                    last_modified: None,
+                })]),
+            ),
+        ]);
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let http_client = MockHttpClient::new(responses, Arc::clone(&events), 0);
+        let runner = MockCommandRunner::new(events);
+
+        let summary = run_sync_with_dependencies(
+            &paths,
+            &config,
+            &BTreeMap::new(),
+            &http_client,
+            &runner,
+            &runner,
+        )
+        .expect("sync");
+        assert_eq!(summary.ipv4_entries, 1);
+        assert_eq!(summary.ipv6_entries, 1);
+
+        let ipv4_entries = runner.entries_for_target_set("kidobo");
+        let ipv6_entries = runner.entries_for_target_set("kidobo-v6");
+
+        let mut combined_safelist = config.safe.ips.clone();
+        combined_safelist.extend(github_safelist);
+        assert_entries_disjoint_from_safelist(&ipv4_entries, &combined_safelist);
+        assert_entries_disjoint_from_safelist(&ipv6_entries, &combined_safelist);
+
+        assert_eq!(ipv4_entries, vec!["198.51.100.0/24".to_string()]);
+        assert_eq!(ipv6_entries, vec!["2001:db8:50::/64".to_string()]);
+    }
+
+    #[test]
     fn sync_restore_scripts_are_disjoint_from_safelist_hosts_and_prefixes() {
         let temp = TempDir::new().expect("tempdir");
         let paths = test_paths(temp.path());
