@@ -61,7 +61,13 @@ pub enum Command {
         about = "Sync local+remote blocklists into firewall/ipset state",
         long_about = "Load config and sources, apply safelist subtraction, collapse entries, then atomically update ipset state and firewall wiring.\n\nThis command is one-shot and fail-fast for hard errors (for example lock contention or invalid config)."
     )]
-    Sync,
+    Sync {
+        #[arg(
+            long = "timer",
+            help = "Emit per-stage sync timing logs to help profile runtime bottlenecks"
+        )]
+        timer: bool,
+    },
     #[command(
         about = "Best-effort cleanup of kidobo runtime state",
         long_about = "Best-effort cleanup command for Kidobo runtime artifacts.\n\nBy default it attempts firewall/ipset cleanup and remote cache cleanup. Use --cache-only to leave firewall/ipset state unchanged."
@@ -206,6 +212,15 @@ mod tests {
         let cli = Cli::try_parse_from(["kidobo", "flush", "--cache-only"]).expect("flush parse");
         match cli.command {
             Command::Flush { cache_only } => assert!(cache_only),
+            _ => panic!("unexpected command variant"),
+        }
+    }
+
+    #[test]
+    fn sync_timer_flag_is_parsed() {
+        let cli = Cli::try_parse_from(["kidobo", "sync", "--timer"]).expect("sync parse");
+        match cli.command {
+            Command::Sync { timer } => assert!(timer),
             _ => panic!("unexpected command variant"),
         }
     }

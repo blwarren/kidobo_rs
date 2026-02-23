@@ -69,7 +69,7 @@ pub fn dispatch(command: Command) -> Result<(), KidoboError> {
     match command {
         Command::Init => run_init_command(),
         Command::Doctor => run_doctor_command(),
-        Command::Sync => run_sync_command(),
+        Command::Sync { timer } => run_sync_command(timer),
         Command::Flush { cache_only } => run_flush_command(cache_only),
         Command::Lookup { ip, file } => run_lookup_command(ip, file),
         Command::Analyze { command } => match command {

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use log::{error, info, warn};
 
@@ -38,26 +38,62 @@ pub struct SyncSummary {
     pub ipv6_entries: usize,
 }
 
-pub fn run_sync_command() -> Result<(), KidoboError> {
+#[derive(Debug, Clone)]
+struct SyncStageTimer {
+    enabled: bool,
+    overall_start: Instant,
+    stage_start: Instant,
+}
+
+impl SyncStageTimer {
+    fn new(enabled: bool) -> Self {
+        let now = Instant::now();
+        Self {
+            enabled,
+            overall_start: now,
+            stage_start: now,
+        }
+    }
+
+    fn mark(&mut self, stage: &str) {
+        if !self.enabled {
+            return;
+        }
+
+        let now = Instant::now();
+        let stage_ms = now.duration_since(self.stage_start).as_millis();
+        let total_ms = now.duration_since(self.overall_start).as_millis();
+        info!("sync timer: stage={stage} stage_ms={stage_ms} total_ms={total_ms}");
+        self.stage_start = now;
+    }
+}
+
+pub fn run_sync_command(timer: bool) -> Result<(), KidoboError> {
+    let mut stage_timer = SyncStageTimer::new(timer);
     let path_input = PathResolutionInput::from_process(None);
     let paths = resolve_paths(&path_input)?;
+    stage_timer.mark("resolve_paths");
     let config = load_config_from_file(&paths.config_file)?;
+    stage_timer.mark("load_config");
 
     let _lock = acquire_non_blocking(&paths.lock_file)?;
+    stage_timer.mark("acquire_lock");
 
     let http_client = ReqwestHttpClient::with_timeout(Duration::from_secs(u64::from(
         config.remote.timeout_secs.get(),
     )));
     let sudo_runner = SudoCommandRunner::default();
 
-    let summary = run_sync_with_dependencies(
+    let summary = run_sync_with_dependencies_with_timer(
         &paths,
         &config,
         &path_input.env,
         &http_client,
         &sudo_runner,
         &sudo_runner,
+        &mut stage_timer,
     )?;
+    stage_timer.mark("sync_pipeline_complete");
 
     info!(
         "sync completed: ipv4_entries={} ipv6_entries={}",
@@ -67,6 +103,7 @@ pub fn run_sync_command() -> Result<(), KidoboError> {
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn run_sync_with_dependencies(
     paths: &ResolvedPaths,
     config: &Config,
@@ -75,6 +112,27 @@ pub(crate) fn run_sync_with_dependencies(
     ipset_runner: &dyn IpsetCommandRunner,
     firewall_runner: &dyn FirewallCommandRunner,
 ) -> Result<SyncSummary, KidoboError> {
+    let mut timer = SyncStageTimer::new(false);
+    run_sync_with_dependencies_with_timer(
+        paths,
+        config,
+        env,
+        http_client,
+        ipset_runner,
+        firewall_runner,
+        &mut timer,
+    )
+}
+
+fn run_sync_with_dependencies_with_timer(
+    paths: &ResolvedPaths,
+    config: &Config,
+    env: &BTreeMap<String, String>,
+    http_client: &(dyn HttpClient + Sync),
+    ipset_runner: &dyn IpsetCommandRunner,
+    firewall_runner: &dyn FirewallCommandRunner,
+    timer: &mut SyncStageTimer,
+) -> Result<SyncSummary, KidoboError> {
     let ipv4_spec = ipv4_set_spec(config);
     let ipv6_spec = ipv6_set_spec(config);
 
@@ -82,6 +140,7 @@ pub(crate) fn run_sync_with_dependencies(
     if config.ipset.enable_ipv6 {
         ensure_ipset_exists(ipset_runner, &ipv6_spec)?;
     }
+    timer.mark("ensure_ipset_artifacts");
 
     ensure_firewall_wiring_for_families(
         firewall_runner,
@@ -90,6 +149,7 @@ pub(crate) fn run_sync_with_dependencies(
         config.ipset.enable_ipv6,
         chain_action(config),
     )?;
+    timer.mark("ensure_firewall_wiring");
 
     let fast_state_path = paths.cache_dir.join(BLOCKLIST_FAST_STATE_FILE);
     let normalize_result =
@@ -100,14 +160,17 @@ pub(crate) fn run_sync_with_dependencies(
             paths.blocklist_file.display()
         );
     }
+    timer.mark("normalize_local_blocklist");
 
     let internal = load_internal_blocklist(&paths.blocklist_file)?;
+    timer.mark("load_internal_source");
     let remote = fetch_remote_networks_concurrently(
         &config.remote.urls,
         http_client,
         &paths.remote_cache_dir,
         env,
     );
+    timer.mark("load_remote_sources");
 
     let mut safelist = config.safe.ips.clone();
 
@@ -123,6 +186,7 @@ pub(crate) fn run_sync_with_dependencies(
             Err(err) => warn!("github meta safelist load failed softly: {err}"),
         }
     }
+    timer.mark("load_safelist_sources");
 
     let internal_count = internal.len();
     let remote_count = remote.len();
@@ -145,6 +209,7 @@ pub(crate) fn run_sync_with_dependencies(
     }
     asn_networks.sort_unstable();
     asn_networks.dedup();
+    timer.mark("load_asn_sources");
     let asn_count = asn_networks.len();
     let safelist_count = safelist.len();
 
@@ -153,13 +218,16 @@ pub(crate) fn run_sync_with_dependencies(
     candidates.extend(asn_networks);
 
     let effective = compute_effective_blocklists(&candidates, &safelist, config.ipset.enable_ipv6);
+    timer.mark("compute_effective_blocklists");
 
     if config.ipset.enable_ipv6 {
         ensure_within_maxelem(&ipv6_spec, effective.ipv6.len())?;
         atomic_replace_ipset_values(ipset_runner, &ipv6_spec, &effective.ipv6)?;
+        timer.mark("apply_ipv6_ipset");
     }
     ensure_within_maxelem(&ipv4_spec, effective.ipv4.len())?;
     atomic_replace_ipset_values(ipset_runner, &ipv4_spec, &effective.ipv4)?;
+    timer.mark("apply_ipv4_ipset");
 
     info!(
         "sync source counts: internal={internal_count} remote={remote_count} asn={asn_count} safelist={safelist_count}"

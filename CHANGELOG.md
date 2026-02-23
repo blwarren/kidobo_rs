@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `kidobo sync` now supports `--timer`, which emits per-stage timing logs (`stage_ms` and cumulative `total_ms`) across path/config/lock setup and major sync pipeline phases.
+- Changelog maintenance now uses `release-notes/unreleased.md` as the manual edit target and generates `CHANGELOG.md` via `./scripts/changelog/generate.sh`, with pre-commit and CI checks enforcing up-to-date generated output.
+
 ## [0.8.0] - 2026-02-23
 
 
@@ -18,8 +23,8 @@
 - `merge_intervals_ipv4` benchmarks now include a radix-sort prototype path (`*_radix`) to compare radix-vs-`sort_unstable` tradeoffs under deterministic and real-world interval orders.
 - Real-world merge benchmarks now include `source_sorted_concat` (and radix equivalent), modeling source-wise sorted lists concatenated in deterministic source order.
 
-
 ## [0.7.0] - 2026-02-23
+
 
 ### Added
 
@@ -218,3 +223,4 @@
 ### Added
 
 - Initial public release of `kidobo` CLI.
+
