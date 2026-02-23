@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-02-23
+
+
 ### Added
 
 - `kidobo ban` / `kidobo unban` now support ASN targets via `--asn` (accepting
@@ -20,6 +23,7 @@
 - Internal runtime typing is stricter for validated config and adapter boundaries: `ipset.hashsize`/`ipset.maxelem` and remote timeout/stale windows now use validated newtypes, HTTP response status uses typed status codes, and command execution status uses an explicit process-status enum.
 - `kidobo doctor` now includes a required binary check for `bgpq4`, and
   `kidobo init` now fails fast when `bgpq4` is missing from `PATH`.
+
 
 ## [0.6.0] - 2026-02-20
 
