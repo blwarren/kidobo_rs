@@ -137,7 +137,27 @@ pub fn run_doctor_command() -> Result<(), KidoboError> {
     })?;
 
     println!("{json}");
-    info!("doctor report: {json}");
+    let failed_count = report
+        .checks
+        .iter()
+        .filter(|check| check.status == DoctorCheckStatus::Fail)
+        .count();
+    let skipped_count = report
+        .checks
+        .iter()
+        .filter(|check| check.status == DoctorCheckStatus::Skip)
+        .count();
+    let overall = match report.overall {
+        DoctorOverall::Ok => "OK",
+        DoctorOverall::Fail => "FAIL",
+    };
+    info!(
+        "doctor summary: overall={} checks_total={} checks_failed={} checks_skipped={}",
+        overall,
+        report.checks.len(),
+        failed_count,
+        skipped_count
+    );
 
     if report.overall == DoctorOverall::Ok {
         Ok(())

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
 use log::LevelFilter;
 
 #[derive(Debug, Parser)]
@@ -127,23 +127,22 @@ pub enum Command {
     },
     #[command(
         about = "Offline lookup against local blocklist + cached remote sources",
-        long_about = "Lookup candidate targets against local blocklist and cached remote sources.\n\nLookup runs offline only and never fetches remote sources."
+        long_about = "Lookup candidate targets against local blocklist and cached remote sources.\n\nLookup runs offline only and never fetches remote sources.",
+        group(
+            ArgGroup::new("lookup_input")
+                .args(["ip", "file"])
+                .required(true)
+                .multiple(false)
+        )
     )]
     Lookup {
-        #[arg(
-            value_name = "IP_OR_CIDR",
-            help = "Single target IP/CIDR to match",
-            conflicts_with = "file",
-            required_unless_present = "file"
-        )]
+        #[arg(value_name = "IP_OR_CIDR", help = "Single target IP/CIDR to match")]
         ip: Option<String>,
 
         #[arg(
             long,
             value_name = "PATH",
-            help = "File with one target IP/CIDR per line",
-            conflicts_with = "ip",
-            required_unless_present = "ip"
+            help = "File with one target IP/CIDR per line"
         )]
         file: Option<PathBuf>,
     },
@@ -187,6 +186,8 @@ pub enum AnalyzeCommand {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::{AnalyzeCommand, Cli, Command, LogLevel};
     use clap::Parser;
     use log::LevelFilter;
@@ -265,5 +266,43 @@ mod tests {
             },
             _ => panic!("unexpected command variant"),
         }
+    }
+
+    #[test]
+    fn lookup_command_parses_ip_mode() {
+        let cli = Cli::try_parse_from(["kidobo", "lookup", "203.0.113.7"]).expect("lookup parse");
+        match cli.command {
+            Command::Lookup { ip, file } => {
+                assert_eq!(ip, Some("203.0.113.7".to_string()));
+                assert!(file.is_none());
+            }
+            _ => panic!("unexpected command variant"),
+        }
+    }
+
+    #[test]
+    fn lookup_command_parses_file_mode() {
+        let cli =
+            Cli::try_parse_from(["kidobo", "lookup", "--file", "targets.txt"]).expect("parse");
+        match cli.command {
+            Command::Lookup { ip, file } => {
+                assert!(ip.is_none());
+                assert_eq!(file, Some(PathBuf::from("targets.txt")));
+            }
+            _ => panic!("unexpected command variant"),
+        }
+    }
+
+    #[test]
+    fn lookup_command_rejects_missing_input_mode() {
+        let err = Cli::try_parse_from(["kidobo", "lookup"]).expect_err("lookup must fail");
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn lookup_command_rejects_multiple_input_modes() {
+        let err = Cli::try_parse_from(["kidobo", "lookup", "203.0.113.7", "--file", "targets.txt"])
+            .expect_err("lookup must fail");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 }

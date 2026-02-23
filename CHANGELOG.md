@@ -5,6 +5,8 @@
 ### Changed
 
 - `kidobo lookup --file` now prints a `NO_MATCH` line for each valid target IP/CIDR that has no overlap with any loaded local/cached source, and ends with a brief summary line: total unique valid targets, unique matched targets, and matched percentage.
+- `kidobo lookup` CLI argument validation now uses an explicit one-of input mode (`<IP_OR_CIDR>` or `--file <PATH>`) so usage/help and missing-argument errors reflect the intended mutually exclusive modes.
+- `kidobo doctor` now logs a compact summary line (`overall`, total checks, failed checks, skipped checks) instead of logging the full JSON payload a second time; stdout remains the single source for full JSON report output.
 
 ## [0.7.0] - 2026-02-23
 

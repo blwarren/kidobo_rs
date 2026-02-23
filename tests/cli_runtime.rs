@@ -479,7 +479,7 @@ fn doctor_forced_human_color_emits_ansi_level_label() {
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
-        stderr.contains("\u{1b}[32mINFO\u{1b}[0m: doctor report:"),
+        stderr.contains("\u{1b}[32mINFO\u{1b}[0m: doctor summary: overall="),
         "missing ANSI-colored INFO label in stderr (status {:?}): {stderr}",
         output.status.code()
     );
