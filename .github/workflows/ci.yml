@@ -25,29 +25,8 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: cargo fmt
-        run: cargo fmt --all --check
-
-      - name: normalize release notes markdown
-        run: ./scripts/changelog/format-release-notes.sh
-
-      - name: regenerate changelog
-        run: ./scripts/changelog/generate.sh
-
-      - name: verify release notes/changelog are up to date
-        run: git diff --exit-code -- CHANGELOG.md release-notes
-
-      - name: cargo clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-      - name: cargo test
-        run: cargo test --all-targets --all-features
-
-      - name: cargo test --doc
-        run: cargo test --doc
-
-      - name: cargo check --release --locked
-        run: cargo check --release --locked
+      - name: Run quality gates
+        run: ./scripts/dev.sh ci-quality
 
   supply-chain:
     name: supply-chain
@@ -62,11 +41,5 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Install cargo-deny and cargo-audit
-        run: cargo install --locked cargo-deny cargo-audit
-
-      - name: cargo deny
-        run: cargo deny check advisories bans licenses sources
-
-      - name: cargo audit
-        run: cargo audit
+      - name: Run supply-chain checks
+        run: ./scripts/dev.sh ci-supply-chain

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "[pre-push] cargo test --lib --bins --tests --all-features"
-cargo test --lib --bins --tests --all-features
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+exec "${script_dir}/dev.sh" pre-push-tests "$@"

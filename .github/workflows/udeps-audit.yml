@@ -24,8 +24,5 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Install cargo-udeps
-        run: cargo +nightly install --locked cargo-udeps
-
-      - name: cargo udeps
-        run: cargo +nightly udeps --all-targets --all-features
+      - name: Run udeps checks
+        run: ./scripts/dev.sh ci-udeps
