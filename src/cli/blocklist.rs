@@ -792,11 +792,12 @@ mod tests {
     use super::{
         BLOCKLIST_READ_LIMIT, BanOutcome, BlocklistFile, BlocklistNormalizeResult, KidoboError,
         append_blocklist_entry, apply_unban_plan, ban_target_in_file, build_unban_plan,
-        ensure_blocklist_parent, normalize_local_blocklist,
+        canonicalize_blocklist, ensure_blocklist_parent, normalize_local_blocklist,
         normalize_local_blocklist_with_fast_state, parse_blocklist_target,
         remove_exact_blocklist_duplicates, update_banned_asns_in_config, write_blocklist_lines,
     };
     use crate::adapters::limited_io::read_to_string_with_limit;
+    use crate::core::config::DEFAULT_ASN_CACHE_STALE_AFTER_SECS;
 
     fn write_temp_file(temp: &TempDir, contents: &str) -> PathBuf {
         let path = temp.path().join("blocklist.txt");
@@ -1030,6 +1031,18 @@ mod tests {
     }
 
     #[test]
+    fn normalize_with_fast_state_returns_missing_when_blocklist_absent() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("missing.txt");
+        let state_path = temp.path().join("cache/blocklist-normalize.fast-state");
+
+        let result =
+            normalize_local_blocklist_with_fast_state(&path, &state_path).expect("normalize");
+        assert_eq!(result, BlocklistNormalizeResult::MissingBlocklist);
+        assert!(!state_path.exists());
+    }
+
+    #[test]
     fn ensure_blocklist_parent_creates_directories_recursively() {
         let temp = TempDir::new().expect("tempdir");
         let nested = temp.path().join("nested/deeper/blocklist.txt");
@@ -1088,6 +1101,61 @@ mod tests {
     }
 
     #[test]
+    fn update_banned_asns_in_config_adds_default_cache_stale_after_when_missing() {
+        let temp = TempDir::new().expect("tempdir");
+        let config_path = temp.path().join("config.toml");
+        fs::write(
+            &config_path,
+            "[ipset]\nset_name='kidobo'\n[asn]\nbanned=[64512]\n",
+        )
+        .expect("write");
+
+        let _ = update_banned_asns_in_config(&config_path, &[64513], &[]).expect("update");
+        let rendered = read_to_string_with_limit(&config_path, BLOCKLIST_READ_LIMIT).expect("read");
+        assert!(rendered.contains(&format!(
+            "cache_stale_after_secs = {DEFAULT_ASN_CACHE_STALE_AFTER_SECS}"
+        )));
+    }
+
+    #[test]
+    fn update_banned_asns_in_config_rejects_non_array_banned_values() {
+        let temp = TempDir::new().expect("tempdir");
+        let config_path = temp.path().join("config.toml");
+        fs::write(
+            &config_path,
+            "[ipset]\nset_name='kidobo'\n[asn]\nbanned='not-an-array'\n",
+        )
+        .expect("write");
+
+        let err = update_banned_asns_in_config(&config_path, &[64513], &[]).expect_err("must fail");
+        assert!(matches!(
+            err,
+            KidoboError::ConfigParse {
+                source: crate::core::config::ConfigError::InvalidField { field, .. }
+            } if field == "asn.banned"
+        ));
+    }
+
+    #[test]
+    fn update_banned_asns_in_config_rejects_non_positive_asn_values() {
+        let temp = TempDir::new().expect("tempdir");
+        let config_path = temp.path().join("config.toml");
+        fs::write(
+            &config_path,
+            "[ipset]\nset_name='kidobo'\n[asn]\nbanned=[0]\n",
+        )
+        .expect("write");
+
+        let err = update_banned_asns_in_config(&config_path, &[64513], &[]).expect_err("must fail");
+        assert!(matches!(
+            err,
+            KidoboError::ConfigParse {
+                source: crate::core::config::ConfigError::InvalidField { field, .. }
+            } if field == "asn.banned"
+        ));
+    }
+
+    #[test]
     fn remove_exact_blocklist_duplicates_keeps_non_exact_entries() {
         let temp = TempDir::new().expect("tempdir");
         let path = temp.path().join("blocklist.txt");
@@ -1102,5 +1170,25 @@ mod tests {
                 .as_str(),
             "203.0.113.7\n"
         );
+    }
+
+    #[test]
+    fn remove_exact_blocklist_duplicates_short_circuits_for_missing_or_empty_input() {
+        let temp = TempDir::new().expect("tempdir");
+        let missing = temp.path().join("missing.txt");
+        let removed = remove_exact_blocklist_duplicates(&missing, &[]).expect("remove");
+        assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn parse_blocklist_target_trims_whitespace_and_canonicalizes_hosts() {
+        let parsed = parse_blocklist_target(" 203.0.113.7 ").expect("parse");
+        assert_eq!(parsed.to_string(), "203.0.113.7/32");
+    }
+
+    #[test]
+    fn canonicalize_blocklist_trims_header_trailing_blank_when_no_entries() {
+        let normalized = canonicalize_blocklist("# header\n\n");
+        assert_eq!(normalized, "# header\n");
     }
 }

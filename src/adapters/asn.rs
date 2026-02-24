@@ -280,14 +280,20 @@ fn parse_cidrs_from_bgpq4_output(contents: &str) -> Vec<CanonicalCidr> {
 mod tests {
     use std::collections::VecDeque;
     use std::fs;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use tempfile::TempDir;
 
     use super::{
-        AsnError, AsnPrefixResolver, CachedAsnPrefixes, delete_asn_cache_file,
-        load_asn_prefixes_with_cache, normalize_asn_tokens, parse_asn_token,
+        ASN_CACHE_FILE_READ_LIMIT, AsnError, AsnPrefixResolver, Bgpq4AsnPrefixResolver,
+        CachedAsnPrefixes, delete_asn_cache_file, load_asn_prefixes_with_cache,
+        normalize_asn_tokens, parse_asn_token,
     };
+    use crate::adapters::command_runner::{
+        CommandExecutor, CommandRequest, CommandResult, CommandRunnerError, ProcessStatus,
+    };
+    use crate::adapters::limited_io::read_to_string_with_limit;
     use crate::core::network::{CanonicalCidr, Ipv4Cidr};
 
     struct MockResolver {
@@ -302,11 +308,41 @@ mod tests {
         }
     }
 
-    impl AsnPrefixResolver for std::sync::Mutex<MockResolver> {
+    impl AsnPrefixResolver for Mutex<MockResolver> {
         fn resolve_prefixes(&self, _asn: u32) -> Result<Vec<CanonicalCidr>, AsnError> {
             self.lock()
                 .expect("lock")
                 .responses
+                .pop_front()
+                .expect("response")
+        }
+    }
+
+    #[derive(Clone)]
+    struct MockCommandExecutor {
+        requests: Arc<Mutex<Vec<CommandRequest>>>,
+        responses: Arc<Mutex<VecDeque<Result<CommandResult, CommandRunnerError>>>>,
+    }
+
+    impl MockCommandExecutor {
+        fn new(responses: Vec<Result<CommandResult, CommandRunnerError>>) -> Self {
+            Self {
+                requests: Arc::new(Mutex::new(Vec::new())),
+                responses: Arc::new(Mutex::new(VecDeque::from(responses))),
+            }
+        }
+
+        fn requests(&self) -> Vec<CommandRequest> {
+            self.requests.lock().expect("lock").clone()
+        }
+    }
+
+    impl CommandExecutor for MockCommandExecutor {
+        fn execute(&self, request: &CommandRequest) -> Result<CommandResult, CommandRunnerError> {
+            self.requests.lock().expect("lock").push(request.clone());
+            self.responses
+                .lock()
+                .expect("lock")
                 .pop_front()
                 .expect("response")
         }
@@ -332,11 +368,94 @@ mod tests {
     }
 
     #[test]
+    fn parse_asn_token_rejects_blank_input() {
+        let err = parse_asn_token("   ").expect_err("must fail");
+        assert_eq!(
+            err,
+            AsnError::InvalidAsnToken {
+                input: "   ".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn bgpq4_resolver_executes_both_families_and_dedupes_prefixes() {
+        let executor = MockCommandExecutor::new(vec![
+            Ok(CommandResult {
+                status: ProcessStatus::Exited(0),
+                stdout: "203.0.113.0/24\n198.51.100.0/24\n".to_string(),
+                stderr: String::new(),
+            }),
+            Ok(CommandResult {
+                status: ProcessStatus::Exited(0),
+                stdout: "2001:db8::/64\n198.51.100.0/24\n".to_string(),
+                stderr: String::new(),
+            }),
+        ]);
+        let resolver = Bgpq4AsnPrefixResolver::new(executor.clone(), Duration::from_secs(5));
+
+        let prefixes = resolver.resolve_prefixes(64512).expect("resolve");
+        let rendered = prefixes
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rendered,
+            vec!["198.51.100.0/24", "203.0.113.0/24", "2001:db8::/64"]
+        );
+
+        let requests = executor.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].program, "bgpq4");
+        assert_eq!(requests[0].args, vec!["-4", "-F", "%n/%l\n", "AS64512"]);
+        assert_eq!(requests[1].args, vec!["-6", "-F", "%n/%l\n", "AS64512"]);
+    }
+
+    #[test]
+    fn bgpq4_resolver_reports_nonzero_exit_with_stderr() {
+        let executor = MockCommandExecutor::new(vec![Ok(CommandResult {
+            status: ProcessStatus::Exited(1),
+            stdout: String::new(),
+            stderr: "no route object".to_string(),
+        })]);
+        let resolver = Bgpq4AsnPrefixResolver::new(executor, Duration::from_secs(5));
+
+        let err = resolver.resolve_prefixes(64512).expect_err("must fail");
+        match err {
+            AsnError::ResolveFailed { asn, reason } => {
+                assert_eq!(asn, 64512);
+                assert!(reason.contains("bgpq4 -4 -F"));
+                assert!(reason.contains("failed: no route object"));
+            }
+            _ => panic!("unexpected error variant"),
+        }
+    }
+
+    #[test]
+    fn bgpq4_resolver_reports_nonzero_exit_without_stderr() {
+        let executor = MockCommandExecutor::new(vec![Ok(CommandResult {
+            status: ProcessStatus::Exited(2),
+            stdout: String::new(),
+            stderr: "   ".to_string(),
+        })]);
+        let resolver = Bgpq4AsnPrefixResolver::new(executor, Duration::from_secs(5));
+
+        let err = resolver.resolve_prefixes(64512).expect_err("must fail");
+        match err {
+            AsnError::ResolveFailed { asn, reason } => {
+                assert_eq!(asn, 64512);
+                assert!(reason.contains("exited with Exited(2)"));
+            }
+            _ => panic!("unexpected error variant"),
+        }
+    }
+
+    #[test]
     fn cache_load_uses_fresh_cache_without_resolve() {
         let temp = TempDir::new().expect("tempdir");
         let cache_dir = temp.path();
         fs::write(cache_dir.join("as64512.iplist"), "203.0.113.0/24\n").expect("write");
-        let resolver = std::sync::Mutex::new(MockResolver::new(vec![]));
+        let resolver = Mutex::new(MockResolver::new(vec![]));
 
         let loaded = load_asn_prefixes_with_cache(
             64512,
@@ -360,17 +479,80 @@ mod tests {
         let temp = TempDir::new().expect("tempdir");
         let cache_dir = temp.path();
         fs::write(cache_dir.join("as64512.iplist"), "203.0.113.0/24\n").expect("write");
-        let resolver =
-            std::sync::Mutex::new(MockResolver::new(vec![Err(AsnError::ResolveFailed {
-                asn: 64512,
-                reason: "boom".to_string(),
-            })]));
+        let resolver = Mutex::new(MockResolver::new(vec![Err(AsnError::ResolveFailed {
+            asn: 64512,
+            reason: "boom".to_string(),
+        })]));
 
         let loaded =
             load_asn_prefixes_with_cache(64512, cache_dir, Duration::from_secs(0), &resolver)
                 .expect("load");
         assert!(loaded.stale);
         assert_eq!(loaded.prefixes.len(), 1);
+    }
+
+    #[test]
+    fn cache_load_refreshes_and_persists_when_cache_is_missing() {
+        let temp = TempDir::new().expect("tempdir");
+        let cache_dir = temp.path();
+        let resolver = Mutex::new(MockResolver::new(vec![Ok(vec![
+            CanonicalCidr::V4(Ipv4Cidr::from_parts(0xcb007100, 24)),
+            CanonicalCidr::V4(Ipv4Cidr::from_parts(0xc6336400, 24)),
+        ])]));
+
+        let first = load_asn_prefixes_with_cache(
+            64512,
+            cache_dir,
+            Duration::from_secs(24 * 60 * 60),
+            &resolver,
+        )
+        .expect("initial load");
+        assert!(!first.stale);
+        assert_eq!(first.prefixes.len(), 2);
+
+        let cache_file = cache_dir.join("as64512.iplist");
+        let cache_contents =
+            read_to_string_with_limit(&cache_file, ASN_CACHE_FILE_READ_LIMIT).expect("read cache");
+        assert!(cache_contents.starts_with("# kidobo-asn-cache-v1\n"));
+        assert!(cache_contents.contains("203.0.113.0/24\n"));
+        assert!(cache_contents.contains("198.51.100.0/24\n"));
+
+        let second = load_asn_prefixes_with_cache(
+            64512,
+            cache_dir,
+            Duration::from_secs(24 * 60 * 60),
+            &resolver,
+        )
+        .expect("cached load");
+        assert!(!second.stale);
+        assert_eq!(
+            second
+                .prefixes
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect::<Vec<_>>(),
+            vec!["198.51.100.0/24", "203.0.113.0/24"]
+        );
+    }
+
+    #[test]
+    fn cache_load_without_cache_propagates_refresh_error() {
+        let temp = TempDir::new().expect("tempdir");
+        let resolver = Mutex::new(MockResolver::new(vec![Err(AsnError::ResolveFailed {
+            asn: 64512,
+            reason: "boom".to_string(),
+        })]));
+
+        let err =
+            load_asn_prefixes_with_cache(64512, temp.path(), Duration::from_secs(1), &resolver)
+                .expect_err("must fail");
+        assert_eq!(
+            err,
+            AsnError::ResolveFailed {
+                asn: 64512,
+                reason: "boom".to_string()
+            }
+        );
     }
 
     #[test]

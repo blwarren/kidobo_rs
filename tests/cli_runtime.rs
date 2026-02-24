@@ -484,3 +484,83 @@ fn doctor_forced_human_color_emits_ansi_level_label() {
         output.status.code()
     );
 }
+
+#[test]
+fn ban_and_unban_target_flow_is_idempotent_and_updates_blocklist() {
+    let root = create_root("[ipset]\nset_name='kidobo'\n", "");
+    let blocklist = root.path().join("data/blocklist.txt");
+
+    let first_ban = run_kidobo_with_root(root.path(), &["ban", "203.0.113.7"]);
+    assert_eq!(
+        first_ban.status.code(),
+        Some(0),
+        "first ban failed: {}",
+        String::from_utf8_lossy(&first_ban.stderr)
+    );
+    let first_stdout = String::from_utf8_lossy(&first_ban.stdout);
+    assert!(
+        first_stdout.contains("added blocklist entry 203.0.113.7/32"),
+        "unexpected first ban output: {first_stdout}"
+    );
+
+    let second_ban = run_kidobo_with_root(root.path(), &["ban", "203.0.113.7"]);
+    assert_eq!(
+        second_ban.status.code(),
+        Some(0),
+        "second ban failed: {}",
+        String::from_utf8_lossy(&second_ban.stderr)
+    );
+    let second_stdout = String::from_utf8_lossy(&second_ban.stdout);
+    assert!(
+        second_stdout.contains("blocklist already contains 203.0.113.7/32"),
+        "unexpected second ban output: {second_stdout}"
+    );
+
+    let unban = run_kidobo_with_root(root.path(), &["unban", "203.0.113.7"]);
+    assert_eq!(
+        unban.status.code(),
+        Some(0),
+        "unban failed: {}",
+        String::from_utf8_lossy(&unban.stderr)
+    );
+    let unban_stdout = String::from_utf8_lossy(&unban.stdout);
+    assert!(
+        unban_stdout.contains("removed 1 blocklist entries for 203.0.113.7/32"),
+        "unexpected unban output: {unban_stdout}"
+    );
+
+    let contents =
+        read_to_string_with_limit(&blocklist, BLOCKLIST_READ_LIMIT).expect("read blocklist");
+    assert!(contents.is_empty(), "blocklist should be empty: {contents}");
+}
+
+#[test]
+fn unban_yes_removes_overlapping_entries_without_prompt() {
+    let root = create_root(
+        "[ipset]\nset_name='kidobo'\n",
+        "203.0.113.0/24\n198.51.100.0/24\n",
+    );
+    let blocklist = root.path().join("data/blocklist.txt");
+
+    let output = run_kidobo_with_root(root.path(), &["unban", "203.0.113.7", "--yes"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "unban --yes failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("auto-approving removal of partial matches"),
+        "missing auto-approve message: {stdout}"
+    );
+    assert!(
+        stdout.contains("removed 1 blocklist entries for 203.0.113.7/32"),
+        "unexpected unban --yes output: {stdout}"
+    );
+
+    let contents =
+        read_to_string_with_limit(&blocklist, BLOCKLIST_READ_LIMIT).expect("read blocklist");
+    assert_eq!(contents, "198.51.100.0/24\n");
+}
