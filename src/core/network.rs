@@ -1184,6 +1184,71 @@ mod tests {
     }
 
     #[test]
+    fn merge_intervals_returns_empty_for_empty_input() {
+        assert!(merge_intervals_u32(&[]).is_empty());
+    }
+
+    #[test]
+    fn merge_intervals_handles_zero_start_without_underflow() {
+        let merged = merge_intervals_u32(&[
+            IntervalU32 { start: 0, end: 0 },
+            IntervalU32 { start: 1, end: 1 },
+        ]);
+        assert_eq!(merged, vec![IntervalU32 { start: 0, end: 1 }]);
+    }
+
+    #[test]
+    fn merge_intervals_preserves_three_disjoint_components() {
+        let merged = merge_intervals_u32(&[
+            IntervalU32 { start: 1, end: 1 },
+            IntervalU32 { start: 3, end: 3 },
+            IntervalU32 { start: 5, end: 5 },
+        ]);
+        assert_eq!(
+            merged,
+            vec![
+                IntervalU32 { start: 1, end: 1 },
+                IntervalU32 { start: 3, end: 3 },
+                IntervalU32 { start: 5, end: 5 },
+            ]
+        );
+    }
+
+    #[test]
+    fn merge_intervals_large_unsorted_input_uses_correct_ordering() {
+        let mut intervals = Vec::with_capacity(16_384);
+        for i in 0..8_192_u32 {
+            intervals.push(IntervalU32 {
+                start: 0x0001_0000 + i * 2,
+                end: 0x0001_0000 + i * 2,
+            });
+            intervals.push(IntervalU32 {
+                start: i * 2,
+                end: i * 2,
+            });
+        }
+
+        let merged = merge_intervals_u32(&intervals);
+
+        assert_eq!(merged.len(), 16_384);
+        assert_eq!(merged[0], IntervalU32 { start: 0, end: 0 });
+        assert_eq!(
+            merged[8_191],
+            IntervalU32 {
+                start: 16_382,
+                end: 16_382
+            }
+        );
+        assert_eq!(
+            merged[8_192],
+            IntervalU32 {
+                start: 65_536,
+                end: 65_536
+            }
+        );
+    }
+
+    #[test]
     fn safelist_subtraction_carves_ipv4_ranges() {
         let carved = subtract_safelist_ipv4(
             &[Ipv4Cidr::from_parts(0x0a000000, 24)],
