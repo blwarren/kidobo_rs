@@ -4,6 +4,12 @@
 
 ### Changed
 
+- TODO
+
+## [0.9.0] - 2026-02-25
+
+### Changed
+
 - `kidobo sync` now supports `--timer`, which emits per-stage timing logs (`stage_ms` and cumulative `total_ms`) across path/config/lock setup and major sync pipeline phases.
 
 ## [0.8.0] - 2026-02-23
