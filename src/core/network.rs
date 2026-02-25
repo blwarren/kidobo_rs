@@ -1060,6 +1060,130 @@ mod tests {
     }
 
     #[test]
+    fn merge_intervals_merges_unsorted_adjacency() {
+        let merged_v4 = merge_intervals_u32(&[
+            IntervalU32 { start: 21, end: 30 },
+            IntervalU32 { start: 10, end: 20 },
+        ]);
+        assert_eq!(merged_v4, vec![IntervalU32 { start: 10, end: 30 }]);
+
+        let merged_v6 = merge_intervals_u128(&[
+            IntervalU128 {
+                start: 121,
+                end: 130,
+            },
+            IntervalU128 {
+                start: 100,
+                end: 120,
+            },
+        ]);
+        assert_eq!(
+            merged_v6,
+            vec![IntervalU128 {
+                start: 100,
+                end: 130
+            }]
+        );
+    }
+
+    #[test]
+    fn merge_intervals_preserves_single_interval() {
+        assert_eq!(
+            merge_intervals_u32(&[IntervalU32 { start: 10, end: 12 }]),
+            vec![IntervalU32 { start: 10, end: 12 }]
+        );
+        assert_eq!(
+            merge_intervals_u128(&[IntervalU128 { start: 10, end: 12 }]),
+            vec![IntervalU128 { start: 10, end: 12 }]
+        );
+    }
+
+    #[test]
+    fn merge_intervals_handles_equal_starts_for_ipv6() {
+        let merged = merge_intervals_u128(&[
+            IntervalU128 {
+                start: 100,
+                end: 100,
+            },
+            IntervalU128 {
+                start: 100,
+                end: 140,
+            },
+        ]);
+        assert_eq!(
+            merged,
+            vec![IntervalU128 {
+                start: 100,
+                end: 140
+            }]
+        );
+    }
+
+    #[test]
+    fn merge_intervals_does_not_merge_across_single_address_gap() {
+        let merged_v4 = merge_intervals_u32(&[
+            IntervalU32 { start: 1, end: 2 },
+            IntervalU32 { start: 4, end: 5 },
+        ]);
+        assert_eq!(
+            merged_v4,
+            vec![
+                IntervalU32 { start: 1, end: 2 },
+                IntervalU32 { start: 4, end: 5 },
+            ]
+        );
+
+        let merged_v6 = merge_intervals_u128(&[
+            IntervalU128 { start: 1, end: 2 },
+            IntervalU128 { start: 4, end: 5 },
+        ]);
+        assert_eq!(
+            merged_v6,
+            vec![
+                IntervalU128 { start: 1, end: 2 },
+                IntervalU128 { start: 4, end: 5 },
+            ]
+        );
+    }
+
+    #[test]
+    fn merge_intervals_handles_max_endpoint_without_overflow() {
+        assert_eq!(
+            merge_intervals_u32(&[
+                IntervalU32 {
+                    start: u32::MAX,
+                    end: u32::MAX,
+                },
+                IntervalU32 {
+                    start: u32::MAX,
+                    end: u32::MAX,
+                },
+            ]),
+            vec![IntervalU32 {
+                start: u32::MAX,
+                end: u32::MAX,
+            }]
+        );
+
+        assert_eq!(
+            merge_intervals_u128(&[
+                IntervalU128 {
+                    start: u128::MAX,
+                    end: u128::MAX,
+                },
+                IntervalU128 {
+                    start: u128::MAX,
+                    end: u128::MAX,
+                },
+            ]),
+            vec![IntervalU128 {
+                start: u128::MAX,
+                end: u128::MAX,
+            }]
+        );
+    }
+
+    #[test]
     fn safelist_subtraction_carves_ipv4_ranges() {
         let carved = subtract_safelist_ipv4(
             &[Ipv4Cidr::from_parts(0x0a000000, 24)],
