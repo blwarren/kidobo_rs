@@ -422,4 +422,87 @@ mod tests {
         assert_eq!(emitted[0].1, "source:a");
         assert_eq!(emitted[0].2, "10.0.0.0/24");
     }
+
+    #[test]
+    fn lookup_index_keeps_supernet_matches() {
+        let sources = vec![
+            LookupSourceEntry {
+                source_label: "source:super".into(),
+                source_line: "10.0.0.0/8".to_string(),
+                cidr: CanonicalCidr::V4(Ipv4Cidr::from_parts(0x0a000000, 8)),
+            },
+            LookupSourceEntry {
+                source_label: "source:narrow".into(),
+                source_line: "10.2.0.0/16".to_string(),
+                cidr: CanonicalCidr::V4(Ipv4Cidr::from_parts(0x0a020000, 16)),
+            },
+        ];
+
+        let report = run_lookup(&["10.2.3.4".to_string()], &sources);
+        let labels = report
+            .matches
+            .iter()
+            .map(|m| m.source_label.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(labels, vec!["source:narrow", "source:super"]);
+    }
+
+    #[test]
+    fn lookup_preserves_distinct_source_labels_for_same_cidr() {
+        let sources = vec![
+            LookupSourceEntry {
+                source_label: "feed:a".into(),
+                source_line: "10.0.0.0/24".to_string(),
+                cidr: CanonicalCidr::V4(Ipv4Cidr::from_parts(0x0a000000, 24)),
+            },
+            LookupSourceEntry {
+                source_label: "feed:b".into(),
+                source_line: "10.0.0.0/24".to_string(),
+                cidr: CanonicalCidr::V4(Ipv4Cidr::from_parts(0x0a000000, 24)),
+            },
+        ];
+
+        let report = run_lookup(&["10.0.0.7".to_string()], &sources);
+        let labels = report
+            .matches
+            .iter()
+            .map(|m| m.source_label.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(labels, vec!["feed:a", "feed:b"]);
+    }
+
+    #[test]
+    fn lookup_keeps_distinct_raw_targets_that_parse_to_same_cidr() {
+        let sources = vec![LookupSourceEntry {
+            source_label: "source:a".into(),
+            source_line: "203.0.113.7/32".to_string(),
+            cidr: CanonicalCidr::V4(Ipv4Cidr::from_parts(0xcb007107, 32)),
+        }];
+
+        let report = run_lookup(
+            &["203.0.113.7".to_string(), "203.0.113.7/32".to_string()],
+            &sources,
+        );
+
+        let targets = report
+            .matches
+            .iter()
+            .map(|m| m.target.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(targets, vec!["203.0.113.7", "203.0.113.7/32"]);
+    }
+
+    #[test]
+    fn lookup_invalid_targets_are_sorted_and_deduped() {
+        let report = run_lookup(
+            &["zzz".to_string(), "aaa".to_string(), "zzz".to_string()],
+            &[],
+        );
+        assert_eq!(
+            report.invalid_targets,
+            vec!["aaa".to_string(), "zzz".to_string()]
+        );
+    }
 }

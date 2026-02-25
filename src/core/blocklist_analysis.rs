@@ -74,16 +74,18 @@ fn count_overlapping_ipv4(local: &[Ipv4Cidr], remote: &[Ipv4Cidr]) -> usize {
         return 0;
     }
 
-    let local_intervals = local
+    let mut local_intervals = local
         .iter()
         .copied()
         .map(ipv4_to_interval)
         .collect::<Vec<_>>();
-    let remote_intervals = remote
+    let mut remote_intervals = remote
         .iter()
         .copied()
         .map(ipv4_to_interval)
         .collect::<Vec<_>>();
+    local_intervals.sort_unstable();
+    remote_intervals.sort_unstable();
     count_overlapping_intervals_u32(&local_intervals, &remote_intervals)
 }
 
@@ -92,16 +94,18 @@ fn count_overlapping_ipv6(local: &[Ipv6Cidr], remote: &[Ipv6Cidr]) -> usize {
         return 0;
     }
 
-    let local_intervals = local
+    let mut local_intervals = local
         .iter()
         .copied()
         .map(ipv6_to_interval)
         .collect::<Vec<_>>();
-    let remote_intervals = remote
+    let mut remote_intervals = remote
         .iter()
         .copied()
         .map(ipv6_to_interval)
         .collect::<Vec<_>>();
+    local_intervals.sort_unstable();
+    remote_intervals.sort_unstable();
     count_overlapping_intervals_u128(&local_intervals, &remote_intervals)
 }
 
@@ -156,11 +160,12 @@ fn fully_covered_ipv4(local: &[Ipv4Cidr], remote: &[Ipv4Cidr]) -> Vec<Ipv4Cidr> 
         return Vec::new();
     }
 
-    let remote_intervals = remote
+    let mut remote_intervals = remote
         .iter()
         .copied()
         .map(ipv4_to_interval)
         .collect::<Vec<_>>();
+    remote_intervals.sort_unstable();
     local
         .iter()
         .copied()
@@ -173,11 +178,12 @@ fn fully_covered_ipv6(local: &[Ipv6Cidr], remote: &[Ipv6Cidr]) -> Vec<Ipv6Cidr> 
         return Vec::new();
     }
 
-    let remote_intervals = remote
+    let mut remote_intervals = remote
         .iter()
         .copied()
         .map(ipv6_to_interval)
         .collect::<Vec<_>>();
+    remote_intervals.sort_unstable();
     local
         .iter()
         .copied()
@@ -274,5 +280,46 @@ mod tests {
             reduced.ipv6,
             vec![Ipv6Cidr::from_parts(0x20010db8000000008000000000000000, 65)]
         );
+    }
+
+    #[test]
+    fn fully_covered_local_reports_ipv6_when_fully_covered() {
+        let local = collapse_by_family(&[CanonicalCidr::V6(Ipv6Cidr::from_parts(
+            0x20010db8000000000000000000000000,
+            64,
+        ))]);
+        let remote = collapse_by_family(&[CanonicalCidr::V6(Ipv6Cidr::from_parts(
+            0x20010db8000000000000000000000000,
+            64,
+        ))]);
+
+        let covered = fully_covered_local(&local, &remote);
+        assert_eq!(
+            covered.ipv6,
+            vec![Ipv6Cidr::from_parts(0x20010db8000000000000000000000000, 64)]
+        );
+    }
+
+    #[test]
+    fn overlap_counts_counts_each_overlapping_local_entry() {
+        let local = collapse_by_family(&[
+            CanonicalCidr::V4(Ipv4Cidr::from_parts(0x0a000000, 26)),
+            CanonicalCidr::V4(Ipv4Cidr::from_parts(0x0a000080, 26)),
+        ]);
+        let remote = collapse_by_family(&[CanonicalCidr::V4(Ipv4Cidr::from_parts(0x0a000000, 24))]);
+
+        let overlap = overlap_counts(&local, &remote);
+        assert_eq!(overlap.ipv4.overlapping, 2);
+        assert_eq!(overlap.ipv4.fully_covered, 2);
+    }
+
+    #[test]
+    fn overlap_counts_treats_exact_host_match_as_overlap() {
+        let local = collapse_by_family(&[CanonicalCidr::V4(Ipv4Cidr::from_parts(0xcb007107, 32))]);
+        let remote = collapse_by_family(&[CanonicalCidr::V4(Ipv4Cidr::from_parts(0xcb007107, 32))]);
+
+        let overlap = overlap_counts(&local, &remote);
+        assert_eq!(overlap.ipv4.overlapping, 1);
+        assert_eq!(overlap.ipv4.fully_covered, 1);
     }
 }
