@@ -1,6 +1,5 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeSet, HashSet};
-use std::fs;
 use std::path::PathBuf;
 
 use log::warn;
@@ -9,7 +8,8 @@ use tabled::{Table, Tabled};
 
 use crate::adapters::blocklist_analysis_sources::load_analysis_sources;
 use crate::adapters::config::load_config_from_file;
-use crate::adapters::limited_io::read_to_string_with_limit;
+use crate::adapters::limited_io::{read_to_string_with_limit, write_string_atomic};
+use crate::adapters::lock::acquire_non_blocking;
 use crate::adapters::lookup_sources::load_lookup_sources;
 use crate::adapters::path::{PathResolutionInput, resolve_paths};
 use crate::cli::args::{AnalyzeCommand, Command};
@@ -155,6 +155,11 @@ fn run_analyze_overlap_command(
     let path_input = PathResolutionInput::from_process(None);
     let paths = resolve_paths(&path_input)?;
     let config = load_config_from_file(&paths.config_file)?;
+    let _lock = if apply_fully_covered_local {
+        Some(acquire_non_blocking(&paths.lock_file)?)
+    } else {
+        None
+    };
     let stale_after_secs = u64::from(config.remote.cache_stale_after_secs.get());
     let sources = load_analysis_sources(&paths, stale_after_secs).map_err(KidoboError::from)?;
 
@@ -285,7 +290,7 @@ fn apply_remove_fully_covered_entries(
         output.push('\n');
     }
 
-    fs::write(path, output).map_err(|err| KidoboError::BlocklistWrite {
+    write_string_atomic(path, &output).map_err(|err| KidoboError::BlocklistWrite {
         path: path.to_path_buf(),
         reason: err.to_string(),
     })?;
@@ -515,6 +520,21 @@ mod tests {
         let err = read_target_lines(&missing).expect_err("must fail");
         match err {
             KidoboError::LookupTargetFileRead { path, .. } => assert_eq!(path, missing),
+            _ => panic!("unexpected error variant"),
+        }
+    }
+
+    #[test]
+    fn oversized_target_file_is_rejected() {
+        let temp = TempDir::new().expect("tempdir");
+        let file = temp.path().join("targets.txt");
+        fs::write(&file, "1".repeat(super::LOOKUP_TARGET_READ_LIMIT + 1)).expect("write");
+
+        let err = read_target_lines(&file).expect_err("must fail");
+        match err {
+            KidoboError::LookupTargetFileRead { reason, .. } => {
+                assert!(reason.contains("file exceeds 2097152 byte limit"));
+            }
             _ => panic!("unexpected error variant"),
         }
     }

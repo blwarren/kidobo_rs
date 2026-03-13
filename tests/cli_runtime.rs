@@ -323,6 +323,32 @@ fn analyze_overlap_apply_fully_covered_local_updates_blocklist_file() {
 }
 
 #[test]
+fn analyze_overlap_apply_fails_when_lock_is_held() {
+    let root = create_root(
+        "[ipset]\nset_name='kidobo'\n[remote]\ncache_stale_after_secs=86400\n",
+        "203.0.113.7\n",
+    );
+    fs::write(
+        root.path().join("cache/remote/a.iplist"),
+        "203.0.113.0/24\n",
+    )
+    .expect("write remote iplist");
+    let _held_lock = hold_lock(&root.path().join("cache/sync.lock"));
+
+    let output = run_kidobo_with_root(
+        root.path(),
+        &["analyze", "overlap", "--apply-fully-covered-local"],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("lock already held"),
+        "missing lock-held error message: {stderr}"
+    );
+}
+
+#[test]
 fn sync_reports_config_parse_error_before_lock_check() {
     let root = create_sync_root("not valid = [");
     let _held_lock = hold_lock(&root.path().join("cache/sync.lock"));
@@ -468,6 +494,60 @@ fn sync_skips_local_blocklist_normalization_when_unchanged() {
 }
 
 #[test]
+fn sync_normalization_drops_non_header_comments() {
+    let root = create_root(
+        "[ipset]\nset_name='kidobo'\nenable_ipv6=false\n[safe]\ninclude_github_meta=false\n",
+        "# header comment \n203.0.113.7\n# dropped comment\n203.0.113.0/24\n",
+    );
+    let fake_sudo = write_fake_sudo_script(&root);
+    let blocklist = root.path().join("data/blocklist.txt");
+
+    let mut command = kidobo_with_root_command(root.path(), &["sync"]);
+    command.env(
+        "PATH",
+        path_with_bin_prefix(fake_sudo.parent().expect("sudo parent")),
+    );
+    let output = command.output().expect("run sync");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "sync failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let normalized =
+        read_to_string_with_limit(&blocklist, BLOCKLIST_READ_LIMIT).expect("read blocklist");
+    assert_eq!(normalized, "# header comment\n\n203.0.113.0/24\n");
+}
+
+#[test]
+fn sync_oversized_blocklist_fails_with_read_error() {
+    let root = create_root(
+        "[ipset]\nset_name='kidobo'\nenable_ipv6=false\n[safe]\ninclude_github_meta=false\n",
+        &"1".repeat(BLOCKLIST_READ_LIMIT + 1),
+    );
+    let fake_sudo = write_fake_sudo_script(&root);
+
+    let mut command = kidobo_with_root_command(root.path(), &["sync"]);
+    command.env(
+        "PATH",
+        path_with_bin_prefix(fake_sudo.parent().expect("sudo parent")),
+    );
+    let output = command.output().expect("run sync");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("failed to read blocklist file"),
+        "missing blocklist read error: {stderr}"
+    );
+    assert!(
+        stderr.contains("file exceeds 16777216 byte limit"),
+        "missing size-limit detail: {stderr}"
+    );
+}
+
+#[test]
 fn doctor_forced_human_color_emits_ansi_level_label() {
     let root = create_lookup_root("203.0.113.7\n");
     let mut command = kidobo_with_root_command(root.path(), &["doctor"]);
@@ -532,6 +612,28 @@ fn ban_and_unban_target_flow_is_idempotent_and_updates_blocklist() {
     let contents =
         read_to_string_with_limit(&blocklist, BLOCKLIST_READ_LIMIT).expect("read blocklist");
     assert!(contents.is_empty(), "blocklist should be empty: {contents}");
+}
+
+#[test]
+fn ban_fails_when_lock_is_held() {
+    let root = create_root("[ipset]\nset_name='kidobo'\n", "");
+    let blocklist = root.path().join("data/blocklist.txt");
+    let _held_lock = hold_lock(&root.path().join("cache/sync.lock"));
+
+    let output = run_kidobo_with_root(root.path(), &["ban", "203.0.113.7"]);
+    assert_eq!(output.status.code(), Some(1));
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("lock already held"),
+        "missing lock-held error message: {stderr}"
+    );
+    let contents =
+        read_to_string_with_limit(&blocklist, BLOCKLIST_READ_LIMIT).expect("read blocklist");
+    assert!(
+        contents.is_empty(),
+        "blocklist should remain unchanged: {contents}"
+    );
 }
 
 #[test]

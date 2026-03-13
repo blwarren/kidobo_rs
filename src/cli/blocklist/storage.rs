@@ -1,0 +1,276 @@
+use std::fs;
+use std::path::Path;
+use std::time::UNIX_EPOCH;
+
+use log::warn;
+
+use crate::adapters::limited_io::{read_to_string_with_limit, write_string_atomic};
+use crate::core::network::{
+    CanonicalCidr, collapse_ipv4, collapse_ipv6, parse_ip_cidr_non_strict, split_by_family,
+};
+use crate::error::KidoboError;
+
+pub(super) const BLOCKLIST_READ_LIMIT: usize = 16 * 1024 * 1024;
+const BLOCKLIST_FAST_STATE_VERSION: &str = "v1";
+const BLOCKLIST_FAST_STATE_READ_LIMIT: usize = 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BlocklistNormalizeResult {
+    MissingBlocklist,
+    SkippedUnchanged,
+    Checked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BlocklistFastState {
+    byte_len: u64,
+    modified_nanos: u128,
+}
+
+impl BlocklistFastState {
+    fn capture(path: &Path) -> Option<Self> {
+        let metadata = fs::metadata(path).ok()?;
+        let modified = metadata.modified().ok()?;
+        let since_epoch = modified.duration_since(UNIX_EPOCH).ok()?;
+
+        Some(Self {
+            byte_len: metadata.len(),
+            modified_nanos: since_epoch.as_nanos(),
+        })
+    }
+
+    fn parse(contents: &str) -> Option<Self> {
+        let mut parts = contents.split_whitespace();
+        let version = parts.next()?;
+        if version != BLOCKLIST_FAST_STATE_VERSION {
+            return None;
+        }
+
+        let byte_len = parts.next()?.parse::<u64>().ok()?;
+        let modified_nanos = parts.next()?.parse::<u128>().ok()?;
+        if parts.next().is_some() {
+            return None;
+        }
+
+        Some(Self {
+            byte_len,
+            modified_nanos,
+        })
+    }
+
+    fn serialize(self) -> String {
+        format!(
+            "{} {} {}\n",
+            BLOCKLIST_FAST_STATE_VERSION, self.byte_len, self.modified_nanos
+        )
+    }
+}
+
+pub(super) fn write_blocklist_lines(path: &Path, lines: &[String]) -> Result<(), KidoboError> {
+    let mut contents = lines.join("\n");
+    if !contents.is_empty() {
+        contents.push('\n');
+    }
+
+    write_string_atomic(path, &contents).map_err(|err| KidoboError::BlocklistWrite {
+        path: path.to_path_buf(),
+        reason: err.to_string(),
+    })
+}
+
+pub(super) fn ensure_blocklist_parent(path: &Path) -> Result<(), KidoboError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| KidoboError::BlocklistWrite {
+            path: parent.to_path_buf(),
+            reason: err.to_string(),
+        })?;
+    }
+
+    Ok(())
+}
+
+pub(crate) fn normalize_local_blocklist(path: &Path) -> Result<(), KidoboError> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let original = read_to_string_with_limit(path, BLOCKLIST_READ_LIMIT).map_err(|err| {
+        KidoboError::BlocklistRead {
+            path: path.to_path_buf(),
+            reason: err.to_string(),
+        }
+    })?;
+
+    let normalized = canonicalize_blocklist(&original);
+
+    if normalized != original {
+        write_string_atomic(path, &normalized).map_err(|err| KidoboError::BlocklistWrite {
+            path: path.to_path_buf(),
+            reason: err.to_string(),
+        })?;
+    }
+
+    Ok(())
+}
+
+pub(crate) fn normalize_local_blocklist_with_fast_state(
+    blocklist_path: &Path,
+    fast_state_path: &Path,
+) -> Result<BlocklistNormalizeResult, KidoboError> {
+    if !blocklist_path.exists() {
+        return Ok(BlocklistNormalizeResult::MissingBlocklist);
+    }
+
+    let current_state = BlocklistFastState::capture(blocklist_path);
+    let cached_state = read_blocklist_fast_state(fast_state_path);
+    if current_state
+        .zip(cached_state)
+        .is_some_and(|(current, cached)| current == cached)
+    {
+        return Ok(BlocklistNormalizeResult::SkippedUnchanged);
+    }
+
+    normalize_local_blocklist(blocklist_path)?;
+
+    if let Some(final_state) = BlocklistFastState::capture(blocklist_path)
+        && let Err(err) = write_blocklist_fast_state(fast_state_path, final_state)
+    {
+        warn!(
+            "best-effort blocklist fast-state write failed for {} ({err})",
+            fast_state_path.display()
+        );
+    }
+
+    Ok(BlocklistNormalizeResult::Checked)
+}
+
+pub(super) fn canonicalize_blocklist(contents: &str) -> String {
+    let mut lines = Vec::new();
+    let mut entries = Vec::new();
+    let mut in_header = true;
+
+    for line in contents.lines() {
+        let trimmed = line.trim();
+
+        if in_header {
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                lines.push(trimmed.to_string());
+                continue;
+            }
+            in_header = false;
+        }
+
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        if let Some(cidr) = parse_ip_cidr_non_strict(trimmed) {
+            entries.push(cidr);
+        }
+    }
+
+    let canonical_entries = canonical_entry_lines(&entries);
+    if !canonical_entries.is_empty() {
+        if !lines.is_empty() && !lines.last().is_some_and(std::string::String::is_empty) {
+            lines.push(String::new());
+        }
+        lines.extend(canonical_entries);
+    } else if lines.last().is_some_and(std::string::String::is_empty) {
+        lines.pop();
+    }
+
+    let mut normalized = lines.join("\n");
+    if !normalized.is_empty() {
+        normalized.push('\n');
+    }
+    normalized
+}
+
+fn read_blocklist_fast_state(path: &Path) -> Option<BlocklistFastState> {
+    let contents = read_to_string_with_limit(path, BLOCKLIST_FAST_STATE_READ_LIMIT).ok()?;
+    BlocklistFastState::parse(&contents)
+}
+
+fn write_blocklist_fast_state(
+    path: &Path,
+    state: BlocklistFastState,
+) -> Result<(), std::io::Error> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    write_string_atomic(path, &state.serialize())
+}
+
+fn canonical_entry_lines(entries: &[CanonicalCidr]) -> Vec<String> {
+    let family_split = split_by_family(entries);
+    let collapsed_v4 = collapse_ipv4(&family_split.ipv4);
+    let collapsed_v6 = collapse_ipv6(&family_split.ipv6);
+
+    let mut canonical = Vec::new();
+    canonical.extend(collapsed_v4.into_iter().map(|cidr| cidr.to_string()));
+    canonical.extend(collapsed_v6.into_iter().map(|cidr| cidr.to_string()));
+
+    canonical
+}
+
+#[derive(Debug)]
+pub(super) struct BlocklistFile {
+    pub(super) lines: Vec<BlocklistLine>,
+    pub(super) has_content: bool,
+    pub(super) trailing_newline: bool,
+}
+
+impl BlocklistFile {
+    pub(super) fn load(path: &Path) -> Result<Self, KidoboError> {
+        if !path.exists() {
+            return Ok(Self {
+                lines: Vec::new(),
+                has_content: false,
+                trailing_newline: false,
+            });
+        }
+
+        let contents = read_to_string_with_limit(path, BLOCKLIST_READ_LIMIT).map_err(|err| {
+            KidoboError::BlocklistRead {
+                path: path.to_path_buf(),
+                reason: err.to_string(),
+            }
+        })?;
+
+        let lines = contents.lines().map(BlocklistLine::new).collect::<Vec<_>>();
+
+        Ok(Self {
+            lines,
+            has_content: !contents.is_empty(),
+            trailing_newline: contents.ends_with('\n'),
+        })
+    }
+
+    pub(super) fn contains_canonical(&self, canonical: CanonicalCidr) -> bool {
+        self.lines
+            .iter()
+            .any(|line| line.canonical == Some(canonical))
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct BlocklistLine {
+    pub(super) original: String,
+    pub(super) canonical: Option<CanonicalCidr>,
+}
+
+impl BlocklistLine {
+    fn new(line: &str) -> Self {
+        let trimmed = line.trim();
+        let canonical = if trimmed.is_empty() {
+            None
+        } else {
+            parse_ip_cidr_non_strict(trimmed)
+        };
+
+        Self {
+            original: line.to_string(),
+            canonical,
+        }
+    }
+}

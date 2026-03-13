@@ -66,4 +66,20 @@ mod tests {
             _ => panic!("expected config parse error"),
         }
     }
+
+    #[test]
+    fn oversized_config_file_is_rejected() {
+        let temp = TempDir::new().expect("tempdir");
+        let config_file = temp.path().join("config.toml");
+        let oversized = "a".repeat(64 * 1024 + 1);
+        fs::write(&config_file, oversized).expect("write");
+
+        let err = load_config_from_file(&config_file).expect_err("must fail");
+        match err {
+            KidoboError::ConfigRead { reason, .. } => {
+                assert!(reason.contains("file exceeds 65536 byte limit"));
+            }
+            _ => panic!("expected config read error"),
+        }
+    }
 }

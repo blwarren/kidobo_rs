@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use crate::adapters::command_runner::{
     CommandExecutor, CommandResult, CommandRunnerError, SudoCommandRunner,
 };
+use crate::adapters::limited_io::write_string_atomic;
 use crate::adapters::path::{
     ENV_KIDOBO_ROOT, PathResolutionInput, ResolvedPaths, resolve_paths_for_init,
 };
@@ -353,7 +354,7 @@ fn ensure_file_if_missing(path: &Path, contents: &str) -> Result<ProvisionState,
         ensure_dir(parent)?;
     }
 
-    fs::write(path, contents).map_err(|err| KidoboError::InitIo {
+    write_string_atomic(path, contents).map_err(|err| KidoboError::InitIo {
         path: path.to_path_buf(),
         reason: err.to_string(),
     })?;

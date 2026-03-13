@@ -1,9 +1,10 @@
+mod plan;
+mod storage;
+
 use std::collections::{BTreeSet, HashSet};
-use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
 use std::time::Duration;
-use std::time::UNIX_EPOCH;
 
 use log::{info, warn};
 use toml::Value;
@@ -13,75 +14,28 @@ use crate::adapters::asn::{
     normalize_asn_tokens,
 };
 use crate::adapters::config::load_config_from_file;
-use crate::adapters::limited_io::read_to_string_with_limit;
+use crate::adapters::limited_io::{read_to_string_with_limit, write_string_atomic};
+use crate::adapters::lock::acquire_non_blocking;
 use crate::adapters::path::{PathResolutionInput, resolve_paths};
 use crate::core::config::{ConfigError, DEFAULT_ASN_CACHE_STALE_AFTER_SECS};
-use crate::core::network::{
-    CanonicalCidr, cidr_overlaps, collapse_ipv4, collapse_ipv6, parse_ip_cidr_non_strict,
-    split_by_family,
-};
+use crate::core::network::CanonicalCidr;
 use crate::error::KidoboError;
 
-const BLOCKLIST_READ_LIMIT: usize = 16 * 1024 * 1024;
-const BLOCKLIST_FAST_STATE_VERSION: &str = "v1";
-const BLOCKLIST_FAST_STATE_READ_LIMIT: usize = 1024;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BlocklistNormalizeResult {
-    MissingBlocklist,
-    SkippedUnchanged,
-    Checked,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct BlocklistFastState {
-    byte_len: u64,
-    modified_nanos: u128,
-}
-
-impl BlocklistFastState {
-    fn capture(path: &Path) -> Option<Self> {
-        let metadata = fs::metadata(path).ok()?;
-        let modified = metadata.modified().ok()?;
-        let since_epoch = modified.duration_since(UNIX_EPOCH).ok()?;
-
-        Some(Self {
-            byte_len: metadata.len(),
-            modified_nanos: since_epoch.as_nanos(),
-        })
-    }
-
-    fn parse(contents: &str) -> Option<Self> {
-        let mut parts = contents.split_whitespace();
-        let version = parts.next()?;
-        if version != BLOCKLIST_FAST_STATE_VERSION {
-            return None;
-        }
-
-        let byte_len = parts.next()?.parse::<u64>().ok()?;
-        let modified_nanos = parts.next()?.parse::<u128>().ok()?;
-        if parts.next().is_some() {
-            return None;
-        }
-
-        Some(Self {
-            byte_len,
-            modified_nanos,
-        })
-    }
-
-    fn serialize(self) -> String {
-        format!(
-            "{} {} {}\n",
-            BLOCKLIST_FAST_STATE_VERSION, self.byte_len, self.modified_nanos
-        )
-    }
-}
+use self::plan::{apply_unban_plan, build_unban_plan, parse_blocklist_target};
+use self::storage::{
+    BLOCKLIST_READ_LIMIT, BlocklistFile, ensure_blocklist_parent, write_blocklist_lines,
+};
+pub(crate) use self::storage::{
+    BlocklistNormalizeResult, normalize_local_blocklist_with_fast_state,
+};
+#[cfg(test)]
+use self::storage::{canonicalize_blocklist, normalize_local_blocklist};
 
 #[allow(clippy::print_stdout, clippy::print_stderr)]
 pub fn run_ban_command(target: Option<&str>, asn: Option<&[String]>) -> Result<(), KidoboError> {
     let path_input = PathResolutionInput::from_process(None);
     let paths = resolve_paths(&path_input)?;
+    let _lock = acquire_non_blocking(&paths.lock_file)?;
     if let Some(asn_tokens) = asn {
         return run_ban_asn_command(
             &paths.config_file,
@@ -122,6 +76,7 @@ pub fn run_unban_command(
 ) -> Result<(), KidoboError> {
     let path_input = PathResolutionInput::from_process(None);
     let paths = resolve_paths(&path_input)?;
+    let _lock = acquire_non_blocking(&paths.lock_file)?;
     if let Some(asn_tokens) = asn {
         return run_unban_asn_command(&paths.config_file, &paths.cache_dir, asn_tokens);
     }
@@ -299,7 +254,7 @@ fn update_banned_asns_in_config(
             reason: err.to_string(),
         },
     })?;
-    fs::write(config_path, rendered).map_err(|err| KidoboError::ConfigWrite {
+    write_string_atomic(config_path, &rendered).map_err(|err| KidoboError::ConfigWrite {
         path: config_path.to_path_buf(),
         reason: err.to_string(),
     })?;
@@ -401,192 +356,32 @@ fn ban_target_in_file(path: &Path, input: &str) -> Result<BanOutcome, KidoboErro
     Ok(BanOutcome::Added(canonical_str))
 }
 
-fn build_unban_plan(path: &Path, input: &str) -> Result<UnbanPlan, KidoboError> {
-    let canonical = parse_blocklist_target(input)?;
-    let blocklist = BlocklistFile::load(path)?;
-    let mut exact_indexes = Vec::new();
-    let mut partial_matches = Vec::new();
-
-    for (idx, line) in blocklist.lines.iter().enumerate() {
-        if let Some(entry) = &line.canonical {
-            if entry == &canonical {
-                exact_indexes.push(idx);
-            } else if canonical_overlaps(entry, &canonical) {
-                partial_matches.push(PartialMatch {
-                    index: idx,
-                    entry: entry.to_string(),
-                });
-            }
-        }
-    }
-
-    Ok(UnbanPlan {
-        target: canonical.to_string(),
-        blocklist,
-        exact_indexes,
-        partial_matches,
-        remove_partial: false,
-    })
-}
-
-fn apply_unban_plan(path: &Path, plan: &UnbanPlan) -> Result<UnbanResult, KidoboError> {
-    let mut removal_indexes: HashSet<usize> = plan.exact_indexes.iter().copied().collect();
-    if plan.remove_partial {
-        for partial in &plan.partial_matches {
-            removal_indexes.insert(partial.index);
-        }
-    }
-
-    if removal_indexes.is_empty() {
-        return Ok(UnbanResult {
-            removed_exact: 0,
-            removed_partial: 0,
-        });
-    }
-
-    let kept_lines: Vec<String> = plan
-        .blocklist
-        .lines
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, line)| {
-            if removal_indexes.contains(&idx) {
-                None
-            } else {
-                Some(line.original.clone())
-            }
-        })
-        .collect();
-
-    write_blocklist_lines(path, &kept_lines)?;
-
-    let removed_partial = if plan.remove_partial {
-        plan.partial_matches.len()
-    } else {
-        0
-    };
-
-    Ok(UnbanResult {
-        removed_exact: plan.exact_indexes.len(),
-        removed_partial,
-    })
-}
-
-fn write_blocklist_lines(path: &Path, lines: &[String]) -> Result<(), KidoboError> {
-    let mut contents = lines.join("\n");
-    if !contents.is_empty() {
-        contents.push('\n');
-    }
-
-    fs::write(path, contents).map_err(|err| KidoboError::BlocklistWrite {
-        path: path.to_path_buf(),
-        reason: err.to_string(),
-    })
-}
-
 fn append_blocklist_entry(
     path: &Path,
     entry: &str,
     has_content: bool,
     trailing_newline: bool,
 ) -> Result<(), KidoboError> {
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|err| KidoboError::BlocklistWrite {
-            path: path.to_path_buf(),
-            reason: err.to_string(),
-        })?;
-
-    if has_content && !trailing_newline {
-        file.write_all(b"\n")
-            .map_err(|err| KidoboError::BlocklistWrite {
+    let mut contents = if path.exists() {
+        read_to_string_with_limit(path, BLOCKLIST_READ_LIMIT).map_err(|err| {
+            KidoboError::BlocklistRead {
                 path: path.to_path_buf(),
                 reason: err.to_string(),
-            })?;
+            }
+        })?
+    } else {
+        String::new()
+    };
+    if has_content && !trailing_newline {
+        contents.push('\n');
     }
+    contents.push_str(entry);
+    contents.push('\n');
 
-    writeln!(file, "{entry}").map_err(|err| KidoboError::BlocklistWrite {
+    write_string_atomic(path, &contents).map_err(|err| KidoboError::BlocklistWrite {
         path: path.to_path_buf(),
         reason: err.to_string(),
     })
-}
-
-fn ensure_blocklist_parent(path: &Path) -> Result<(), KidoboError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|err| KidoboError::BlocklistWrite {
-            path: parent.to_path_buf(),
-            reason: err.to_string(),
-        })?;
-    }
-
-    Ok(())
-}
-
-pub fn normalize_local_blocklist(path: &Path) -> Result<(), KidoboError> {
-    if !path.exists() {
-        return Ok(());
-    }
-
-    let original = read_to_string_with_limit(path, BLOCKLIST_READ_LIMIT).map_err(|err| {
-        KidoboError::BlocklistRead {
-            path: path.to_path_buf(),
-            reason: err.to_string(),
-        }
-    })?;
-
-    let normalized = canonicalize_blocklist(&original);
-
-    if normalized != original {
-        fs::write(path, normalized).map_err(|err| KidoboError::BlocklistWrite {
-            path: path.to_path_buf(),
-            reason: err.to_string(),
-        })?;
-    }
-
-    Ok(())
-}
-
-pub(crate) fn normalize_local_blocklist_with_fast_state(
-    blocklist_path: &Path,
-    fast_state_path: &Path,
-) -> Result<BlocklistNormalizeResult, KidoboError> {
-    if !blocklist_path.exists() {
-        return Ok(BlocklistNormalizeResult::MissingBlocklist);
-    }
-
-    let current_state = BlocklistFastState::capture(blocklist_path);
-    let cached_state = read_blocklist_fast_state(fast_state_path);
-    if current_state
-        .zip(cached_state)
-        .is_some_and(|(current, cached)| current == cached)
-    {
-        return Ok(BlocklistNormalizeResult::SkippedUnchanged);
-    }
-
-    normalize_local_blocklist(blocklist_path)?;
-
-    if let Some(final_state) = BlocklistFastState::capture(blocklist_path)
-        && let Err(err) = write_blocklist_fast_state(fast_state_path, final_state)
-    {
-        warn!(
-            "best-effort blocklist fast-state write failed for {} ({err})",
-            fast_state_path.display()
-        );
-    }
-
-    Ok(BlocklistNormalizeResult::Checked)
-}
-
-fn parse_blocklist_target(input: &str) -> Result<CanonicalCidr, KidoboError> {
-    let token = input.trim();
-    parse_ip_cidr_non_strict(token).ok_or_else(|| KidoboError::BlocklistTargetParse {
-        input: input.to_string(),
-    })
-}
-fn canonical_overlaps(entry: &CanonicalCidr, target: &CanonicalCidr) -> bool {
-    cidr_overlaps(*entry, *target)
 }
 
 #[allow(clippy::print_stdout)]
@@ -607,175 +402,6 @@ fn prompt_confirmation() -> Result<bool, KidoboError> {
 
     let response = buffer.trim().to_ascii_lowercase();
     Ok(matches!(response.as_str(), "y" | "yes"))
-}
-
-fn canonicalize_blocklist(contents: &str) -> String {
-    let mut lines = Vec::new();
-    let mut entries = Vec::new();
-    let mut in_header = true;
-
-    for line in contents.lines() {
-        let trimmed = line.trim();
-
-        if in_header {
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                lines.push(trimmed.to_string());
-                continue;
-            }
-            in_header = false;
-        }
-
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-
-        if let Some(cidr) = parse_ip_cidr_non_strict(trimmed) {
-            entries.push(cidr);
-        }
-    }
-
-    let canonical_entries = canonical_entry_lines(&entries);
-    if !canonical_entries.is_empty() {
-        if !lines.is_empty() && !lines.last().is_some_and(std::string::String::is_empty) {
-            lines.push(String::new());
-        }
-        lines.extend(canonical_entries);
-    } else if lines.last().is_some_and(std::string::String::is_empty) {
-        lines.pop();
-    }
-
-    let mut normalized = lines.join("\n");
-    if !normalized.is_empty() {
-        normalized.push('\n');
-    }
-    normalized
-}
-
-fn read_blocklist_fast_state(path: &Path) -> Option<BlocklistFastState> {
-    let contents = read_to_string_with_limit(path, BLOCKLIST_FAST_STATE_READ_LIMIT).ok()?;
-    BlocklistFastState::parse(&contents)
-}
-
-fn write_blocklist_fast_state(
-    path: &Path,
-    state: BlocklistFastState,
-) -> Result<(), std::io::Error> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, state.serialize())
-}
-
-fn canonical_entry_lines(entries: &[CanonicalCidr]) -> Vec<String> {
-    let family_split = split_by_family(entries);
-    let collapsed_v4 = collapse_ipv4(&family_split.ipv4);
-    let collapsed_v6 = collapse_ipv6(&family_split.ipv6);
-
-    let mut canonical = Vec::new();
-    canonical.extend(collapsed_v4.into_iter().map(|cidr| cidr.to_string()));
-    canonical.extend(collapsed_v6.into_iter().map(|cidr| cidr.to_string()));
-
-    canonical
-}
-
-#[derive(Debug)]
-struct BlocklistFile {
-    lines: Vec<BlocklistLine>,
-    has_content: bool,
-    trailing_newline: bool,
-}
-
-impl BlocklistFile {
-    fn load(path: &Path) -> Result<Self, KidoboError> {
-        if !path.exists() {
-            return Ok(BlocklistFile {
-                lines: Vec::new(),
-                has_content: false,
-                trailing_newline: false,
-            });
-        }
-
-        let contents = read_to_string_with_limit(path, BLOCKLIST_READ_LIMIT).map_err(|err| {
-            KidoboError::BlocklistRead {
-                path: path.to_path_buf(),
-                reason: err.to_string(),
-            }
-        })?;
-
-        let lines = contents.lines().map(BlocklistLine::new).collect::<Vec<_>>();
-
-        Ok(BlocklistFile {
-            lines,
-            has_content: !contents.is_empty(),
-            trailing_newline: contents.ends_with('\n'),
-        })
-    }
-
-    fn contains_canonical(&self, canonical: CanonicalCidr) -> bool {
-        self.lines
-            .iter()
-            .any(|line| line.canonical == Some(canonical))
-    }
-}
-
-#[derive(Debug)]
-struct BlocklistLine {
-    original: String,
-    canonical: Option<CanonicalCidr>,
-}
-
-impl BlocklistLine {
-    fn new(line: &str) -> Self {
-        let trimmed = line.trim();
-        let canonical = if trimmed.is_empty() {
-            None
-        } else {
-            parse_ip_cidr_non_strict(trimmed)
-        };
-
-        BlocklistLine {
-            original: line.to_string(),
-            canonical,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct PartialMatch {
-    index: usize,
-    entry: String,
-}
-
-#[derive(Debug)]
-struct UnbanPlan {
-    target: String,
-    blocklist: BlocklistFile,
-    exact_indexes: Vec<usize>,
-    partial_matches: Vec<PartialMatch>,
-    remove_partial: bool,
-}
-
-impl UnbanPlan {
-    fn total_removal(&self) -> usize {
-        self.exact_indexes.len()
-            + if self.remove_partial {
-                self.partial_matches.len()
-            } else {
-                0
-            }
-    }
-}
-
-#[derive(Debug)]
-struct UnbanResult {
-    removed_exact: usize,
-    removed_partial: usize,
-}
-
-impl UnbanResult {
-    fn total(&self) -> usize {
-        self.removed_exact + self.removed_partial
-    }
 }
 
 #[cfg(test)]
@@ -974,12 +600,12 @@ mod tests {
     }
 
     #[test]
-    fn normalize_local_blocklist_canonicalizes_entries_and_preserves_header_comments() {
+    fn normalize_local_blocklist_preserves_only_header_comments_and_canonicalizes_entries() {
         let temp = TempDir::new().expect("tempdir");
         let path = temp.path().join("blocklist.txt");
         fs::write(
             &path,
-            "# top comment \n203.0.113.7\n203.0.113.0/24\n2001:db8::/64\n2001:db8::/64\n",
+            "# top comment \n203.0.113.7\n# dropped later comment\n203.0.113.0/24\n2001:db8::/64\n2001:db8::/64\n",
         )
         .expect("write");
 

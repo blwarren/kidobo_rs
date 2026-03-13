@@ -176,6 +176,8 @@ At default paths it also runs `systemctl daemon-reload` and enables
   Run `sync` to apply changes to firewall/ipset runtime state.
 - `lookup` runs only against cached blocklists - run `sync` first if you need latest list
   data.
+- `sync` canonicalizes the local blocklist file and may drop non-header comments,
+  blank lines, and manual formatting after the leading comment/header section.
 - `analyze overlap` is offline-only and warns when cached remote
   `.iplist` files are older than `remote.cache_stale_after_secs`.
 - `analyze overlap --apply-fully-covered-local` removes local entries that are

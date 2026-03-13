@@ -1,18 +1,16 @@
-use std::ffi::OsStr;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use serde::Deserialize;
 use thiserror::Error;
 
 use crate::adapters::limited_io::read_to_string_with_limit;
 use crate::adapters::path::ResolvedPaths;
+use crate::adapters::source_files::{
+    REMOTE_META_READ_LIMIT, RemoteCacheFilesError, SOURCE_FILE_READ_LIMIT,
+    collect_remote_cache_files as collect_remote_cache_iplist_files, parse_cidr_source_line,
+    resolve_remote_source_label,
+};
 use crate::core::lookup::LookupSourceEntry;
-use crate::core::network::parse_ip_cidr_token;
-
-const SOURCE_FILE_READ_LIMIT: usize = 16 * 1024 * 1024;
-const REMOTE_META_READ_LIMIT: usize = 256 * 1024;
 
 #[derive(Debug, Error)]
 pub enum LookupSourceLoadError {
@@ -52,7 +50,7 @@ pub fn load_lookup_sources(
         remote_files.sort();
 
         for file in remote_files {
-            let source_label = resolve_remote_source_label(&file);
+            let source_label = resolve_remote_source_label(&file, REMOTE_META_READ_LIMIT);
             entries.extend(read_source_file(&file, &source_label)?);
         }
     }
@@ -65,27 +63,16 @@ pub fn load_lookup_sources(
 fn collect_remote_cache_files(
     paths: &ResolvedPaths,
 ) -> Result<Vec<PathBuf>, LookupSourceLoadError> {
-    let mut files = Vec::new();
-    let dir_iter = fs::read_dir(&paths.remote_cache_dir).map_err(|err| {
-        LookupSourceLoadError::CacheDirRead {
+    collect_remote_cache_iplist_files(&paths.remote_cache_dir).map_err(|err| match err {
+        RemoteCacheFilesError::ReadDir(err) => LookupSourceLoadError::CacheDirRead {
             path: paths.remote_cache_dir.clone(),
             reason: err.to_string(),
-        }
-    })?;
-
-    for entry in dir_iter {
-        let entry = entry.map_err(|err| LookupSourceLoadError::CacheDirEntryRead {
+        },
+        RemoteCacheFilesError::ReadDirEntry(err) => LookupSourceLoadError::CacheDirEntryRead {
             path: paths.remote_cache_dir.clone(),
             reason: err.to_string(),
-        })?;
-
-        let path = entry.path();
-        if path.is_file() && path.extension() == Some(OsStr::new("iplist")) {
-            files.push(path);
-        }
-    }
-
-    Ok(files)
+        },
+    })
 }
 
 fn read_source_file(
@@ -114,53 +101,8 @@ fn read_source_file(
     Ok(entries)
 }
 
-#[derive(Debug, Deserialize)]
-struct RemoteSourceMetadata {
-    url: String,
-}
-
-fn resolve_remote_source_label(iplist_path: &Path) -> String {
-    let Some(meta_path) = remote_meta_path_for_iplist(iplist_path) else {
-        return fallback_remote_source_label(iplist_path);
-    };
-
-    let Ok(contents) = read_to_string_with_limit(&meta_path, REMOTE_META_READ_LIMIT) else {
-        return fallback_remote_source_label(iplist_path);
-    };
-
-    let Ok(metadata) = serde_json::from_str::<RemoteSourceMetadata>(&contents) else {
-        return fallback_remote_source_label(iplist_path);
-    };
-
-    let normalized_url = metadata.url.trim();
-    if normalized_url.is_empty() {
-        return fallback_remote_source_label(iplist_path);
-    }
-
-    normalized_url.to_string()
-}
-
-fn remote_meta_path_for_iplist(iplist_path: &Path) -> Option<PathBuf> {
-    let stem = iplist_path.file_stem()?.to_str()?;
-    Some(iplist_path.with_file_name(format!("{stem}.meta.json")))
-}
-
-fn fallback_remote_source_label(iplist_path: &Path) -> String {
-    let file_name = iplist_path
-        .file_name()
-        .and_then(OsStr::to_str)
-        .unwrap_or("unknown.iplist");
-    format!("remote:{file_name}")
-}
-
 fn parse_lookup_source_line(line: &str) -> Option<(crate::core::network::CanonicalCidr, String)> {
-    let token = line.split_whitespace().next()?.trim();
-    if token.is_empty() {
-        return None;
-    }
-
-    let cidr = parse_ip_cidr_token(token)?;
-    Some((cidr, token.to_string()))
+    parse_cidr_source_line(line).map(|(cidr, token)| (cidr, token.to_string()))
 }
 
 #[cfg(test)]
@@ -279,6 +221,27 @@ mod tests {
 
         let err = load_lookup_sources(&paths).expect_err("must fail");
         assert!(err.to_string().contains("failed to read source file"));
+    }
+
+    #[test]
+    fn oversized_remote_iplist_is_rejected() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = test_paths(temp.path());
+
+        fs::create_dir_all(&paths.remote_cache_dir).expect("mkdir remote");
+        fs::write(
+            paths.remote_cache_dir.join("a.iplist"),
+            "1".repeat(super::SOURCE_FILE_READ_LIMIT + 1),
+        )
+        .expect("write oversized iplist");
+
+        let err = load_lookup_sources(&paths).expect_err("must fail");
+        match err {
+            super::LookupSourceLoadError::SourceRead { reason, .. } => {
+                assert!(reason.contains("file exceeds 16777216 byte limit"));
+            }
+            _ => panic!("expected source read error"),
+        }
     }
 
     #[test]

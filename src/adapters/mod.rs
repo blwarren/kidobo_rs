@@ -13,3 +13,4 @@ pub mod limited_io;
 pub mod lock;
 pub mod lookup_sources;
 pub mod path;
+pub mod source_files;
