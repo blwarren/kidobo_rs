@@ -16,6 +16,9 @@
 
 ### Changed
 
+- `kidobo ban` and `kidobo unban` now support `--file <PATH>` for batch
+  IP/CIDR updates using one target per line, with invalid file inputs rejected
+  before any local blocklist write occurs.
 - `kidobo analyze overlap` is now strictly read-only again; the
   `--apply-fully-covered-local` option has been removed.
 - Large local blocklist rewrite paths now avoid extra retained-line copies,

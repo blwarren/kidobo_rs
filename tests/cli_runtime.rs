@@ -569,6 +569,72 @@ fn ban_and_unban_target_flow_is_idempotent_and_updates_blocklist() {
 }
 
 #[test]
+fn ban_file_mode_updates_blocklist_and_preserves_per_target_results() {
+    let root = create_root("[ipset]\nset_name='kidobo'\n", "");
+    let blocklist = root.path().join("data/blocklist.txt");
+    let targets = root.path().join("targets.txt");
+    fs::write(&targets, "203.0.113.7\n198.51.100.0/24\n203.0.113.7\n").expect("write targets");
+    let target_path = targets.display().to_string();
+    let args = vec!["ban", "--file", target_path.as_str()];
+
+    let output = run_kidobo_with_root(root.path(), &args);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "ban --file failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("added blocklist entry 203.0.113.7/32"),
+        "missing first add output: {stdout}"
+    );
+    assert!(
+        stdout.contains("added blocklist entry 198.51.100.0/24"),
+        "missing second add output: {stdout}"
+    );
+    assert!(
+        stdout.contains("blocklist already contains 203.0.113.7/32"),
+        "missing duplicate output: {stdout}"
+    );
+
+    let contents =
+        read_to_string_with_limit(&blocklist, BLOCKLIST_READ_LIMIT).expect("read blocklist");
+    assert_eq!(contents, "203.0.113.7/32\n198.51.100.0/24\n");
+}
+
+#[test]
+fn ban_file_mode_invalid_target_fails_without_writes() {
+    let root = create_root("[ipset]\nset_name='kidobo'\n", "");
+    let blocklist = root.path().join("data/blocklist.txt");
+    let targets = root.path().join("targets.txt");
+    fs::write(&targets, "203.0.113.7\nnot-an-ip\n").expect("write targets");
+    let target_path = targets.display().to_string();
+    let args = vec!["ban", "--file", target_path.as_str()];
+
+    let output = run_kidobo_with_root(root.path(), &args);
+    assert_eq!(output.status.code(), Some(1));
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid target: not-an-ip"),
+        "missing invalid-target output: {stderr}"
+    );
+    assert!(
+        stderr.contains("blocklist update failed for 1 invalid target(s)"),
+        "missing final invalid-target error: {stderr}"
+    );
+
+    let contents =
+        read_to_string_with_limit(&blocklist, BLOCKLIST_READ_LIMIT).expect("read blocklist");
+    assert!(
+        contents.is_empty(),
+        "blocklist should remain unchanged: {contents}"
+    );
+}
+
+#[test]
 fn ban_fails_when_lock_is_held() {
     let root = create_root("[ipset]\nset_name='kidobo'\n", "");
     let blocklist = root.path().join("data/blocklist.txt");
@@ -619,4 +685,74 @@ fn unban_yes_removes_overlapping_entries_without_prompt() {
     let contents =
         read_to_string_with_limit(&blocklist, BLOCKLIST_READ_LIMIT).expect("read blocklist");
     assert_eq!(contents, "198.51.100.0/24\n");
+}
+
+#[test]
+fn unban_file_mode_yes_removes_exact_and_partial_matches() {
+    let root = create_root(
+        "[ipset]\nset_name='kidobo'\n",
+        "203.0.113.0/24\n198.51.100.0/24\n",
+    );
+    let blocklist = root.path().join("data/blocklist.txt");
+    let targets = root.path().join("targets.txt");
+    fs::write(&targets, "203.0.113.7\n198.51.100.0/24\n").expect("write targets");
+    let target_path = targets.display().to_string();
+    let args = vec!["unban", "--file", target_path.as_str(), "--yes"];
+
+    let output = run_kidobo_with_root(root.path(), &args);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "unban --file --yes failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("file targets also match the following blocklist entries:"),
+        "missing partial-match heading: {stdout}"
+    );
+    assert!(
+        stdout.contains("203.0.113.0/24"),
+        "missing partial-match entry: {stdout}"
+    );
+    assert!(
+        stdout.contains("auto-approving removal of partial matches"),
+        "missing auto-approve output: {stdout}"
+    );
+    assert!(
+        stdout.contains("removed 2 blocklist entries for 2 file target(s)"),
+        "unexpected removal summary: {stdout}"
+    );
+
+    let contents =
+        read_to_string_with_limit(&blocklist, BLOCKLIST_READ_LIMIT).expect("read blocklist");
+    assert!(contents.is_empty(), "blocklist should be empty: {contents}");
+}
+
+#[test]
+fn unban_file_mode_invalid_target_fails_without_writes() {
+    let root = create_root("[ipset]\nset_name='kidobo'\n", "203.0.113.0/24\n");
+    let blocklist = root.path().join("data/blocklist.txt");
+    let targets = root.path().join("targets.txt");
+    fs::write(&targets, "203.0.113.7\nnot-an-ip\n").expect("write targets");
+    let target_path = targets.display().to_string();
+    let args = vec!["unban", "--file", target_path.as_str(), "--yes"];
+
+    let output = run_kidobo_with_root(root.path(), &args);
+    assert_eq!(output.status.code(), Some(1));
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid target: not-an-ip"),
+        "missing invalid-target output: {stderr}"
+    );
+    assert!(
+        stderr.contains("blocklist update failed for 1 invalid target(s)"),
+        "missing final invalid-target error: {stderr}"
+    );
+
+    let contents =
+        read_to_string_with_limit(&blocklist, BLOCKLIST_READ_LIMIT).expect("read blocklist");
+    assert_eq!(contents, "203.0.113.0/24\n");
 }

@@ -75,10 +75,15 @@ pub fn dispatch(command: Command) -> Result<(), KidoboError> {
                 print_reduced_local,
             } => run_analyze_overlap_command(print_fully_covered_local, print_reduced_local),
         },
-        Command::Ban { target, asn } => run_ban_command(target.as_deref(), asn.as_deref()),
-        Command::Unban { target, asn, yes } => {
-            run_unban_command(target.as_deref(), asn.as_deref(), yes)
+        Command::Ban { target, file, asn } => {
+            run_ban_command(target.as_deref(), file.as_deref(), asn.as_deref())
         }
+        Command::Unban {
+            target,
+            file,
+            asn,
+            yes,
+        } => run_unban_command(target.as_deref(), file.as_deref(), asn.as_deref(), yes),
     }
 }
 

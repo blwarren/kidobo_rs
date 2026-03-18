@@ -63,6 +63,12 @@ pub enum KidoboError {
     #[error("failed to parse blocklist target {input}")]
     BlocklistTargetParse { input: String },
 
+    #[error("failed to read blocklist targets file {path}: {reason}")]
+    BlocklistTargetFileRead { path: PathBuf, reason: String },
+
+    #[error("blocklist update failed for {count} invalid target(s)")]
+    BlocklistInvalidTargets { count: usize },
+
     #[error("blocklist prompt failed: {reason}")]
     BlocklistPrompt { reason: String },
 

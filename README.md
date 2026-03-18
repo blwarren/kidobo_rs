@@ -71,6 +71,8 @@ Use commands:
 ```bash
 kidobo ban 203.0.113.7
 kidobo unban 203.0.113.7
+kidobo ban --file targets.txt
+kidobo unban --file targets.txt --yes
 kidobo ban --asn 213412
 kidobo unban --asn AS213412
 ```
@@ -171,6 +173,7 @@ At default paths it also runs `systemctl daemon-reload` and enables
 
 - `ban` and `unban` modify local source state only:
   blocklist entries for IP/CIDR targets and config `[asn].banned` for ASN targets.
+  `--file` accepts one IP/CIDR target per line.
   Run `sync` to apply changes to firewall/ipset runtime state.
 - `lookup` runs only against cached blocklists - run `sync` first if you need latest list
   data.

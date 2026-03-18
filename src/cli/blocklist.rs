@@ -18,10 +18,12 @@ use crate::adapters::limited_io::{read_to_string_with_limit, write_string_atomic
 use crate::adapters::lock::acquire_non_blocking;
 use crate::adapters::path::{PathResolutionInput, resolve_paths};
 use crate::core::config::{ConfigError, DEFAULT_ASN_CACHE_STALE_AFTER_SECS};
-use crate::core::network::CanonicalCidr;
+use crate::core::network::{CanonicalCidr, cidr_overlaps};
 use crate::error::KidoboError;
 
-use self::plan::{apply_unban_plan, build_unban_plan, parse_blocklist_target};
+use self::plan::{
+    PartialMatch, UnbanPlan, apply_unban_plan, build_unban_plan, parse_blocklist_target,
+};
 use self::storage::{
     BLOCKLIST_READ_LIMIT, BlocklistFile, ensure_blocklist_parent, write_blocklist_lines,
 };
@@ -31,8 +33,14 @@ pub(crate) use self::storage::{
 #[cfg(test)]
 use self::storage::{canonicalize_blocklist, normalize_local_blocklist};
 
+const BLOCKLIST_TARGET_FILE_READ_LIMIT: usize = 2 * 1024 * 1024;
+
 #[allow(clippy::print_stdout, clippy::print_stderr)]
-pub fn run_ban_command(target: Option<&str>, asn: Option<&[String]>) -> Result<(), KidoboError> {
+pub fn run_ban_command(
+    target: Option<&str>,
+    file: Option<&Path>,
+    asn: Option<&[String]>,
+) -> Result<(), KidoboError> {
     let path_input = PathResolutionInput::from_process(None);
     let paths = resolve_paths(&path_input)?;
     let _lock = acquire_non_blocking(&paths.lock_file)?;
@@ -43,6 +51,10 @@ pub fn run_ban_command(target: Option<&str>, asn: Option<&[String]>) -> Result<(
             &paths.cache_dir,
             asn_tokens,
         );
+    }
+
+    if let Some(file) = file {
+        return run_ban_file_command(&paths.blocklist_file, file);
     }
 
     let Some(target) = target else {
@@ -71,6 +83,7 @@ pub enum BanOutcome {
 #[allow(clippy::print_stdout, clippy::print_stderr)]
 pub fn run_unban_command(
     target: Option<&str>,
+    file: Option<&Path>,
     asn: Option<&[String]>,
     yes: bool,
 ) -> Result<(), KidoboError> {
@@ -80,6 +93,11 @@ pub fn run_unban_command(
     if let Some(asn_tokens) = asn {
         return run_unban_asn_command(&paths.config_file, &paths.cache_dir, asn_tokens);
     }
+
+    if let Some(file) = file {
+        return run_unban_file_command(&paths.blocklist_file, file, yes);
+    }
+
     let Some(target) = target else {
         return Err(KidoboError::BlocklistTargetParse {
             input: String::new(),
@@ -114,6 +132,88 @@ pub fn run_unban_command(
         "removed {} blocklist entries for {}",
         result.total(),
         plan.target
+    );
+    println!("changes take effect after running `sudo kidobo sync`");
+    Ok(())
+}
+
+#[derive(Debug)]
+struct FileUnbanRequest {
+    requested_target_count: usize,
+    plan: UnbanPlan,
+}
+
+#[allow(clippy::print_stdout, clippy::print_stderr)]
+fn run_ban_file_command(blocklist_path: &Path, target_file: &Path) -> Result<(), KidoboError> {
+    let target_lines = read_blocklist_target_lines(target_file)?;
+    let targets = parse_blocklist_targets_or_report(&target_lines)?;
+
+    if targets.is_empty() {
+        println!("no blocklist targets loaded from file");
+        return Ok(());
+    }
+
+    let outcomes = ban_targets_in_file(blocklist_path, &targets)?;
+    for outcome in outcomes {
+        match outcome {
+            BanOutcome::Added(value) => println!("added blocklist entry {value}"),
+            BanOutcome::AlreadyPresent(value) => println!("blocklist already contains {value}"),
+        }
+    }
+
+    println!("changes take effect after running `sudo kidobo sync`");
+    Ok(())
+}
+
+#[allow(clippy::print_stdout)]
+fn run_unban_file_command(
+    blocklist_path: &Path,
+    target_file: &Path,
+    yes: bool,
+) -> Result<(), KidoboError> {
+    let target_lines = read_blocklist_target_lines(target_file)?;
+    let targets = parse_blocklist_targets_or_report(&target_lines)?;
+
+    if targets.is_empty() {
+        println!("no blocklist targets loaded from file");
+        return Ok(());
+    }
+
+    let mut request = build_unban_file_request(blocklist_path, &targets)?;
+    if !request.plan.partial_matches.is_empty() {
+        println!("file targets also match the following blocklist entries:");
+        for partial in &request.plan.partial_matches {
+            println!("  - {}", partial.entry);
+        }
+
+        request.plan.remove_partial = if yes {
+            println!("auto-approving removal of partial matches");
+            true
+        } else {
+            prompt_confirmation()?
+        };
+    }
+
+    if request.plan.total_removal() == 0 {
+        if request.plan.partial_matches.is_empty() {
+            println!(
+                "no blocklist entries matched {} file target(s)",
+                request.requested_target_count
+            );
+        } else {
+            println!(
+                "no blocklist entries were removed for {} file target(s)",
+                request.requested_target_count
+            );
+        }
+        return Ok(());
+    }
+
+    let result = apply_unban_plan(blocklist_path, &request.plan)?;
+    println!(
+        "removed {} blocklist entries for {} file target(s)",
+        result.total(),
+        request.requested_target_count
     );
     println!("changes take effect after running `sudo kidobo sync`");
     Ok(())
@@ -336,6 +436,42 @@ fn remove_exact_blocklist_duplicates(
     Ok(removed)
 }
 
+fn ban_targets_in_file(
+    path: &Path,
+    targets: &[CanonicalCidr],
+) -> Result<Vec<BanOutcome>, KidoboError> {
+    let blocklist = BlocklistFile::load(path)?;
+    let mut present = blocklist
+        .lines
+        .iter()
+        .filter_map(|line| line.canonical)
+        .collect::<HashSet<_>>();
+    let mut appended_entries = Vec::new();
+    let mut outcomes = Vec::with_capacity(targets.len());
+
+    for target in targets {
+        let canonical = target.to_string();
+        if present.insert(*target) {
+            appended_entries.push(canonical.clone());
+            outcomes.push(BanOutcome::Added(canonical));
+        } else {
+            outcomes.push(BanOutcome::AlreadyPresent(canonical));
+        }
+    }
+
+    if !appended_entries.is_empty() {
+        ensure_blocklist_parent(path)?;
+        append_blocklist_entries(
+            path,
+            &appended_entries,
+            blocklist.has_content,
+            blocklist.trailing_newline,
+        )?;
+    }
+
+    Ok(outcomes)
+}
+
 fn ban_target_in_file(path: &Path, input: &str) -> Result<BanOutcome, KidoboError> {
     let canonical = parse_blocklist_target(input)?;
     let blocklist = BlocklistFile::load(path)?;
@@ -346,9 +482,9 @@ fn ban_target_in_file(path: &Path, input: &str) -> Result<BanOutcome, KidoboErro
     }
 
     ensure_blocklist_parent(path)?;
-    append_blocklist_entry(
+    append_blocklist_entries(
         path,
-        &canonical_str,
+        &[canonical_str.as_str()],
         blocklist.has_content,
         blocklist.trailing_newline,
     )?;
@@ -356,12 +492,16 @@ fn ban_target_in_file(path: &Path, input: &str) -> Result<BanOutcome, KidoboErro
     Ok(BanOutcome::Added(canonical_str))
 }
 
-fn append_blocklist_entry(
+fn append_blocklist_entries<S: AsRef<str>>(
     path: &Path,
-    entry: &str,
+    entries: &[S],
     has_content: bool,
     trailing_newline: bool,
 ) -> Result<(), KidoboError> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+
     let mut contents = if path.exists() {
         read_to_string_with_limit(path, BLOCKLIST_READ_LIMIT).map_err(|err| {
             KidoboError::BlocklistRead {
@@ -375,12 +515,99 @@ fn append_blocklist_entry(
     if has_content && !trailing_newline {
         contents.push('\n');
     }
-    contents.push_str(entry);
-    contents.push('\n');
+    for entry in entries {
+        contents.push_str(entry.as_ref());
+        contents.push('\n');
+    }
 
     write_string_atomic(path, &contents).map_err(|err| KidoboError::BlocklistWrite {
         path: path.to_path_buf(),
         reason: err.to_string(),
+    })
+}
+
+fn read_blocklist_target_lines(path: &Path) -> Result<Vec<String>, KidoboError> {
+    let contents =
+        read_to_string_with_limit(path, BLOCKLIST_TARGET_FILE_READ_LIMIT).map_err(|err| {
+            KidoboError::BlocklistTargetFileRead {
+                path: path.to_path_buf(),
+                reason: err.to_string(),
+            }
+        })?;
+
+    Ok(contents.lines().map(ToString::to_string).collect())
+}
+
+#[allow(clippy::print_stderr)]
+fn parse_blocklist_targets_or_report(inputs: &[String]) -> Result<Vec<CanonicalCidr>, KidoboError> {
+    let mut targets = Vec::with_capacity(inputs.len());
+    let mut invalid_inputs = Vec::new();
+
+    for input in inputs {
+        match parse_blocklist_target(input) {
+            Ok(target) => targets.push(target),
+            Err(_) => invalid_inputs.push(input.clone()),
+        }
+    }
+
+    for invalid in &invalid_inputs {
+        eprintln!("invalid target: {invalid}");
+    }
+
+    if invalid_inputs.is_empty() {
+        Ok(targets)
+    } else {
+        Err(KidoboError::BlocklistInvalidTargets {
+            count: invalid_inputs.len(),
+        })
+    }
+}
+
+fn build_unban_file_request(
+    path: &Path,
+    targets: &[CanonicalCidr],
+) -> Result<FileUnbanRequest, KidoboError> {
+    let blocklist = BlocklistFile::load(path)?;
+    let mut exact_indexes = BTreeSet::new();
+    let mut partial_indexes = BTreeSet::new();
+
+    for target in targets {
+        for (idx, line) in blocklist.lines.iter().enumerate() {
+            if let Some(entry) = line.canonical {
+                if entry == *target {
+                    exact_indexes.insert(idx);
+                } else if cidr_overlaps(entry, *target) {
+                    partial_indexes.insert(idx);
+                }
+            }
+        }
+    }
+
+    let partial_matches = blocklist
+        .lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            if exact_indexes.contains(&index) || !partial_indexes.contains(&index) {
+                return None;
+            }
+
+            line.canonical.map(|canonical| PartialMatch {
+                index,
+                entry: canonical.to_string(),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Ok(FileUnbanRequest {
+        requested_target_count: targets.len(),
+        plan: UnbanPlan {
+            target: format!("{} file target(s)", targets.len()),
+            blocklist,
+            exact_indexes: exact_indexes.into_iter().collect(),
+            partial_matches,
+            remove_partial: false,
+        },
     })
 }
 
@@ -416,10 +643,12 @@ mod tests {
     };
 
     use super::{
-        BLOCKLIST_READ_LIMIT, BanOutcome, BlocklistFile, BlocklistNormalizeResult, KidoboError,
-        append_blocklist_entry, apply_unban_plan, ban_target_in_file, build_unban_plan,
+        BLOCKLIST_READ_LIMIT, BLOCKLIST_TARGET_FILE_READ_LIMIT, BanOutcome, BlocklistFile,
+        BlocklistNormalizeResult, KidoboError, append_blocklist_entries, apply_unban_plan,
+        ban_target_in_file, ban_targets_in_file, build_unban_file_request, build_unban_plan,
         canonicalize_blocklist, ensure_blocklist_parent, normalize_local_blocklist,
         normalize_local_blocklist_with_fast_state, parse_blocklist_target,
+        parse_blocklist_targets_or_report, read_blocklist_target_lines,
         remove_exact_blocklist_duplicates, update_banned_asns_in_config, write_blocklist_lines,
     };
     use crate::adapters::limited_io::read_to_string_with_limit;
@@ -454,6 +683,35 @@ mod tests {
 
         let contents = read_to_string_with_limit(&path, BLOCKLIST_READ_LIMIT).expect("read");
         assert_eq!(contents, "203.0.113.0/24\n");
+    }
+
+    #[test]
+    fn ban_targets_in_file_preserves_order_and_dedups_existing_entries() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("blocklist.txt");
+        fs::write(&path, "198.51.100.0/24").expect("write");
+        let targets = vec![
+            parse_ip_cidr_non_strict("203.0.113.7").expect("parse first"),
+            parse_ip_cidr_non_strict("198.51.100.0/24").expect("parse second"),
+            parse_ip_cidr_non_strict("203.0.113.7").expect("parse third"),
+        ];
+
+        let outcomes = ban_targets_in_file(&path, &targets).expect("ban file targets");
+
+        assert_eq!(
+            outcomes,
+            vec![
+                BanOutcome::Added("203.0.113.7/32".into()),
+                BanOutcome::AlreadyPresent("198.51.100.0/24".into()),
+                BanOutcome::AlreadyPresent("203.0.113.7/32".into()),
+            ]
+        );
+        assert_eq!(
+            read_to_string_with_limit(&path, BLOCKLIST_READ_LIMIT)
+                .expect("read")
+                .as_str(),
+            "198.51.100.0/24\n203.0.113.7/32\n"
+        );
     }
 
     #[test]
@@ -556,11 +814,30 @@ mod tests {
     }
 
     #[test]
-    fn append_blocklist_entry_handles_newline_states() {
+    fn build_unban_file_request_excludes_exact_entries_from_partial_prompt() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("blocklist.txt");
+        fs::write(&path, "203.0.113.0/24\n198.51.100.0/24\n").expect("write");
+        let targets = vec![
+            parse_ip_cidr_non_strict("203.0.113.0/24").expect("parse exact"),
+            parse_ip_cidr_non_strict("203.0.113.7").expect("parse partial"),
+            parse_ip_cidr_non_strict("198.51.100.7").expect("parse second partial"),
+        ];
+
+        let request = build_unban_file_request(&path, &targets).expect("build file request");
+
+        assert_eq!(request.requested_target_count, 3);
+        assert_eq!(request.plan.exact_indexes, vec![0]);
+        assert_eq!(request.plan.partial_matches.len(), 1);
+        assert_eq!(request.plan.partial_matches[0].entry, "198.51.100.0/24");
+    }
+
+    #[test]
+    fn append_blocklist_entries_handle_newline_states() {
         let temp = TempDir::new().expect("tempdir");
         let path = temp.path().join("blocklist.txt");
 
-        append_blocklist_entry(&path, "203.0.113.0/24", false, false).expect("append");
+        append_blocklist_entries(&path, &["203.0.113.0/24"], false, false).expect("append");
         assert_eq!(
             read_to_string_with_limit(&path, BLOCKLIST_READ_LIMIT)
                 .expect("read")
@@ -569,13 +846,56 @@ mod tests {
         );
 
         fs::write(&path, "203.0.113.0/24").expect("write no newline");
-        append_blocklist_entry(&path, "198.51.100.0/24", true, false).expect("append2");
+        append_blocklist_entries(&path, &["198.51.100.0/24"], true, false).expect("append2");
         assert_eq!(
             read_to_string_with_limit(&path, BLOCKLIST_READ_LIMIT)
                 .expect("read")
                 .as_str(),
             "203.0.113.0/24\n198.51.100.0/24\n"
         );
+    }
+
+    #[test]
+    fn read_blocklist_target_lines_reports_missing_file() {
+        let temp = TempDir::new().expect("tempdir");
+        let missing = temp.path().join("targets.txt");
+
+        let err = read_blocklist_target_lines(&missing).expect_err("missing file must fail");
+        assert!(matches!(
+            err,
+            KidoboError::BlocklistTargetFileRead { path, .. } if path == missing
+        ));
+    }
+
+    #[test]
+    fn read_blocklist_target_lines_rejects_oversized_input() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("targets.txt");
+        fs::write(&path, "1".repeat(BLOCKLIST_TARGET_FILE_READ_LIMIT + 1)).expect("write");
+
+        let err = read_blocklist_target_lines(&path).expect_err("oversized file must fail");
+        assert!(matches!(
+            err,
+            KidoboError::BlocklistTargetFileRead {
+                path: err_path,
+                ..
+            } if err_path == path
+        ));
+    }
+
+    #[test]
+    fn parse_blocklist_targets_or_report_collects_all_invalid_inputs() {
+        let err = parse_blocklist_targets_or_report(&[
+            "203.0.113.7".to_string(),
+            "not-an-ip".to_string(),
+            String::new(),
+        ])
+        .expect_err("invalid inputs must fail");
+
+        assert!(matches!(
+            err,
+            KidoboError::BlocklistInvalidTargets { count } if count == 2
+        ));
     }
 
     #[test]
