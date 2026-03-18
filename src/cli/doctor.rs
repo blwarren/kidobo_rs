@@ -1,13 +1,13 @@
 use std::collections::BTreeMap;
 use std::env;
-use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use log::info;
 use serde::Serialize;
+use thiserror::Error;
 
-use crate::adapters::command_common::display_command;
+use crate::adapters::command_common::{display_command, find_executable_in_path};
 use crate::adapters::command_runner::{
     CommandExecutor, CommandResult, CommandRunnerError, SudoCommandRunner,
 };
@@ -109,7 +109,7 @@ pub struct SystemBinaryLocator;
 
 impl BinaryLocator for SystemBinaryLocator {
     fn find_in_path(&self, binary: &str) -> Option<PathBuf> {
-        find_binary_in_path(binary, env::var_os("PATH"))
+        find_executable_in_path(binary, env::var_os("PATH"))
     }
 }
 
@@ -377,12 +377,45 @@ fn cache_writability_check(remote_cache_dir: &Path) -> DoctorCheck {
     }
 }
 
-fn ensure_cache_writable(remote_cache_dir: &Path) -> Result<(), String> {
-    fs::create_dir_all(remote_cache_dir).map_err(|err| err.to_string())?;
+#[derive(Debug, Error)]
+enum CacheWritableError {
+    #[error("failed to create directory {path}: {source}")]
+    CreateDir {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("failed to write probe file {path}: {source}")]
+    WriteProbe {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("failed to remove probe file {path}: {source}")]
+    RemoveProbe {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+fn ensure_cache_writable(remote_cache_dir: &Path) -> Result<(), CacheWritableError> {
+    fs::create_dir_all(remote_cache_dir).map_err(|source| CacheWritableError::CreateDir {
+        path: remote_cache_dir.to_path_buf(),
+        source,
+    })?;
 
     let probe_path = remote_cache_dir.join(format!(".doctor-write-test-{}", std::process::id()));
-    fs::write(&probe_path, b"kidobo").map_err(|err| err.to_string())?;
-    fs::remove_file(&probe_path).map_err(|err| err.to_string())
+    fs::write(&probe_path, b"kidobo").map_err(|source| CacheWritableError::WriteProbe {
+        path: probe_path.clone(),
+        source,
+    })?;
+    fs::remove_file(&probe_path).map_err(|source| CacheWritableError::RemoveProbe {
+        path: probe_path,
+        source,
+    })
 }
 
 fn sudo_probe_check(
@@ -452,18 +485,6 @@ fn skip_check(name: &'static str, detail: impl Into<String>) -> DoctorCheck {
         status: DoctorCheckStatus::Skip,
         detail: detail.into(),
     }
-}
-
-fn find_binary_in_path(binary: &str, path: Option<OsString>) -> Option<PathBuf> {
-    let path = path?;
-    for directory in env::split_paths(&path) {
-        let candidate = directory.join(binary);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-
-    None
 }
 
 #[cfg(test)]

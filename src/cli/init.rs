@@ -4,6 +4,7 @@ use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::adapters::command_common::find_executable_in_path;
 use crate::adapters::command_runner::{
     CommandExecutor, CommandResult, CommandRunnerError, SudoCommandRunner,
 };
@@ -121,21 +122,10 @@ pub fn run_init_command() -> Result<(), KidoboError> {
 }
 
 fn ensure_init_binaries_available(path: Option<OsString>) -> Result<(), KidoboError> {
-    if find_binary_in_path("bgpq4", path).is_none() {
+    if find_executable_in_path("bgpq4", path).is_none() {
         return Err(KidoboError::MissingRequiredBinary { binary: "bgpq4" });
     }
     Ok(())
-}
-
-fn find_binary_in_path(binary: &str, path: Option<OsString>) -> Option<PathBuf> {
-    let path = path?;
-    for directory in env::split_paths(&path) {
-        let candidate = directory.join(binary);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
 }
 
 #[cfg(test)]

@@ -139,10 +139,13 @@ fn run_lookup_command(ip: Option<String>, file: Option<PathBuf>) -> Result<(), K
     Ok(())
 }
 
-fn collect_unique_valid_lookup_targets(targets: &[String]) -> BTreeSet<String> {
+fn collect_unique_valid_lookup_targets<S: AsRef<str>>(targets: &[S]) -> BTreeSet<String> {
     targets
         .iter()
-        .filter_map(|target| parse_target_strict(target).ok().map(|_| target.clone()))
+        .filter_map(|target| {
+            let raw = target.as_ref();
+            parse_target_strict(raw).ok().map(|_| raw.to_string())
+        })
         .collect()
 }
 
@@ -281,7 +284,7 @@ fn apply_remove_fully_covered_entries(
         if remove_line {
             removed += 1;
         } else {
-            kept_lines.push(line.to_string());
+            kept_lines.push(line);
         }
     }
 

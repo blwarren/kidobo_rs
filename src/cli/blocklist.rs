@@ -324,7 +324,7 @@ fn remove_exact_blocklist_duplicates(
         .iter()
         .filter_map(|line| match line.canonical {
             Some(canonical) if duplicate_set.contains(&canonical) => None,
-            _ => Some(line.original.clone()),
+            _ => Some(line.original.as_str()),
         })
         .collect::<Vec<_>>();
 
@@ -583,7 +583,7 @@ mod tests {
         let temp = TempDir::new().expect("tempdir");
         let path = temp.path().join("blocklist.txt");
 
-        write_blocklist_lines(&path, &[String::from("a"), String::from("b")]).expect("write");
+        write_blocklist_lines(&path, &["a", "b"]).expect("write");
         assert_eq!(
             read_to_string_with_limit(&path, BLOCKLIST_READ_LIMIT)
                 .expect("read")
@@ -591,7 +591,7 @@ mod tests {
             "a\nb\n"
         );
 
-        write_blocklist_lines(&path, &[] as &[String]).expect("write empty");
+        write_blocklist_lines(&path, &[] as &[&str]).expect("write empty");
         assert!(
             read_to_string_with_limit(&path, BLOCKLIST_READ_LIMIT)
                 .expect("read")

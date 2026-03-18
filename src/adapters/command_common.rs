@@ -1,3 +1,8 @@
+use std::env;
+use std::ffi::OsString;
+use std::fs;
+use std::path::{Path, PathBuf};
+
 use crate::adapters::command_runner::{CommandResult, ProcessStatus};
 
 pub fn display_command<S: AsRef<str>>(command: &str, args: &[S]) -> String {
@@ -6,6 +11,35 @@ pub fn display_command<S: AsRef<str>>(command: &str, args: &[S]) -> String {
     } else {
         let rendered_args = args.iter().map(AsRef::as_ref).collect::<Vec<_>>().join(" ");
         format!("{command} {rendered_args}")
+    }
+}
+
+pub fn find_executable_in_path(binary: &str, path: Option<OsString>) -> Option<PathBuf> {
+    let path = path?;
+    env::split_paths(&path)
+        .map(|directory| directory.join(binary))
+        .find(|candidate| is_executable_file(candidate))
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+
+    if !metadata.is_file() {
+        return false;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        metadata.permissions().mode() & 0o111 != 0
+    }
+
+    #[cfg(not(unix))]
+    {
+        true
     }
 }
 
@@ -31,7 +65,14 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{display_command, ensure_command_succeeded};
+    use std::fs;
+
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    use tempfile::TempDir;
+
+    use super::{display_command, ensure_command_succeeded, find_executable_in_path};
     use crate::adapters::command_runner::CommandResult;
 
     #[test]
@@ -64,5 +105,32 @@ mod tests {
         let output = ensure_command_succeeded(result, "ipset", &["list"], |_, _, _| ())
             .expect("success should pass through");
         assert_eq!(output.stdout, "ok");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn find_executable_in_path_returns_executable_candidate() {
+        let temp = TempDir::new().expect("tempdir");
+        let executable = temp.path().join("bgpq4");
+        fs::write(&executable, "#!/bin/sh\n").expect("write executable");
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).expect("chmod");
+
+        let path = std::env::join_paths([temp.path()]).expect("PATH");
+        assert_eq!(
+            find_executable_in_path("bgpq4", Some(path)),
+            Some(executable)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn find_executable_in_path_skips_non_executable_files() {
+        let temp = TempDir::new().expect("tempdir");
+        let executable = temp.path().join("ipset");
+        fs::write(&executable, "not executable").expect("write file");
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o644)).expect("chmod");
+
+        let path = std::env::join_paths([temp.path()]).expect("PATH");
+        assert_eq!(find_executable_in_path("ipset", Some(path)), None);
     }
 }

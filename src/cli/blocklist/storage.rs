@@ -66,8 +66,15 @@ impl BlocklistFastState {
     }
 }
 
-pub(super) fn write_blocklist_lines(path: &Path, lines: &[String]) -> Result<(), KidoboError> {
-    let mut contents = lines.join("\n");
+pub(super) fn write_blocklist_lines<S: AsRef<str>>(
+    path: &Path,
+    lines: &[S],
+) -> Result<(), KidoboError> {
+    let mut contents = lines
+        .iter()
+        .map(AsRef::as_ref)
+        .collect::<Vec<_>>()
+        .join("\n");
     if !contents.is_empty() {
         contents.push('\n');
     }

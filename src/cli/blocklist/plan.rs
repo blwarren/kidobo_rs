@@ -96,7 +96,7 @@ pub(super) fn apply_unban_plan(path: &Path, plan: &UnbanPlan) -> Result<UnbanRes
             if removal_indexes.contains(&idx) {
                 None
             } else {
-                Some(line.original.clone())
+                Some(line.original.as_str())
             }
         })
         .collect::<Vec<_>>();

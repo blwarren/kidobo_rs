@@ -87,22 +87,19 @@ fn read_source_file(
     })?;
 
     let source_label: Arc<str> = Arc::from(source_label);
-    let mut entries = Vec::new();
-    for raw_line in contents.lines() {
-        if let Some((cidr, token)) = parse_lookup_source_line(raw_line) {
-            entries.push(LookupSourceEntry {
-                source_label: Arc::clone(&source_label),
-                source_line: token,
-                cidr,
-            });
-        }
-    }
-
-    Ok(entries)
+    Ok(contents
+        .lines()
+        .filter_map(parse_lookup_source_line)
+        .map(|(cidr, token)| LookupSourceEntry {
+            source_label: Arc::clone(&source_label),
+            source_line: token.to_string(),
+            cidr,
+        })
+        .collect())
 }
 
-fn parse_lookup_source_line(line: &str) -> Option<(crate::core::network::CanonicalCidr, String)> {
-    parse_cidr_source_line(line).map(|(cidr, token)| (cidr, token.to_string()))
+fn parse_lookup_source_line(line: &str) -> Option<(crate::core::network::CanonicalCidr, &str)> {
+    parse_cidr_source_line(line)
 }
 
 #[cfg(test)]

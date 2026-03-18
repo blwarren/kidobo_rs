@@ -170,15 +170,11 @@ pub fn generate_temp_set_name(base_set_name: &str) -> String {
     }
 }
 
-pub fn build_restore_script(
+pub fn build_restore_script<T: Display + Ord>(
     spec: &IpsetSetSpec,
     temp_set_name: &str,
-    entries: &[String],
+    entries: &[T],
 ) -> String {
-    let mut sorted_entries = entries.to_vec();
-    sorted_entries.sort();
-    sorted_entries.dedup();
-
     let mut script = String::new();
     writeln!(
         &mut script,
@@ -192,7 +188,7 @@ pub fn build_restore_script(
     )
     .ok();
 
-    for entry in sorted_entries {
+    for entry in sorted_unique_entries(entries) {
         writeln!(&mut script, "add {temp_set_name} {entry}").ok();
     }
 
@@ -226,7 +222,7 @@ pub fn execute_ipset_restore(
     restore_result.map(|_| ())
 }
 
-pub fn atomic_replace_ipset_values<T: Copy + Ord + Display>(
+pub fn atomic_replace_ipset_values<T: Ord + Display>(
     runner: &dyn IpsetCommandRunner,
     spec: &IpsetSetSpec,
     entries: &[T],
@@ -247,8 +243,7 @@ pub fn atomic_replace_ipset(
     spec: &IpsetSetSpec,
     entries: &[String],
 ) -> Result<(), IpsetError> {
-    let borrowed = entries.iter().map(String::as_str).collect::<Vec<_>>();
-    atomic_replace_ipset_values(runner, spec, &borrowed)
+    atomic_replace_ipset_values(runner, spec, entries)
 }
 
 fn run_checked(
@@ -272,7 +267,7 @@ fn best_effort_destroy_set(runner: &dyn IpsetCommandRunner, set_name: &str) {
     }
 }
 
-fn execute_ipset_restore_with_entries<T: Copy + Ord + Display>(
+fn execute_ipset_restore_with_entries<T: Ord + Display>(
     runner: &dyn IpsetCommandRunner,
     spec: &IpsetSetSpec,
     temp_set_name: &str,
@@ -315,7 +310,7 @@ fn execute_ipset_restore_with_entries<T: Copy + Ord + Display>(
     restore_result.map(|_| ())
 }
 
-fn write_restore_script_file<T: Copy + Ord + Display>(
+fn write_restore_script_file<T: Ord + Display>(
     writer: &mut impl Write,
     spec: &IpsetSetSpec,
     temp_set_name: &str,
@@ -337,22 +332,12 @@ fn write_restore_script_file<T: Copy + Ord + Display>(
     writeln!(writer, "swap {temp_set_name} {}", spec.set_name)
 }
 
-fn write_restore_entry_lines<T: Copy + Ord + Display>(
+fn write_restore_entry_lines<T: Ord + Display>(
     writer: &mut impl Write,
     temp_set_name: &str,
     entries: &[T],
 ) -> Result<(), std::io::Error> {
-    if is_sorted_and_unique(entries) {
-        for entry in entries {
-            writeln!(writer, "add {temp_set_name} {entry}")?;
-        }
-        return Ok(());
-    }
-
-    let mut sorted_entries = entries.to_vec();
-    sorted_entries.sort_unstable();
-    sorted_entries.dedup();
-    for entry in sorted_entries {
+    for entry in sorted_unique_entries(entries) {
         writeln!(writer, "add {temp_set_name} {entry}")?;
     }
     Ok(())
@@ -365,6 +350,15 @@ fn is_sorted_and_unique<T: Ord>(entries: &[T]) -> bool {
             .zip(window.get(1))
             .is_some_and(|(left, right)| left < right)
     })
+}
+
+fn sorted_unique_entries<T: Ord>(entries: &[T]) -> Vec<&T> {
+    let mut sorted_entries = entries.iter().collect::<Vec<_>>();
+    if !is_sorted_and_unique(entries) {
+        sorted_entries.sort_unstable();
+        sorted_entries.dedup();
+    }
+    sorted_entries
 }
 
 fn is_missing_set_result(result: &CommandResult) -> bool {

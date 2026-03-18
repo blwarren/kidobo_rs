@@ -151,12 +151,14 @@ fn select_config_path(
     base: &BasePaths,
     allow_missing_config: bool,
 ) -> Result<PathBuf, PathResolutionError> {
-    if let Some(explicit) = input.explicit_config_path.clone() {
+    if let Some(explicit) = input.explicit_config_path.as_deref() {
         if explicit.exists() || allow_missing_config {
-            return Ok(explicit);
+            return Ok(explicit.to_path_buf());
         }
 
-        return Err(PathResolutionError::ExplicitConfigMissing { path: explicit });
+        return Err(PathResolutionError::ExplicitConfigMissing {
+            path: explicit.to_path_buf(),
+        });
     }
 
     if base.config_file.exists() {

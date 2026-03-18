@@ -98,7 +98,7 @@ impl Default for ReqwestHttpClient {
 }
 
 impl ReqwestHttpClient {
-    pub fn new(user_agent: String) -> Self {
+    pub fn new(user_agent: impl Into<String>) -> Self {
         Self::new_with_timeout(user_agent, DEFAULT_HTTP_REQUEST_TIMEOUT)
     }
 
@@ -106,11 +106,11 @@ impl ReqwestHttpClient {
         Self::new_with_timeout(default_user_agent(), request_timeout)
     }
 
-    fn new_with_timeout(user_agent: String, request_timeout: Duration) -> Self {
+    fn new_with_timeout(user_agent: impl Into<String>, request_timeout: Duration) -> Self {
         ensure_rustls_provider_installed();
         Self {
             client: reqwest::blocking::Client::new(),
-            user_agent,
+            user_agent: user_agent.into(),
             request_timeout,
         }
     }
@@ -187,7 +187,7 @@ fn read_response_body_capped(
         }
 
         let slice = chunk.get(..read).ok_or_else(|| HttpClientError::Request {
-            reason: "internal read exceeded chunk size".to_string(),
+            reason: "response reader returned an invalid chunk size".to_string(),
         })?;
         out.extend_from_slice(slice);
     }
