@@ -519,6 +519,31 @@ mod tests {
     }
 
     #[test]
+    fn temp_set_name_uses_eight_lower_hex_suffix_chars() {
+        let name = generate_temp_set_name("kidobo");
+        let suffix = name.rsplit('-').next().expect("suffix");
+
+        assert_eq!(suffix.len(), 8);
+        assert!(suffix.chars().all(|ch| matches!(ch, '0'..='9' | 'a'..='f')));
+    }
+
+    #[test]
+    fn temp_set_name_falls_back_to_kidobo_for_empty_base() {
+        let name = generate_temp_set_name("");
+
+        assert!(name.starts_with("kidobo-"));
+        assert!(name.len() <= 31);
+    }
+
+    #[test]
+    fn temp_set_name_truncates_on_utf8_boundaries() {
+        let name = generate_temp_set_name("kidobo-ääääääääääääääää");
+
+        assert!(name.starts_with("kidobo-"));
+        assert!(name.len() <= 31);
+    }
+
+    #[test]
     fn restore_script_is_deterministic_and_sorted() {
         let spec = IpsetSetSpec {
             set_name: "kidobo".to_string(),

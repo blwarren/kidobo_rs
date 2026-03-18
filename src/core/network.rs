@@ -1349,6 +1349,45 @@ mod tests {
     }
 
     #[test]
+    fn interval_regeneration_merges_adjacent_input_intervals() {
+        let cidrs = intervals_to_ipv4_cidrs(&[
+            IntervalU32 {
+                start: 0x0a000000,
+                end: 0x0a000000,
+            },
+            IntervalU32 {
+                start: 0x0a000001,
+                end: 0x0a000001,
+            },
+        ]);
+
+        assert_eq!(cidrs, vec![Ipv4Cidr::from_parts(0x0a000000, 31)]);
+    }
+
+    #[test]
+    fn interval_regeneration_sorts_unsorted_ipv6_input_intervals() {
+        let base = 0x20010db8000000000000000000000000_u128;
+        let cidrs = intervals_to_ipv6_cidrs(&[
+            IntervalU128 {
+                start: base + 4,
+                end: base + 5,
+            },
+            IntervalU128 {
+                start: base,
+                end: base + 1,
+            },
+        ]);
+
+        assert_eq!(
+            cidrs,
+            vec![
+                Ipv6Cidr::from_parts(base, 127),
+                Ipv6Cidr::from_parts(base + 4, 127),
+            ]
+        );
+    }
+
+    #[test]
     fn parse_lines_non_strict_ignores_invalid_lines() {
         let parsed = parse_lines_non_strict(["10.0.0.1", "not-valid", "2001:db8::/32"]);
         assert_eq!(parsed.len(), 2);

@@ -381,6 +381,94 @@ mod tests {
     }
 
     #[test]
+    fn repo_fallback_prefers_nearest_of_multiple_git_roots() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = temp.path().join("override-root");
+        let outer = temp.path().join("outer");
+        let inner = outer.join("inner");
+        let nested = inner.join("a/b");
+
+        fs::create_dir_all(&nested).expect("mkdir nested");
+        fs::create_dir_all(outer.join(".git")).expect("mkdir outer .git");
+        fs::create_dir_all(inner.join(".git")).expect("mkdir inner .git");
+        fs::write(outer.join("config.toml"), "[ipset]\nset_name='outer'\n")
+            .expect("write outer config");
+        fs::write(inner.join("config.toml"), "[ipset]\nset_name='inner'\n")
+            .expect("write inner config");
+
+        let mut input = test_input(&temp);
+        input.cwd = Some(nested);
+        input
+            .env
+            .insert(ENV_KIDOBO_ROOT.to_string(), root.display().to_string());
+        input.env.insert(
+            ENV_KIDOBO_ALLOW_REPO_CONFIG_FALLBACK.to_string(),
+            "1".to_string(),
+        );
+
+        let resolved = resolve_paths(&input).expect("resolve");
+        assert_eq!(resolved.config_file, inner.join("config.toml"));
+    }
+
+    #[test]
+    fn repo_fallback_does_not_override_existing_root_config() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = temp.path().join("override-root");
+        let root_config = root.join("config/config.toml");
+        let repo = temp.path().join("repo");
+        let nested = repo.join("nested");
+
+        fs::create_dir_all(root_config.parent().expect("parent")).expect("mkdir root config");
+        fs::create_dir_all(&nested).expect("mkdir nested");
+        fs::create_dir_all(repo.join(".git")).expect("mkdir .git");
+        fs::write(&root_config, "[ipset]\nset_name='root'\n").expect("write root config");
+        fs::write(repo.join("config.toml"), "[ipset]\nset_name='repo'\n")
+            .expect("write repo config");
+
+        let mut input = test_input(&temp);
+        input.cwd = Some(nested);
+        input
+            .env
+            .insert(ENV_KIDOBO_ROOT.to_string(), root.display().to_string());
+        input.env.insert(
+            ENV_KIDOBO_ALLOW_REPO_CONFIG_FALLBACK.to_string(),
+            "1".to_string(),
+        );
+
+        let resolved = resolve_paths(&input).expect("resolve");
+        assert_eq!(resolved.config_file, root_config);
+    }
+
+    #[test]
+    fn repo_fallback_keeps_non_config_paths_under_base_root() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = temp.path().join("override-root");
+        let repo = temp.path().join("repo");
+        let nested = repo.join("nested");
+
+        fs::create_dir_all(&nested).expect("mkdir nested");
+        fs::create_dir_all(repo.join(".git")).expect("mkdir .git");
+        fs::write(repo.join("config.toml"), "[ipset]\nset_name='kidobo'\n")
+            .expect("write repo config");
+
+        let mut input = test_input(&temp);
+        input.cwd = Some(nested);
+        input
+            .env
+            .insert(ENV_KIDOBO_ROOT.to_string(), root.display().to_string());
+        input.env.insert(
+            ENV_KIDOBO_ALLOW_REPO_CONFIG_FALLBACK.to_string(),
+            "1".to_string(),
+        );
+
+        let resolved = resolve_paths(&input).expect("resolve");
+        assert_eq!(resolved.config_file, repo.join("config.toml"));
+        assert_eq!(resolved.data_dir, root.join("data"));
+        assert_eq!(resolved.cache_dir, root.join("cache"));
+        assert_eq!(resolved.lock_file, root.join("cache/sync.lock"));
+    }
+
+    #[test]
     fn repo_fallback_requires_repo_root() {
         let temp = TempDir::new().expect("tempdir");
         let root = temp.path().join("override-root");

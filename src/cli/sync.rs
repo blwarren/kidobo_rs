@@ -781,6 +781,106 @@ mod tests {
     }
 
     #[test]
+    fn sync_completes_firewall_wiring_for_both_families_before_remote_fetch() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = test_paths(temp.path());
+
+        fs::create_dir_all(paths.blocklist_file.parent().expect("parent")).expect("mkdir data");
+        fs::create_dir_all(&paths.remote_cache_dir).expect("mkdir cache");
+        fs::write(&paths.blocklist_file, "10.0.0.0/24\n2001:db8::/64\n").expect("write blocklist");
+
+        let url = "https://example.com/a.txt".to_string();
+        let config = test_config(vec![url.clone()]);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let responses = BTreeMap::from([(
+            url,
+            VecDeque::from([Ok(HttpResponse {
+                status: StatusCode::OK,
+                body: b"198.51.100.7\n".to_vec(),
+                etag: None,
+                last_modified: None,
+            })]),
+        )]);
+
+        let http_client = MockHttpClient::new(responses, Arc::clone(&events), 0);
+        let runner = MockCommandRunner::new(events);
+
+        run_sync_with_dependencies(
+            &paths,
+            &config,
+            &BTreeMap::new(),
+            &http_client,
+            &runner,
+            &runner,
+        )
+        .expect("sync");
+
+        let events = runner.events();
+        let first_http = events
+            .iter()
+            .position(|entry| entry.starts_with("http:"))
+            .expect("http event");
+        let last_firewall = events
+            .iter()
+            .rposition(|entry| {
+                entry.starts_with("cmd:iptables") || entry.starts_with("cmd:ip6tables")
+            })
+            .expect("firewall event");
+
+        assert!(last_firewall < first_http);
+    }
+
+    #[test]
+    fn sync_ensures_ipset_artifacts_before_remote_fetch() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = test_paths(temp.path());
+
+        fs::create_dir_all(paths.blocklist_file.parent().expect("parent")).expect("mkdir data");
+        fs::create_dir_all(&paths.remote_cache_dir).expect("mkdir cache");
+        fs::write(&paths.blocklist_file, "10.0.0.0/24\n2001:db8::/64\n").expect("write blocklist");
+
+        let url = "https://example.com/a.txt".to_string();
+        let config = test_config(vec![url.clone()]);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let responses = BTreeMap::from([(
+            url,
+            VecDeque::from([Ok(HttpResponse {
+                status: StatusCode::OK,
+                body: b"198.51.100.7\n".to_vec(),
+                etag: None,
+                last_modified: None,
+            })]),
+        )]);
+
+        let http_client = MockHttpClient::new(responses, Arc::clone(&events), 0);
+        let runner = MockCommandRunner::new(events);
+
+        run_sync_with_dependencies(
+            &paths,
+            &config,
+            &BTreeMap::new(),
+            &http_client,
+            &runner,
+            &runner,
+        )
+        .expect("sync");
+
+        let events = runner.events();
+        let first_http = events
+            .iter()
+            .position(|entry| entry.starts_with("http:"))
+            .expect("http event");
+        let last_ipset_ensure = events
+            .iter()
+            .rposition(|entry| {
+                entry.starts_with("cmd:ipset list ") || entry.starts_with("cmd:ipset create ")
+            })
+            .expect("ipset ensure event");
+
+        assert!(last_ipset_ensure < first_http);
+    }
+
+    #[test]
     fn remote_failures_are_soft_and_concurrency_is_bounded() {
         let temp = TempDir::new().expect("tempdir");
         let cache_dir = temp.path();
