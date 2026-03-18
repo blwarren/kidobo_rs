@@ -1,5 +1,5 @@
 use std::cmp::Reverse;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use log::warn;
@@ -8,8 +8,7 @@ use tabled::{Table, Tabled};
 
 use crate::adapters::blocklist_analysis_sources::load_analysis_sources;
 use crate::adapters::config::load_config_from_file;
-use crate::adapters::limited_io::{read_to_string_with_limit, write_string_atomic};
-use crate::adapters::lock::acquire_non_blocking;
+use crate::adapters::limited_io::read_to_string_with_limit;
 use crate::adapters::lookup_sources::load_lookup_sources;
 use crate::adapters::path::{PathResolutionInput, resolve_paths};
 use crate::cli::args::{AnalyzeCommand, Command};
@@ -22,11 +21,9 @@ use crate::core::blocklist_analysis::{
     collapse_by_family, fully_covered_local, overlap_counts, subtract_remote_from_local,
 };
 use crate::core::lookup::{parse_target_strict, run_lookup_streaming};
-use crate::core::network::{CanonicalCidr, parse_ip_cidr_token, split_by_family};
 use crate::error::KidoboError;
 
 const LOOKUP_TARGET_READ_LIMIT: usize = 2 * 1024 * 1024;
-const BLOCKLIST_READ_LIMIT: usize = 16 * 1024 * 1024;
 
 #[derive(Debug)]
 struct RemoteOverlapRow<'a> {
@@ -76,12 +73,7 @@ pub fn dispatch(command: Command) -> Result<(), KidoboError> {
             AnalyzeCommand::Overlap {
                 print_fully_covered_local,
                 print_reduced_local,
-                apply_fully_covered_local,
-            } => run_analyze_overlap_command(
-                print_fully_covered_local,
-                print_reduced_local,
-                apply_fully_covered_local,
-            ),
+            } => run_analyze_overlap_command(print_fully_covered_local, print_reduced_local),
         },
         Command::Ban { target, asn } => run_ban_command(target.as_deref(), asn.as_deref()),
         Command::Unban { target, asn, yes } => {
@@ -153,16 +145,10 @@ fn collect_unique_valid_lookup_targets<S: AsRef<str>>(targets: &[S]) -> BTreeSet
 fn run_analyze_overlap_command(
     print_fully_covered_local: bool,
     print_reduced_local: bool,
-    apply_fully_covered_local: bool,
 ) -> Result<(), KidoboError> {
     let path_input = PathResolutionInput::from_process(None);
     let paths = resolve_paths(&path_input)?;
     let config = load_config_from_file(&paths.config_file)?;
-    let _lock = if apply_fully_covered_local {
-        Some(acquire_non_blocking(&paths.lock_file)?)
-    } else {
-        None
-    };
     let stale_after_secs = u64::from(config.remote.cache_stale_after_secs.get());
     let sources = load_analysis_sources(&paths, stale_after_secs).map_err(KidoboError::from)?;
 
@@ -233,72 +219,7 @@ fn run_analyze_overlap_command(
         }
     }
 
-    if apply_fully_covered_local {
-        let fully_covered_raw =
-            fully_covered_local(&split_by_family(&sources.local_cidrs), &remote_union);
-        let removed =
-            apply_remove_fully_covered_entries(&paths.blocklist_file, &fully_covered_raw)?;
-        println!();
-        println!(
-            "applied removal: removed_entries={} from {}",
-            removed,
-            paths.blocklist_file.display()
-        );
-        println!("changes take effect after running `sudo kidobo sync`");
-    }
-
     Ok(())
-}
-
-fn apply_remove_fully_covered_entries(
-    path: &std::path::Path,
-    fully_covered: &crate::core::blocklist_analysis::FamilyReduction,
-) -> Result<usize, KidoboError> {
-    if !path.exists() {
-        return Ok(0);
-    }
-
-    let contents = read_to_string_with_limit(path, BLOCKLIST_READ_LIMIT).map_err(|err| {
-        KidoboError::BlocklistRead {
-            path: path.to_path_buf(),
-            reason: err.to_string(),
-        }
-    })?;
-
-    let mut remove_set = HashSet::<CanonicalCidr>::new();
-    for cidr in &fully_covered.ipv4 {
-        remove_set.insert(CanonicalCidr::V4(*cidr));
-    }
-    for cidr in &fully_covered.ipv6 {
-        remove_set.insert(CanonicalCidr::V6(*cidr));
-    }
-
-    let mut removed = 0_usize;
-    let mut kept_lines = Vec::new();
-    for line in contents.lines() {
-        let remove_line = line
-            .split_whitespace()
-            .next()
-            .and_then(parse_ip_cidr_token)
-            .is_some_and(|cidr| remove_set.contains(&cidr));
-        if remove_line {
-            removed += 1;
-        } else {
-            kept_lines.push(line);
-        }
-    }
-
-    let mut output = kept_lines.join("\n");
-    if !output.is_empty() {
-        output.push('\n');
-    }
-
-    write_string_atomic(path, &output).map_err(|err| KidoboError::BlocklistWrite {
-        path: path.to_path_buf(),
-        reason: err.to_string(),
-    })?;
-
-    Ok(removed)
 }
 
 #[allow(clippy::print_stdout)]

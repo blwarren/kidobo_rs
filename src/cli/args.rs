@@ -181,12 +181,6 @@ pub enum AnalyzeCommand {
             help = "Print suggested reduced local blocklist (local minus cached remote union)"
         )]
         print_reduced_local: bool,
-
-        #[arg(
-            long,
-            help = "Apply removal of local entries fully covered by cached remote union"
-        )]
-        apply_fully_covered_local: bool,
     },
 }
 
@@ -272,11 +266,9 @@ mod tests {
                 AnalyzeCommand::Overlap {
                     print_fully_covered_local,
                     print_reduced_local,
-                    apply_fully_covered_local,
                 } => {
                     assert!(!print_fully_covered_local);
                     assert!(!print_reduced_local);
-                    assert!(!apply_fully_covered_local);
                 }
             },
             _ => panic!("unexpected command variant"),
