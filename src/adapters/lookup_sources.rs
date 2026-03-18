@@ -203,6 +203,86 @@ mod tests {
     }
 
     #[test]
+    fn remote_entries_are_sorted_by_resolved_label_not_cache_filename() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = test_paths(temp.path());
+
+        fs::create_dir_all(&paths.remote_cache_dir).expect("mkdir remote");
+        fs::write(paths.remote_cache_dir.join("a.iplist"), "2001:db8::/64\n")
+            .expect("write remote a");
+        fs::write(
+            paths.remote_cache_dir.join("a.meta.json"),
+            r#"{"url":"https://example.com/z.txt"}"#,
+        )
+        .expect("write remote meta a");
+        fs::write(paths.remote_cache_dir.join("b.iplist"), "10.0.0.0/24\n")
+            .expect("write remote b");
+        fs::write(
+            paths.remote_cache_dir.join("b.meta.json"),
+            r#"{"url":"https://example.com/a.txt"}"#,
+        )
+        .expect("write remote meta b");
+
+        let entries = load_lookup_sources(&paths).expect("load sources");
+        let labels = entries
+            .iter()
+            .map(|entry| entry.source_label.as_ref())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            labels,
+            vec!["https://example.com/a.txt", "https://example.com/z.txt"]
+        );
+    }
+
+    #[test]
+    fn multiple_remote_files_with_same_label_are_all_loaded() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = test_paths(temp.path());
+
+        fs::create_dir_all(&paths.remote_cache_dir).expect("mkdir remote");
+        fs::write(paths.remote_cache_dir.join("a.iplist"), "2001:db8::/64\n")
+            .expect("write remote a");
+        fs::write(paths.remote_cache_dir.join("b.iplist"), "10.0.0.0/24\n")
+            .expect("write remote b");
+        fs::write(
+            paths.remote_cache_dir.join("a.meta.json"),
+            r#"{"url":"https://example.com/shared.txt"}"#,
+        )
+        .expect("write remote meta a");
+        fs::write(
+            paths.remote_cache_dir.join("b.meta.json"),
+            r#"{"url":"https://example.com/shared.txt"}"#,
+        )
+        .expect("write remote meta b");
+
+        let entries = load_lookup_sources(&paths).expect("load sources");
+        let rendered = entries
+            .iter()
+            .map(|entry| {
+                (
+                    entry.source_label.as_ref().to_string(),
+                    entry.source_line.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            rendered,
+            vec![
+                (
+                    "https://example.com/shared.txt".to_string(),
+                    "10.0.0.0/24".to_string(),
+                ),
+                (
+                    "https://example.com/shared.txt".to_string(),
+                    "2001:db8::/64".to_string(),
+                ),
+            ]
+        );
+    }
+
+    #[test]
     fn missing_source_files_return_empty_entries() {
         let temp = TempDir::new().expect("tempdir");
         let paths = test_paths(temp.path());

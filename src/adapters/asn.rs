@@ -451,6 +451,38 @@ mod tests {
     }
 
     #[test]
+    fn bgpq4_resolver_propagates_second_family_failure_after_ipv4_success() {
+        let executor = MockCommandExecutor::new(vec![
+            Ok(CommandResult {
+                status: ProcessStatus::Exited(0),
+                stdout: "203.0.113.0/24\n".to_string(),
+                stderr: String::new(),
+            }),
+            Ok(CommandResult {
+                status: ProcessStatus::Exited(1),
+                stdout: String::new(),
+                stderr: "ipv6 failed".to_string(),
+            }),
+        ]);
+        let resolver = Bgpq4AsnPrefixResolver::new(executor.clone(), Duration::from_secs(5));
+
+        let err = resolver.resolve_prefixes(64512).expect_err("must fail");
+        match err {
+            AsnError::ResolveFailed { asn, reason } => {
+                assert_eq!(asn, 64512);
+                assert!(reason.contains("bgpq4 -6 -F"));
+                assert!(reason.contains("ipv6 failed"));
+            }
+            _ => panic!("unexpected error variant"),
+        }
+
+        let requests = executor.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].args[0], "-4");
+        assert_eq!(requests[1].args[0], "-6");
+    }
+
+    #[test]
     fn cache_load_uses_fresh_cache_without_resolve() {
         let temp = TempDir::new().expect("tempdir");
         let cache_dir = temp.path();
@@ -471,6 +503,65 @@ mod tests {
                 prefixes: vec![CanonicalCidr::V4(Ipv4Cidr::from_parts(0xcb007100, 24))],
                 stale: false
             }
+        );
+    }
+
+    #[test]
+    fn cache_load_parses_fresh_cache_with_comments_duplicates_and_unsorted_entries() {
+        let temp = TempDir::new().expect("tempdir");
+        let cache_dir = temp.path();
+        fs::write(
+            cache_dir.join("as64512.iplist"),
+            "# kidobo-asn-cache-v1\n2001:db8::/64\n203.0.113.0/24\ninvalid\n203.0.113.0/24\n",
+        )
+        .expect("write cache");
+        let resolver = Mutex::new(MockResolver::new(vec![]));
+
+        let loaded = load_asn_prefixes_with_cache(
+            64512,
+            cache_dir,
+            Duration::from_secs(24 * 60 * 60),
+            &resolver,
+        )
+        .expect("load");
+
+        assert_eq!(
+            loaded
+                .prefixes
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect::<Vec<_>>(),
+            vec!["203.0.113.0/24", "2001:db8::/64"]
+        );
+        assert!(!loaded.stale);
+    }
+
+    #[test]
+    fn stale_cache_fallback_parses_valid_prefixes_only() {
+        let temp = TempDir::new().expect("tempdir");
+        let cache_dir = temp.path();
+        fs::write(
+            cache_dir.join("as64512.iplist"),
+            "# kidobo-asn-cache-v1\n2001:db8::/64\ninvalid\n203.0.113.0/24\n2001:db8::/64\n",
+        )
+        .expect("write cache");
+        let resolver = Mutex::new(MockResolver::new(vec![Err(AsnError::ResolveFailed {
+            asn: 64512,
+            reason: "boom".to_string(),
+        })]));
+
+        let loaded =
+            load_asn_prefixes_with_cache(64512, cache_dir, Duration::from_secs(0), &resolver)
+                .expect("load");
+
+        assert!(loaded.stale);
+        assert_eq!(
+            loaded
+                .prefixes
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect::<Vec<_>>(),
+            vec!["203.0.113.0/24", "2001:db8::/64"]
         );
     }
 

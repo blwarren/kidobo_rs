@@ -522,6 +522,7 @@ mod tests {
         ReqwestHttpClient, cache_paths_for_url, fetch_iplist_with_cache, max_http_body_bytes,
         normalize_remote_text, url_hash_prefix,
     };
+    use crate::adapters::limited_io::{read_bytes_with_limit, read_to_string_with_limit};
 
     struct MockHttpClient {
         responses: RefCell<VecDeque<Result<HttpResponse, HttpClientError>>>,
@@ -699,6 +700,103 @@ mod tests {
 
         let result =
             fetch_iplist_with_cache(&client, url, cache_dir, &BTreeMap::new()).expect("fetch");
+        assert_eq!(result.source, CacheSource::FallbackCache);
+        assert_eq!(result.networks.len(), 1);
+    }
+
+    #[test]
+    fn unexpected_status_falls_back_to_existing_cache_without_overwriting() {
+        let temp = TempDir::new().expect("tempdir");
+        let cache_dir = temp.path();
+        let url = "https://example.com/feed.txt";
+        let paths = cache_paths_for_url(cache_dir, url);
+
+        fs::create_dir_all(cache_dir).expect("mkdir");
+        fs::write(&paths.iplist_path, "10.0.0.0/24\n").expect("write cache");
+
+        let client = MockHttpClient::new(vec![Ok(HttpResponse {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            body: b"198.51.100.7".to_vec(),
+            etag: Some("etag-new".to_string()),
+            last_modified: Some("Tue, 02 Jan 2024 00:00:00 GMT".to_string()),
+        })]);
+
+        let result =
+            fetch_iplist_with_cache(&client, url, cache_dir, &BTreeMap::new()).expect("fetch");
+        assert_eq!(result.source, CacheSource::FallbackCache);
+        assert_eq!(result.networks.len(), 1);
+        assert_eq!(
+            read_to_string_with_limit(&paths.iplist_path, super::MAX_IPLIST_READ_BYTES)
+                .expect("read cache"),
+            "10.0.0.0/24\n"
+        );
+    }
+
+    #[test]
+    fn successful_fetch_persists_normalized_iplist_and_raw_body_separately() {
+        let temp = TempDir::new().expect("tempdir");
+        let cache_dir = temp.path();
+        let url = "https://example.com/feed.txt";
+        let paths = cache_paths_for_url(cache_dir, url);
+
+        let body = b"\xEF\xBB\xBF 10.0.0.5 \n# comment\ninvalid\n2001:db8::1 trailing\n";
+        let client = MockHttpClient::new(vec![Ok(HttpResponse {
+            status: StatusCode::OK,
+            body: body.to_vec(),
+            etag: Some("etag-1".to_string()),
+            last_modified: Some("Mon, 01 Jan 2024 00:00:00 GMT".to_string()),
+        })]);
+
+        let result =
+            fetch_iplist_with_cache(&client, url, cache_dir, &BTreeMap::new()).expect("fetch");
+        assert_eq!(result.source, CacheSource::Network);
+        assert_eq!(result.networks.len(), 2);
+
+        assert_eq!(
+            read_to_string_with_limit(&paths.iplist_path, super::MAX_IPLIST_READ_BYTES)
+                .expect("read iplist"),
+            "10.0.0.5/32\n2001:db8::1/128"
+        );
+        assert_eq!(
+            read_bytes_with_limit(&paths.raw_path, super::DEFAULT_MAX_HTTP_BODY_BYTES)
+                .expect("read raw"),
+            body
+        );
+
+        let metadata: RemoteCacheMetadata = serde_json::from_slice(
+            &read_bytes_with_limit(&paths.meta_path, super::MAX_METADATA_READ_BYTES)
+                .expect("read metadata"),
+        )
+        .expect("metadata json");
+        assert_eq!(metadata.url, url);
+        assert_eq!(metadata.etag.as_deref(), Some("etag-1"));
+        assert_eq!(
+            metadata.last_modified.as_deref(),
+            Some("Mon, 01 Jan 2024 00:00:00 GMT")
+        );
+    }
+
+    #[test]
+    fn body_size_cap_falls_back_to_existing_cache() {
+        let temp = TempDir::new().expect("tempdir");
+        let cache_dir = temp.path();
+        let url = "https://example.com/feed.txt";
+        let paths = cache_paths_for_url(cache_dir, url);
+
+        fs::create_dir_all(cache_dir).expect("mkdir");
+        fs::write(&paths.iplist_path, "10.0.0.0/24\n").expect("write cache");
+
+        let client = MockHttpClient::new(vec![Ok(HttpResponse {
+            status: StatusCode::OK,
+            body: b"10.0.0.1\n".to_vec(),
+            etag: None,
+            last_modified: None,
+        })]);
+
+        let mut env = BTreeMap::new();
+        env.insert("KIDOBO_MAX_HTTP_BODY_BYTES".to_string(), "1".to_string());
+
+        let result = fetch_iplist_with_cache(&client, url, cache_dir, &env).expect("fetch");
         assert_eq!(result.source, CacheSource::FallbackCache);
         assert_eq!(result.networks.len(), 1);
     }
