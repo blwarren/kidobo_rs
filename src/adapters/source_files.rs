@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::adapters::hash::sha256_hex;
+use crate::adapters::http_cache::RemoteCacheMetadata;
 use crate::adapters::limited_io::read_to_string_with_limit;
 use crate::core::network::{CanonicalCidr, parse_ip_cidr_token};
 
@@ -45,6 +47,28 @@ pub fn read_cidrs_from_source_file(
         .collect())
 }
 
+pub fn read_remote_cache_iplist_text(
+    iplist_path: &Path,
+    read_limit: usize,
+    meta_read_limit: usize,
+) -> io::Result<String> {
+    let contents = read_to_string_with_limit(iplist_path, read_limit)?;
+    validate_remote_cache_iplist_hash(iplist_path, &contents, meta_read_limit)?;
+    Ok(contents)
+}
+
+pub fn read_cidrs_from_remote_cache_iplist(
+    iplist_path: &Path,
+    read_limit: usize,
+    meta_read_limit: usize,
+) -> io::Result<Vec<CanonicalCidr>> {
+    let contents = read_remote_cache_iplist_text(iplist_path, read_limit, meta_read_limit)?;
+    Ok(contents
+        .lines()
+        .filter_map(|line| parse_cidr_source_line(line).map(|(cidr, _)| cidr))
+        .collect())
+}
+
 pub fn parse_cidr_source_line(line: &str) -> Option<(CanonicalCidr, &str)> {
     let token = line.split_whitespace().next()?.trim();
     if token.is_empty() {
@@ -79,6 +103,39 @@ pub fn resolve_remote_source_label(iplist_path: &Path, meta_read_limit: usize) -
 #[derive(Debug, Deserialize)]
 struct RemoteSourceMetadata {
     url: String,
+}
+
+fn validate_remote_cache_iplist_hash(
+    iplist_path: &Path,
+    contents: &str,
+    meta_read_limit: usize,
+) -> io::Result<()> {
+    let Some(meta_path) = remote_meta_path_for_iplist(iplist_path) else {
+        return Ok(());
+    };
+
+    let metadata_contents = match read_to_string_with_limit(&meta_path, meta_read_limit) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Ok(()),
+    };
+
+    let Ok(metadata) = serde_json::from_str::<RemoteCacheMetadata>(&metadata_contents) else {
+        return Ok(());
+    };
+
+    let actual_hash = sha256_hex(contents.as_bytes());
+    if actual_hash == metadata.sha256_iplist {
+        return Ok(());
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "remote cache iplist hash mismatch for {}",
+            iplist_path.display()
+        ),
+    ))
 }
 
 fn remote_meta_path_for_iplist(iplist_path: &Path) -> Option<PathBuf> {

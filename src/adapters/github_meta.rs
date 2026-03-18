@@ -12,7 +12,7 @@ use crate::adapters::http_cache::{HttpClient, HttpResponse, max_http_body_bytes}
 use crate::adapters::http_fetch::{
     ConditionalFetchOutcome, ConditionalFetchResult, fetch_with_conditional_cache,
 };
-use crate::adapters::limited_io::read_bytes_with_limit;
+use crate::adapters::limited_io::{read_bytes_with_limit, write_bytes_atomic};
 use crate::core::config::{DEFAULT_GITHUB_META_CATEGORIES, GithubMetaCategoryMode};
 use crate::core::network::{CanonicalCidr, parse_ip_cidr_non_strict};
 
@@ -106,8 +106,8 @@ pub fn load_github_meta_safelist(
     let max_bytes = max_http_body_bytes(env);
     let paths = CachePaths::from_cache_dir(cache_dir);
 
-    let cached_raw = read_optional_bytes(&paths.raw_path);
     let cached_meta = read_optional_json::<GithubMetaCacheMetadata>(&paths.meta_path);
+    let cached_raw = read_validated_raw_cache(&paths.raw_path, cached_meta.as_ref());
     let cached_sidecar = read_optional_json::<GithubMetaCategorySidecar>(&paths.category_path);
     let cache_is_compatible = cache_scope_compatible(&selection, cached_sidecar.as_ref());
     let cached_networks = if cache_is_compatible {
@@ -265,20 +265,9 @@ fn persist_cache(
         })?;
     }
 
-    fs::write(&paths.raw_path, raw).map_err(|err| GithubMetaLoadError::WriteCacheFile {
-        path: paths.raw_path.clone(),
-        reason: err.to_string(),
-    })?;
-
-    let metadata_bytes =
-        serde_json::to_vec_pretty(metadata).map_err(|err| GithubMetaLoadError::WriteCacheFile {
-            path: paths.meta_path.clone(),
-            reason: err.to_string(),
-        })?;
-
-    fs::write(&paths.meta_path, metadata_bytes).map_err(|err| {
+    write_bytes_atomic(&paths.raw_path, raw).map_err(|err| {
         GithubMetaLoadError::WriteCacheFile {
-            path: paths.meta_path.clone(),
+            path: paths.raw_path.clone(),
             reason: err.to_string(),
         }
     })?;
@@ -290,9 +279,22 @@ fn persist_cache(
             reason: err.to_string(),
         })?;
 
-    fs::write(&paths.category_path, sidecar_bytes).map_err(|err| {
+    write_bytes_atomic(&paths.category_path, &sidecar_bytes).map_err(|err| {
         GithubMetaLoadError::WriteCacheFile {
             path: paths.category_path.clone(),
+            reason: err.to_string(),
+        }
+    })?;
+
+    let metadata_bytes =
+        serde_json::to_vec_pretty(metadata).map_err(|err| GithubMetaLoadError::WriteCacheFile {
+            path: paths.meta_path.clone(),
+            reason: err.to_string(),
+        })?;
+
+    write_bytes_atomic(&paths.meta_path, &metadata_bytes).map_err(|err| {
+        GithubMetaLoadError::WriteCacheFile {
+            path: paths.meta_path.clone(),
             reason: err.to_string(),
         }
     })?;
@@ -418,6 +420,26 @@ fn read_optional_bytes(path: &Path) -> Option<Vec<u8>> {
     }
 }
 
+fn read_validated_raw_cache(
+    path: &Path,
+    metadata: Option<&GithubMetaCacheMetadata>,
+) -> Option<Vec<u8>> {
+    let raw = read_optional_bytes(path)?;
+
+    if let Some(metadata) = metadata {
+        let actual_hash = sha256_hex(&raw);
+        if actual_hash != metadata.sha256_raw {
+            warn!(
+                "github meta raw cache hash mismatch for {}: ignoring cached raw body",
+                path.display()
+            );
+            return None;
+        }
+    }
+
+    Some(raw)
+}
+
 fn read_optional_json<T>(path: &Path) -> Option<T>
 where
     T: for<'de> Deserialize<'de>,
@@ -515,6 +537,7 @@ mod tests {
         GithubMetaCacheMetadata, GithubMetaCategorySidecar, GithubMetaLoadResult, GithubMetaSource,
         load_github_meta_safelist,
     };
+    use crate::adapters::hash::sha256_hex;
     use crate::adapters::http_cache::{HttpClient, HttpClientError, HttpRequest, HttpResponse};
     use crate::adapters::limited_io::read_bytes_with_limit;
     use crate::core::config::GithubMetaCategoryMode;
@@ -933,7 +956,7 @@ mod tests {
                 url: TEST_GITHUB_META_URL.to_string(),
                 etag: Some("etag-1".to_string()),
                 last_modified: Some("Mon, 01 Jan 2024 00:00:00 GMT".to_string()),
-                sha256_raw: "raw".to_string(),
+                sha256_raw: sha256_hex(br#"{"api":["192.30.252.0/22"]}"#),
             })
             .expect("meta json"),
         )
@@ -1008,5 +1031,42 @@ mod tests {
         assert_eq!(requests.len(), 2);
         assert_eq!(requests[1].if_none_match, None);
         assert_eq!(requests[1].if_modified_since, None);
+    }
+
+    #[test]
+    fn raw_hash_mismatch_blocks_cached_fallback() {
+        let temp = TempDir::new().expect("tempdir");
+        fs::write(
+            temp.path().join(GITHUB_META_RAW_CACHE_FILE),
+            br#"{"api":["192.30.252.0/22"]}"#,
+        )
+        .expect("write raw cache");
+        fs::write(
+            temp.path().join(GITHUB_META_META_CACHE_FILE),
+            serde_json::to_vec_pretty(&GithubMetaCacheMetadata {
+                url: TEST_GITHUB_META_URL.to_string(),
+                etag: Some("etag-1".to_string()),
+                last_modified: Some("Mon, 01 Jan 2024 00:00:00 GMT".to_string()),
+                sha256_raw: sha256_hex(br#"{"hooks":["10.0.0.0/24"]}"#),
+            })
+            .expect("meta json"),
+        )
+        .expect("write metadata");
+
+        let client = MockHttpClient::new(vec![Err(HttpClientError::Request {
+            reason: "offline".to_string(),
+        })]);
+
+        let result = load_github_meta_safelist(
+            &client,
+            temp.path(),
+            TEST_GITHUB_META_URL,
+            &GithubMetaCategoryMode::All,
+            &BTreeMap::new(),
+        )
+        .expect("load");
+
+        assert_eq!(result.source, GithubMetaSource::Empty);
+        assert!(result.networks.is_empty());
     }
 }

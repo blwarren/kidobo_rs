@@ -15,7 +15,9 @@ use crate::adapters::hash::sha256_hex;
 use crate::adapters::http_fetch::{
     ConditionalFetchOutcome, ConditionalFetchResult, fetch_with_conditional_cache,
 };
-use crate::adapters::limited_io::read_to_string_with_limit;
+use crate::adapters::limited_io::{
+    read_to_string_with_limit, write_bytes_atomic, write_string_atomic,
+};
 use crate::core::network::{CanonicalCidr, parse_ip_cidr_non_strict, parse_lines_non_strict};
 
 pub const DEFAULT_MAX_HTTP_BODY_BYTES: usize = 32 * 1024 * 1024;
@@ -289,8 +291,8 @@ pub fn fetch_iplist_with_cache(
     let max_bytes = max_http_body_bytes(env);
     let cache_paths = cache_paths_for_url(cache_dir, url);
 
-    let cached_networks = read_optional_iplist_networks(&cache_paths)?;
     let cached_meta = read_optional_metadata_lossy(&cache_paths);
+    let cached_networks = read_optional_iplist_networks(&cache_paths, cached_meta.as_ref())?;
     let (cached_etag, cached_last_modified) = cached_meta.as_ref().map_or((None, None), |meta| {
         (meta.etag.clone(), meta.last_modified.clone())
     });
@@ -395,7 +397,12 @@ fn persist_cache(
         })?;
     }
 
-    fs::write(&paths.iplist_path, iplist).map_err(|err| HttpCacheError::WriteIplist {
+    write_bytes_atomic(&paths.raw_path, raw).map_err(|err| HttpCacheError::WriteRaw {
+        path: paths.raw_path.clone(),
+        reason: err.to_string(),
+    })?;
+
+    write_string_atomic(&paths.iplist_path, iplist).map_err(|err| HttpCacheError::WriteIplist {
         path: paths.iplist_path.clone(),
         reason: err.to_string(),
     })?;
@@ -406,14 +413,11 @@ fn persist_cache(
             reason: err.to_string(),
         })?;
 
-    fs::write(&paths.meta_path, meta_json).map_err(|err| HttpCacheError::WriteMetadata {
-        path: paths.meta_path.clone(),
-        reason: err.to_string(),
-    })?;
-
-    fs::write(&paths.raw_path, raw).map_err(|err| HttpCacheError::WriteRaw {
-        path: paths.raw_path.clone(),
-        reason: err.to_string(),
+    write_bytes_atomic(&paths.meta_path, &meta_json).map_err(|err| {
+        HttpCacheError::WriteMetadata {
+            path: paths.meta_path.clone(),
+            reason: err.to_string(),
+        }
     })?;
 
     Ok(())
@@ -421,6 +425,7 @@ fn persist_cache(
 
 fn read_optional_iplist_networks(
     paths: &CachePaths,
+    metadata: Option<&RemoteCacheMetadata>,
 ) -> Result<Option<Vec<CanonicalCidr>>, HttpCacheError> {
     if !paths.iplist_path.exists() {
         return Ok(None);
@@ -433,6 +438,17 @@ fn read_optional_iplist_networks(
                 reason: err.to_string(),
             }
         })?;
+
+    if let Some(metadata) = metadata {
+        let actual_hash = sha256_hex(iplist.as_bytes());
+        if actual_hash != metadata.sha256_iplist {
+            warn!(
+                "remote iplist cache hash mismatch for {}: ignoring cached iplist",
+                paths.iplist_path.display()
+            );
+            return Ok(None);
+        }
+    }
 
     Ok(Some(parse_cached_iplist(&iplist)))
 }
@@ -522,6 +538,7 @@ mod tests {
         ReqwestHttpClient, cache_paths_for_url, fetch_iplist_with_cache, max_http_body_bytes,
         normalize_remote_text, url_hash_prefix,
     };
+    use crate::adapters::hash::sha256_hex;
     use crate::adapters::limited_io::{read_bytes_with_limit, read_to_string_with_limit};
 
     struct MockHttpClient {
@@ -617,8 +634,8 @@ mod tests {
             url: url.to_string(),
             etag: Some("etag-1".to_string()),
             last_modified: Some("Mon, 01 Jan 2024 00:00:00 GMT".to_string()),
-            sha256_raw: "raw".to_string(),
-            sha256_iplist: "iplist".to_string(),
+            sha256_raw: sha256_hex(b"raw"),
+            sha256_iplist: sha256_hex(b"10.0.0.0/24\n"),
         };
         fs::write(
             &paths.meta_path,
@@ -826,6 +843,39 @@ mod tests {
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].if_none_match, None);
         assert_eq!(requests[0].if_modified_since, None);
+    }
+
+    #[test]
+    fn iplist_hash_mismatch_blocks_cached_fallback() {
+        let temp = TempDir::new().expect("tempdir");
+        let cache_dir = temp.path();
+        let url = "https://example.com/feed.txt";
+        let paths = cache_paths_for_url(cache_dir, url);
+
+        fs::create_dir_all(cache_dir).expect("mkdir");
+        fs::write(&paths.iplist_path, "10.0.0.0/24\n").expect("write cache");
+        fs::write(
+            &paths.meta_path,
+            serde_json::to_vec_pretty(&RemoteCacheMetadata {
+                url: url.to_string(),
+                etag: Some("etag-1".to_string()),
+                last_modified: Some("Mon, 01 Jan 2024 00:00:00 GMT".to_string()),
+                sha256_raw: sha256_hex(b"raw"),
+                sha256_iplist: sha256_hex(b"198.51.100.0/24\n"),
+            })
+            .expect("json"),
+        )
+        .expect("write meta");
+
+        let client = MockHttpClient::new(vec![Err(HttpClientError::Request {
+            reason: "offline".to_string(),
+        })]);
+
+        let result =
+            fetch_iplist_with_cache(&client, url, cache_dir, &BTreeMap::new()).expect("fetch");
+
+        assert_eq!(result.source, CacheSource::Empty);
+        assert!(result.networks.is_empty());
     }
 
     #[test]

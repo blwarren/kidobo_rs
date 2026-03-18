@@ -7,6 +7,7 @@ use thiserror::Error;
 use crate::adapters::command_runner::{
     CommandExecutor, CommandRequest, ProcessStatus, SystemCommandExecutor,
 };
+use crate::adapters::limited_io::{read_to_string_with_limit, write_string_atomic};
 use crate::core::network::{CanonicalCidr, parse_ip_cidr_token};
 
 const ASN_CACHE_FILE_READ_LIMIT: usize = 8 * 1024 * 1024;
@@ -226,16 +227,16 @@ fn read_asn_cache_file(path: &Path) -> Result<Option<AsnCacheState>, AsnError> {
         path: path.to_path_buf(),
         reason: err.to_string(),
     })?;
-    let contents =
-        crate::adapters::limited_io::read_to_string_with_limit(path, ASN_CACHE_FILE_READ_LIMIT)
-            .map_err(|err| AsnError::CacheRead {
-                path: path.to_path_buf(),
-                reason: err.to_string(),
-            })?;
+    let contents = read_to_string_with_limit(path, ASN_CACHE_FILE_READ_LIMIT).map_err(|err| {
+        AsnError::CacheRead {
+            path: path.to_path_buf(),
+            reason: err.to_string(),
+        }
+    })?;
 
-    let mut prefixes = parse_cidrs_from_bgpq4_output(&contents);
-    prefixes.sort_unstable();
-    prefixes.dedup();
+    let Some(prefixes) = parse_cidrs_from_cache_contents(&contents) else {
+        return Ok(None);
+    };
 
     Ok(Some(AsnCacheState { modified, prefixes }))
 }
@@ -256,7 +257,7 @@ fn write_asn_cache_file(path: &Path, prefixes: &[CanonicalCidr]) -> Result<(), A
         output.push('\n');
     }
 
-    fs::write(path, output).map_err(|err| AsnError::CacheWrite {
+    write_string_atomic(path, &output).map_err(|err| AsnError::CacheWrite {
         path: path.to_path_buf(),
         reason: err.to_string(),
     })
@@ -274,6 +275,24 @@ fn parse_cidrs_from_bgpq4_output(contents: &str) -> Vec<CanonicalCidr> {
             }
         })
         .collect()
+}
+
+fn parse_cidrs_from_cache_contents(contents: &str) -> Option<Vec<CanonicalCidr>> {
+    let mut prefixes = Vec::new();
+
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        let cidr = parse_ip_cidr_token(trimmed)?;
+        prefixes.push(cidr);
+    }
+
+    prefixes.sort_unstable();
+    prefixes.dedup();
+    Some(prefixes)
 }
 
 #[cfg(test)]
@@ -512,7 +531,7 @@ mod tests {
         let cache_dir = temp.path();
         fs::write(
             cache_dir.join("as64512.iplist"),
-            "# kidobo-asn-cache-v1\n2001:db8::/64\n203.0.113.0/24\ninvalid\n203.0.113.0/24\n",
+            "# kidobo-asn-cache-v1\n2001:db8::/64\n203.0.113.0/24\n# comment\n203.0.113.0/24\n",
         )
         .expect("write cache");
         let resolver = Mutex::new(MockResolver::new(vec![]));
@@ -537,12 +556,67 @@ mod tests {
     }
 
     #[test]
+    fn invalid_cache_line_triggers_refresh() {
+        let temp = TempDir::new().expect("tempdir");
+        let cache_dir = temp.path();
+        fs::write(
+            cache_dir.join("as64512.iplist"),
+            "# kidobo-asn-cache-v1\n2001:db8::/64\ninvalid\n",
+        )
+        .expect("write cache");
+        let resolver = Mutex::new(MockResolver::new(vec![Ok(vec![CanonicalCidr::V4(
+            Ipv4Cidr::from_parts(0xc6336400, 24),
+        )])]));
+
+        let loaded = load_asn_prefixes_with_cache(
+            64512,
+            cache_dir,
+            Duration::from_secs(24 * 60 * 60),
+            &resolver,
+        )
+        .expect("load");
+
+        assert_eq!(
+            loaded,
+            CachedAsnPrefixes {
+                prefixes: vec![CanonicalCidr::V4(Ipv4Cidr::from_parts(0xc6336400, 24))],
+                stale: false
+            }
+        );
+    }
+
+    #[test]
+    fn invalid_cache_line_does_not_fallback_when_refresh_fails() {
+        let temp = TempDir::new().expect("tempdir");
+        let cache_dir = temp.path();
+        fs::write(
+            cache_dir.join("as64512.iplist"),
+            "# kidobo-asn-cache-v1\n203.0.113.0/24\ninvalid\n",
+        )
+        .expect("write cache");
+        let resolver = Mutex::new(MockResolver::new(vec![Err(AsnError::ResolveFailed {
+            asn: 64512,
+            reason: "boom".to_string(),
+        })]));
+
+        let err = load_asn_prefixes_with_cache(64512, cache_dir, Duration::from_secs(0), &resolver)
+            .expect_err("invalid cache must not be reused");
+        assert_eq!(
+            err,
+            AsnError::ResolveFailed {
+                asn: 64512,
+                reason: "boom".to_string()
+            }
+        );
+    }
+
+    #[test]
     fn stale_cache_fallback_parses_valid_prefixes_only() {
         let temp = TempDir::new().expect("tempdir");
         let cache_dir = temp.path();
         fs::write(
             cache_dir.join("as64512.iplist"),
-            "# kidobo-asn-cache-v1\n2001:db8::/64\ninvalid\n203.0.113.0/24\n2001:db8::/64\n",
+            "# kidobo-asn-cache-v1\n2001:db8::/64\n203.0.113.0/24\n2001:db8::/64\n",
         )
         .expect("write cache");
         let resolver = Mutex::new(MockResolver::new(vec![Err(AsnError::ResolveFailed {

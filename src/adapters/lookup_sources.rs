@@ -8,7 +8,7 @@ use crate::adapters::path::ResolvedPaths;
 use crate::adapters::source_files::{
     REMOTE_META_READ_LIMIT, RemoteCacheFilesError, SOURCE_FILE_READ_LIMIT,
     collect_remote_cache_files as collect_remote_cache_iplist_files, parse_cidr_source_line,
-    resolve_remote_source_label,
+    read_remote_cache_iplist_text, resolve_remote_source_label,
 };
 use crate::core::lookup::LookupSourceEntry;
 
@@ -51,7 +51,7 @@ pub fn load_lookup_sources(
 
         for file in remote_files {
             let source_label = resolve_remote_source_label(&file, REMOTE_META_READ_LIMIT);
-            entries.extend(read_source_file(&file, &source_label)?);
+            entries.extend(read_remote_source_file(&file, &source_label)?);
         }
     }
 
@@ -98,6 +98,29 @@ fn read_source_file(
         .collect())
 }
 
+fn read_remote_source_file(
+    path: &Path,
+    source_label: &str,
+) -> Result<Vec<LookupSourceEntry>, LookupSourceLoadError> {
+    let contents =
+        read_remote_cache_iplist_text(path, SOURCE_FILE_READ_LIMIT, REMOTE_META_READ_LIMIT)
+            .map_err(|err| LookupSourceLoadError::SourceRead {
+                path: path.to_path_buf(),
+                reason: err.to_string(),
+            })?;
+
+    let source_label: Arc<str> = Arc::from(source_label);
+    Ok(contents
+        .lines()
+        .filter_map(parse_lookup_source_line)
+        .map(|(cidr, token)| LookupSourceEntry {
+            source_label: Arc::clone(&source_label),
+            source_line: token.to_string(),
+            cidr,
+        })
+        .collect())
+}
+
 fn parse_lookup_source_line(line: &str) -> Option<(crate::core::network::CanonicalCidr, &str)> {
     parse_cidr_source_line(line)
 }
@@ -109,6 +132,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::load_lookup_sources;
+    use crate::adapters::hash::sha256_hex;
     use crate::adapters::path::ResolvedPaths;
 
     fn test_paths(root: &std::path::Path) -> ResolvedPaths {
@@ -197,6 +221,33 @@ mod tests {
 
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].source_label.as_ref(), "remote:a.iplist");
+    }
+
+    #[test]
+    fn hash_mismatched_remote_iplist_is_rejected() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = test_paths(temp.path());
+
+        fs::create_dir_all(&paths.remote_cache_dir).expect("mkdir remote");
+        fs::write(paths.remote_cache_dir.join("a.iplist"), "2001:db8::/64\n")
+            .expect("write remote a");
+        fs::write(
+            paths.remote_cache_dir.join("a.meta.json"),
+            format!(
+                "{{\"url\":\"https://example.com/a.txt\",\"etag\":null,\"last_modified\":null,\"sha256_raw\":\"{}\",\"sha256_iplist\":\"{}\"}}",
+                sha256_hex(b"raw"),
+                sha256_hex(b"10.0.0.0/24\n")
+            ),
+        )
+        .expect("write remote meta");
+
+        let err = load_lookup_sources(&paths).expect_err("load must fail");
+        match err {
+            super::LookupSourceLoadError::SourceRead { reason, .. } => {
+                assert!(reason.contains("hash mismatch"));
+            }
+            _ => panic!("unexpected error variant"),
+        }
     }
 
     #[test]

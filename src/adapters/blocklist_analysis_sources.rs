@@ -7,8 +7,8 @@ use thiserror::Error;
 use crate::adapters::path::ResolvedPaths;
 use crate::adapters::source_files::{
     REMOTE_META_READ_LIMIT, RemoteCacheFilesError, SOURCE_FILE_READ_LIMIT,
-    collect_remote_cache_files as collect_remote_cache_iplist_files, read_cidrs_from_source_file,
-    resolve_remote_source_label,
+    collect_remote_cache_files as collect_remote_cache_iplist_files,
+    read_cidrs_from_remote_cache_iplist, read_cidrs_from_source_file, resolve_remote_source_label,
 };
 use crate::core::network::CanonicalCidr;
 
@@ -53,7 +53,7 @@ pub fn load_analysis_sources(
         remote_files.sort();
 
         for file in remote_files {
-            let cidrs = read_source_file(&file)?;
+            let cidrs = read_remote_source_file(&file)?;
             let label = resolve_remote_source_label(&file, REMOTE_META_READ_LIMIT);
             let age_secs = cache_age_secs(&file);
             let stale = age_secs.is_some_and(|age| age > stale_after_secs);
@@ -96,6 +96,14 @@ fn read_source_file(path: &Path) -> Result<Vec<CanonicalCidr>, AnalysisSourceLoa
     })
 }
 
+fn read_remote_source_file(path: &Path) -> Result<Vec<CanonicalCidr>, AnalysisSourceLoadError> {
+    read_cidrs_from_remote_cache_iplist(path, SOURCE_FILE_READ_LIMIT, REMOTE_META_READ_LIMIT)
+        .map_err(|err| AnalysisSourceLoadError::SourceRead {
+            path: path.to_path_buf(),
+            reason: err.to_string(),
+        })
+}
+
 fn cache_age_secs(path: &Path) -> Option<u64> {
     let modified = fs::metadata(path).ok()?.modified().ok()?;
     let duration = SystemTime::now().duration_since(modified).ok()?;
@@ -109,6 +117,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::load_analysis_sources;
+    use crate::adapters::hash::sha256_hex;
     use crate::adapters::path::ResolvedPaths;
 
     fn test_paths(root: &std::path::Path) -> ResolvedPaths {
@@ -145,5 +154,32 @@ mod tests {
         assert_eq!(sources.remote_sources[0].label, "https://example.com/a.txt");
         assert!(!sources.remote_sources[0].stale);
         assert!(sources.remote_sources[0].age_secs.is_some());
+    }
+
+    #[test]
+    fn rejects_remote_iplist_when_metadata_hash_mismatches() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = test_paths(temp.path());
+        fs::create_dir_all(&paths.remote_cache_dir).expect("mkdir remote");
+
+        fs::write(paths.remote_cache_dir.join("a.iplist"), "203.0.113.0/24\n")
+            .expect("write remote");
+        fs::write(
+            paths.remote_cache_dir.join("a.meta.json"),
+            format!(
+                "{{\"url\":\"https://example.com/a.txt\",\"etag\":null,\"last_modified\":null,\"sha256_raw\":\"{}\",\"sha256_iplist\":\"{}\"}}",
+                sha256_hex(b"raw"),
+                sha256_hex(b"198.51.100.0/24\n")
+            ),
+        )
+        .expect("write meta");
+
+        let err = load_analysis_sources(&paths, 86_400).expect_err("load must fail");
+        match err {
+            super::AnalysisSourceLoadError::SourceRead { reason, .. } => {
+                assert!(reason.contains("hash mismatch"));
+            }
+            _ => panic!("unexpected error variant"),
+        }
     }
 }
