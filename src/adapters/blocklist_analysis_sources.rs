@@ -1,15 +1,10 @@
-use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use thiserror::Error;
 
+use crate::adapters::cached_sources::{CachedRemoteSourceLoadError, load_remote_sources};
 use crate::adapters::path::ResolvedPaths;
-use crate::adapters::source_files::{
-    REMOTE_META_READ_LIMIT, RemoteCacheFilesError, SOURCE_FILE_READ_LIMIT,
-    collect_remote_cache_files as collect_remote_cache_iplist_files,
-    read_cidrs_from_remote_cache_iplist, read_cidrs_from_source_file, resolve_remote_source_label,
-};
+use crate::adapters::source_files::{SOURCE_FILE_READ_LIMIT, read_cidrs_from_source_file};
 use crate::core::network::CanonicalCidr;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,16 +44,15 @@ pub fn load_analysis_sources(
 
     let mut remote_sources = Vec::new();
     if paths.remote_cache_dir.exists() {
-        let mut remote_files = collect_remote_cache_files(paths)?;
-        remote_files.sort();
+        let loaded = load_remote_sources(&paths.remote_cache_dir)
+            .map_err(|err| map_cached_remote_load_error(paths, err))?;
 
-        for file in remote_files {
-            let cidrs = read_remote_source_file(&file)?;
-            let label = resolve_remote_source_label(&file, REMOTE_META_READ_LIMIT);
-            let age_secs = cache_age_secs(&file);
+        for source in loaded {
+            let cidrs = source.entries.into_iter().map(|entry| entry.cidr).collect();
+            let age_secs = source.age_secs;
             let stale = age_secs.is_some_and(|age| age > stale_after_secs);
             remote_sources.push(AnalysisRemoteSource {
-                label,
+                label: source.label,
                 cidrs,
                 stale,
                 age_secs,
@@ -72,21 +66,6 @@ pub fn load_analysis_sources(
     })
 }
 
-fn collect_remote_cache_files(
-    paths: &ResolvedPaths,
-) -> Result<Vec<PathBuf>, AnalysisSourceLoadError> {
-    collect_remote_cache_iplist_files(&paths.remote_cache_dir).map_err(|err| match err {
-        RemoteCacheFilesError::ReadDir(err) => AnalysisSourceLoadError::CacheDirRead {
-            path: paths.remote_cache_dir.clone(),
-            reason: err.to_string(),
-        },
-        RemoteCacheFilesError::ReadDirEntry(err) => AnalysisSourceLoadError::CacheDirEntryRead {
-            path: paths.remote_cache_dir.clone(),
-            reason: err.to_string(),
-        },
-    })
-}
-
 fn read_source_file(path: &Path) -> Result<Vec<CanonicalCidr>, AnalysisSourceLoadError> {
     read_cidrs_from_source_file(path, SOURCE_FILE_READ_LIMIT).map_err(|err| {
         AnalysisSourceLoadError::SourceRead {
@@ -96,18 +75,27 @@ fn read_source_file(path: &Path) -> Result<Vec<CanonicalCidr>, AnalysisSourceLoa
     })
 }
 
-fn read_remote_source_file(path: &Path) -> Result<Vec<CanonicalCidr>, AnalysisSourceLoadError> {
-    read_cidrs_from_remote_cache_iplist(path, SOURCE_FILE_READ_LIMIT, REMOTE_META_READ_LIMIT)
-        .map_err(|err| AnalysisSourceLoadError::SourceRead {
-            path: path.to_path_buf(),
-            reason: err.to_string(),
-        })
-}
-
-fn cache_age_secs(path: &Path) -> Option<u64> {
-    let modified = fs::metadata(path).ok()?.modified().ok()?;
-    let duration = SystemTime::now().duration_since(modified).ok()?;
-    Some(duration.as_secs())
+fn map_cached_remote_load_error(
+    paths: &ResolvedPaths,
+    err: CachedRemoteSourceLoadError,
+) -> AnalysisSourceLoadError {
+    match err {
+        CachedRemoteSourceLoadError::SourceRead { path, reason } => {
+            AnalysisSourceLoadError::SourceRead { path, reason }
+        }
+        CachedRemoteSourceLoadError::CacheDirRead { reason, .. } => {
+            AnalysisSourceLoadError::CacheDirRead {
+                path: paths.remote_cache_dir.clone(),
+                reason,
+            }
+        }
+        CachedRemoteSourceLoadError::CacheDirEntryRead { reason, .. } => {
+            AnalysisSourceLoadError::CacheDirEntryRead {
+                path: paths.remote_cache_dir.clone(),
+                reason,
+            }
+        }
+    }
 }
 
 #[cfg(test)]

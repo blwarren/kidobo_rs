@@ -1,7 +1,11 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::core::network::{CanonicalCidr, cidr_overlaps, parse_ip_cidr_non_strict};
+use crate::core::blocklist::{
+    BlocklistTargetParseError, UnbanIndexPlan,
+    parse_blocklist_target as parse_blocklist_target_core, plan_unban,
+};
+use crate::core::network::CanonicalCidr;
 use crate::error::KidoboError;
 
 use super::storage::{BlocklistFile, write_blocklist_lines};
@@ -47,26 +51,18 @@ impl UnbanResult {
 pub(super) fn build_unban_plan(path: &Path, input: &str) -> Result<UnbanPlan, KidoboError> {
     let canonical = parse_blocklist_target(input)?;
     let blocklist = BlocklistFile::load(path)?;
-    let mut exact_indexes = Vec::new();
-    let mut partial_matches = Vec::new();
-
-    for (idx, line) in blocklist.lines.iter().enumerate() {
-        if let Some(entry) = &line.canonical {
-            if entry == &canonical {
-                exact_indexes.push(idx);
-            } else if canonical_overlaps(entry, &canonical) {
-                partial_matches.push(PartialMatch {
-                    index: idx,
-                    entry: entry.to_string(),
-                });
-            }
-        }
-    }
+    let line_canonicals = blocklist
+        .lines
+        .iter()
+        .map(|line| line.canonical)
+        .collect::<Vec<_>>();
+    let index_plan = plan_unban(&line_canonicals, canonical);
+    let partial_matches = partial_matches(&blocklist, &index_plan);
 
     Ok(UnbanPlan {
         target: canonical.to_string(),
         blocklist,
-        exact_indexes,
+        exact_indexes: index_plan.exact_indexes,
         partial_matches,
         remove_partial: false,
     })
@@ -116,12 +112,29 @@ pub(super) fn apply_unban_plan(path: &Path, plan: &UnbanPlan) -> Result<UnbanRes
 }
 
 pub(super) fn parse_blocklist_target(input: &str) -> Result<CanonicalCidr, KidoboError> {
-    let token = input.trim();
-    parse_ip_cidr_non_strict(token).ok_or_else(|| KidoboError::BlocklistTargetParse {
-        input: input.to_string(),
+    parse_blocklist_target_core(input).map_err(|err| match err {
+        BlocklistTargetParseError::Invalid => KidoboError::BlocklistTargetParse {
+            input: input.to_string(),
+        },
     })
 }
 
-fn canonical_overlaps(entry: &CanonicalCidr, target: &CanonicalCidr) -> bool {
-    cidr_overlaps(*entry, *target)
+fn partial_matches(blocklist: &BlocklistFile, plan: &UnbanIndexPlan) -> Vec<PartialMatch> {
+    let partial_indexes = plan.partial_indexes.iter().copied().collect::<HashSet<_>>();
+
+    blocklist
+        .lines
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, line)| {
+            if !partial_indexes.contains(&idx) {
+                return None;
+            }
+
+            line.canonical.map(|canonical| PartialMatch {
+                index: idx,
+                entry: canonical.to_string(),
+            })
+        })
+        .collect()
 }
