@@ -754,6 +754,80 @@ mod tests {
     }
 
     #[test]
+    fn all_mode_uses_cache_without_sidecar() {
+        let temp = TempDir::new().expect("tempdir");
+        fs::write(
+            temp.path().join(GITHUB_META_RAW_CACHE_FILE),
+            br#"{"nested":{"values":["198.51.100.7"]}}"#,
+        )
+        .expect("write raw cache");
+
+        let client = MockHttpClient::new(vec![Err(HttpClientError::Request {
+            reason: "offline".to_string(),
+        })]);
+
+        let result = load_github_meta_safelist(
+            &client,
+            temp.path(),
+            TEST_GITHUB_META_URL,
+            &GithubMetaCategoryMode::All,
+            &BTreeMap::new(),
+        )
+        .expect("load");
+
+        assert_eq!(result.source, GithubMetaSource::FallbackCache);
+        assert_eq!(
+            result.networks,
+            vec![CanonicalCidr::V4(Ipv4Cidr::from_parts(0xc6336407, 32))]
+        );
+    }
+
+    #[test]
+    fn selected_mode_cache_compatibility_ignores_order_case_and_duplicates() {
+        let temp = TempDir::new().expect("tempdir");
+        fs::write(
+            temp.path().join(GITHUB_META_RAW_CACHE_FILE),
+            br#"{"api":["192.30.252.0/22"],"hooks":["198.51.100.7"]}"#,
+        )
+        .expect("write raw cache");
+        fs::write(
+            temp.path().join(GITHUB_META_CATEGORY_CACHE_FILE),
+            serde_json::to_vec_pretty(&GithubMetaCategorySidecar {
+                mode: "selected".to_string(),
+                categories: vec![
+                    "HOOKS".to_string(),
+                    " api ".to_string(),
+                    "hooks".to_string(),
+                ],
+            })
+            .expect("sidecar json"),
+        )
+        .expect("write sidecar");
+
+        let client = MockHttpClient::new(vec![Err(HttpClientError::Request {
+            reason: "offline".to_string(),
+        })]);
+
+        let result = load_github_meta_safelist(
+            &client,
+            temp.path(),
+            TEST_GITHUB_META_URL,
+            &GithubMetaCategoryMode::Explicit(vec!["api".to_string(), "hooks".to_string()]),
+            &BTreeMap::new(),
+        )
+        .expect("load");
+
+        assert_eq!(result.source, GithubMetaSource::FallbackCache);
+        assert_eq!(
+            result.networks,
+            vec![
+                CanonicalCidr::V4(Ipv4Cidr::from_parts(0xc01efc00, 22)),
+                CanonicalCidr::V4(Ipv4Cidr::from_parts(0xc6336407, 32)),
+            ]
+        );
+    }
+
+    #[test]
     fn filtered_mode_refuses_cache_without_compatible_sidecar() {
         let temp = TempDir::new().expect("tempdir");
         fs::write(
@@ -777,6 +851,70 @@ mod tests {
 
         assert_eq!(result.source, GithubMetaSource::Empty);
         assert!(result.networks.is_empty());
+    }
+
+    #[test]
+    fn selected_mode_refuses_cache_for_superset_request() {
+        let temp = TempDir::new().expect("tempdir");
+        fs::write(
+            temp.path().join(GITHUB_META_RAW_CACHE_FILE),
+            br#"{"hooks":["10.0.0.0/24"],"packages":["203.0.113.0/24"]}"#,
+        )
+        .expect("write raw cache");
+        fs::write(
+            temp.path().join(GITHUB_META_CATEGORY_CACHE_FILE),
+            serde_json::to_vec_pretty(&GithubMetaCategorySidecar {
+                mode: "selected".to_string(),
+                categories: vec!["hooks".to_string()],
+            })
+            .expect("sidecar json"),
+        )
+        .expect("write sidecar");
+
+        let client = MockHttpClient::new(vec![Err(HttpClientError::Request {
+            reason: "offline".to_string(),
+        })]);
+
+        let result = load_github_meta_safelist(
+            &client,
+            temp.path(),
+            TEST_GITHUB_META_URL,
+            &GithubMetaCategoryMode::Explicit(vec!["hooks".to_string(), "packages".to_string()]),
+            &BTreeMap::new(),
+        )
+        .expect("load");
+
+        assert_eq!(result.source, GithubMetaSource::Empty);
+        assert!(result.networks.is_empty());
+    }
+
+    #[test]
+    fn selected_mode_dedupes_duplicate_networks_across_categories() {
+        let temp = TempDir::new().expect("tempdir");
+        let client = MockHttpClient::new(vec![Ok(network_response(
+            br#"{
+                "api": ["192.30.252.0/22", "198.51.100.7"],
+                "hooks": ["192.30.252.0/22", "198.51.100.7"]
+            }"#,
+        ))]);
+
+        let result = load_github_meta_safelist(
+            &client,
+            temp.path(),
+            TEST_GITHUB_META_URL,
+            &GithubMetaCategoryMode::Explicit(vec!["hooks".to_string(), "api".to_string()]),
+            &BTreeMap::new(),
+        )
+        .expect("load");
+
+        assert_eq!(result.source, GithubMetaSource::Network);
+        assert_eq!(
+            result.networks,
+            vec![
+                CanonicalCidr::V4(Ipv4Cidr::from_parts(0xc01efc00, 22)),
+                CanonicalCidr::V4(Ipv4Cidr::from_parts(0xc6336407, 32)),
+            ]
+        );
     }
 
     #[test]

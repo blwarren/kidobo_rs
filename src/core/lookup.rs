@@ -424,6 +424,31 @@ mod tests {
     }
 
     #[test]
+    fn lookup_preserves_distinct_source_lines_for_same_label_and_cidr() {
+        let sources = vec![
+            LookupSourceEntry {
+                source_label: "source:a".into(),
+                source_line: "10.0.0.0/24".to_string(),
+                cidr: CanonicalCidr::V4(Ipv4Cidr::from_parts(0x0a000000, 24)),
+            },
+            LookupSourceEntry {
+                source_label: "source:a".into(),
+                source_line: "10.0.0.42/24".to_string(),
+                cidr: CanonicalCidr::V4(Ipv4Cidr::from_parts(0x0a000000, 24)),
+            },
+        ];
+
+        let report = run_lookup(&["10.0.0.7".to_string()], &sources);
+        let matched_source_entries = report
+            .matches
+            .iter()
+            .map(|m| m.matched_source_entry.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(matched_source_entries, vec!["10.0.0.0/24", "10.0.0.42/24"]);
+    }
+
+    #[test]
     fn lookup_index_keeps_supernet_matches() {
         let sources = vec![
             LookupSourceEntry {
@@ -439,6 +464,31 @@ mod tests {
         ];
 
         let report = run_lookup(&["10.2.3.4".to_string()], &sources);
+        let labels = report
+            .matches
+            .iter()
+            .map(|m| m.source_label.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(labels, vec!["source:narrow", "source:super"]);
+    }
+
+    #[test]
+    fn lookup_index_keeps_same_start_nested_matches() {
+        let sources = vec![
+            LookupSourceEntry {
+                source_label: "source:super".into(),
+                source_line: "10.0.0.0/8".to_string(),
+                cidr: CanonicalCidr::V4(Ipv4Cidr::from_parts(0x0a000000, 8)),
+            },
+            LookupSourceEntry {
+                source_label: "source:narrow".into(),
+                source_line: "10.0.0.0/16".to_string(),
+                cidr: CanonicalCidr::V4(Ipv4Cidr::from_parts(0x0a000000, 16)),
+            },
+        ];
+
+        let report = run_lookup(&["10.0.2.7".to_string()], &sources);
         let labels = report
             .matches
             .iter()

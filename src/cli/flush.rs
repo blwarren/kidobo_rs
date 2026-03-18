@@ -353,6 +353,26 @@ mod tests {
     }
 
     #[test]
+    fn flush_clears_remote_cache_even_when_command_cleanup_fails() {
+        let config = test_config(true);
+        let runner = MockRunner::new(1, 1, true);
+        let temp = TempDir::new().expect("tempdir");
+        let remote_cache_dir = temp.path().join("remote");
+        fs::create_dir_all(remote_cache_dir.join("nested")).expect("mkdir nested");
+        fs::write(remote_cache_dir.join("one.iplist"), "10.0.0.0/24").expect("write iplist");
+        fs::write(remote_cache_dir.join("nested/two.raw"), "raw").expect("write raw");
+
+        run_flush_with_runner(&config, &runner, &runner, &remote_cache_dir);
+
+        assert!(remote_cache_dir.exists());
+        let entries = fs::read_dir(&remote_cache_dir)
+            .expect("read dir")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect entries");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
     fn clear_remote_cache_dir_removes_existing_cached_files() {
         let temp = TempDir::new().expect("tempdir");
         let remote_cache_dir = temp.path().join("remote");

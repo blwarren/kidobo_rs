@@ -233,8 +233,8 @@ mod tests {
     use std::collections::VecDeque;
 
     use super::{
-        ChainAction, FirewallCommandRunner, FirewallFamily, KIDOBO_CHAIN_NAME, chain_exists,
-        ensure_firewall_wiring, ensure_firewall_wiring_for_families,
+        ChainAction, FirewallCommandRunner, FirewallError, FirewallFamily, KIDOBO_CHAIN_NAME,
+        chain_exists, ensure_firewall_wiring, ensure_firewall_wiring_for_families,
     };
     use crate::adapters::command_runner::{CommandResult, CommandRunnerError, ProcessStatus};
 
@@ -387,6 +387,65 @@ mod tests {
             invocations[4].1,
             vec!["-I", "INPUT", "1", "-j", KIDOBO_CHAIN_NAME]
         );
+    }
+
+    #[test]
+    fn unexpected_delete_failure_stops_before_reinsertion() {
+        let runner = MockRunner::new(vec![
+            Ok(ok(0)), // -S chain exists
+            Ok(CommandResult {
+                status: ProcessStatus::Exited(2),
+                stdout: String::new(),
+                stderr: "permission denied".to_string(),
+            }),
+        ]);
+
+        let err = ensure_firewall_wiring(
+            &runner,
+            FirewallFamily::Ipv4,
+            "kidobo-set",
+            ChainAction::Drop,
+        )
+        .expect_err("wiring must fail");
+
+        assert!(matches!(err, FirewallError::CommandFailed { .. }));
+        let invocations = runner.invocations();
+        assert_eq!(invocations.len(), 2);
+        assert_eq!(
+            invocations[1].1,
+            vec!["-D", "INPUT", "-j", KIDOBO_CHAIN_NAME]
+        );
+    }
+
+    #[test]
+    fn chain_flush_failure_stops_before_rule_append() {
+        let runner = MockRunner::new(vec![
+            Ok(ok(0)), // -S chain exists
+            Ok(CommandResult {
+                status: ProcessStatus::Exited(1),
+                stdout: String::new(),
+                stderr: "Bad rule (does a matching rule exist in that chain?).".to_string(),
+            }),
+            Ok(ok(0)), // -I INPUT 1 -j chain
+            Ok(CommandResult {
+                status: ProcessStatus::Exited(2),
+                stdout: String::new(),
+                stderr: "flush failed".to_string(),
+            }),
+        ]);
+
+        let err = ensure_firewall_wiring(
+            &runner,
+            FirewallFamily::Ipv4,
+            "kidobo-set",
+            ChainAction::Drop,
+        )
+        .expect_err("wiring must fail");
+
+        assert!(matches!(err, FirewallError::CommandFailed { .. }));
+        let invocations = runner.invocations();
+        assert_eq!(invocations.len(), 4);
+        assert_eq!(invocations[3].1, vec!["-F", KIDOBO_CHAIN_NAME]);
     }
 
     #[test]

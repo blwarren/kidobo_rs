@@ -620,6 +620,26 @@ mod tests {
     }
 
     #[test]
+    fn normalize_local_blocklist_preserves_multiline_header_comments() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("blocklist.txt");
+        fs::write(
+            &path,
+            "# top comment\n# second comment\n\n203.0.113.7\n# dropped later comment\n",
+        )
+        .expect("write");
+
+        normalize_local_blocklist(&path).expect("normalize");
+
+        assert_eq!(
+            read_to_string_with_limit(&path, BLOCKLIST_READ_LIMIT)
+                .expect("read")
+                .as_str(),
+            "# top comment\n# second comment\n\n203.0.113.7/32\n"
+        );
+    }
+
+    #[test]
     fn normalize_with_fast_state_skips_when_unchanged() {
         let temp = TempDir::new().expect("tempdir");
         let path = temp.path().join("blocklist.txt");
@@ -633,6 +653,26 @@ mod tests {
         let second = normalize_local_blocklist_with_fast_state(&path, &state_path)
             .expect("second normalize should skip");
         assert_eq!(second, BlocklistNormalizeResult::SkippedUnchanged);
+    }
+
+    #[test]
+    fn normalize_with_fast_state_rechecks_when_fast_state_is_invalid() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("blocklist.txt");
+        let state_path = temp.path().join("cache/blocklist-normalize.fast-state");
+        fs::write(&path, "203.0.113.7\n").expect("write");
+        fs::create_dir_all(state_path.parent().expect("parent")).expect("mkdir cache");
+        fs::write(&state_path, "not valid fast state\n").expect("write state");
+
+        let result = normalize_local_blocklist_with_fast_state(&path, &state_path)
+            .expect("normalize should recheck");
+        assert_eq!(result, BlocklistNormalizeResult::Checked);
+        assert_eq!(
+            read_to_string_with_limit(&path, BLOCKLIST_READ_LIMIT)
+                .expect("read")
+                .as_str(),
+            "203.0.113.7/32\n"
+        );
     }
 
     #[test]
