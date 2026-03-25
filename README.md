@@ -168,19 +168,26 @@ Useful options:
 At default paths it also runs `systemctl daemon-reload` and enables
 `kidobo-sync.timer`, and writes `KIDOBO_LOG_FORMAT=journal` into
 `kidobo-sync.service`.
+For default systemd units, `init` requires an installed `kidobo` binary at
+`/usr/local/bin/kidobo` or `/usr/bin/kidobo`; it will not generate units from
+an arbitrary build or `cargo run` path.
 
 ## Notes
 
 - `ban` and `unban` modify local source state only:
   blocklist entries for IP/CIDR targets and config `[asn].banned` for ASN targets.
-  `--file` accepts one IP/CIDR target per line.
+  `--file` accepts one strict IP/CIDR target per line.
   Run `sync` to apply changes to firewall/ipset runtime state.
-- `lookup` runs only against cached blocklists - run `sync` first if you need latest list
-  data.
-- `sync` canonicalizes the local blocklist file and may drop non-header comments,
-  blank lines, and manual formatting after the leading comment/header section.
+- `lookup` is offline-only and uses the local blocklist plus cached remote
+  sources. It does not require a valid config file, but you still need cached
+  remote data if you want matches beyond the local blocklist.
+- `sync` canonicalizes a valid local blocklist, preserving only the leading
+  comment/header section before canonical entries. Invalid non-header local
+  lines now fail `sync`; they are not silently dropped or rewritten away.
 - `analyze overlap` is offline-only and warns when cached remote
   `.iplist` files are older than `remote.cache_stale_after_secs`.
+- `doctor` is read-only by default. It checks whether the remote cache path is
+  usable without creating directories or writing probe files.
 - `KIDOBO_ROOT` relocates config/data/cache paths under a custom root.
 
 ## License
