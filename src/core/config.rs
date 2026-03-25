@@ -2,6 +2,7 @@ use std::num::NonZeroU32;
 
 use serde::Deserialize;
 use thiserror::Error;
+use toml_edit::de::from_str as parse_toml_str;
 
 use crate::core::network::{CanonicalCidr, parse_ip_cidr_token};
 
@@ -259,7 +260,7 @@ struct RawAsnConfig {
 
 impl Config {
     pub fn from_toml_str(contents: &str) -> Result<Self, ConfigError> {
-        let raw: RawConfig = toml::from_str(contents).map_err(|err| ConfigError::Parse {
+        let raw: RawConfig = parse_toml_str(contents).map_err(|err| ConfigError::Parse {
             reason: err.to_string(),
         })?;
 
