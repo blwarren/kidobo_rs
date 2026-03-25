@@ -1,10 +1,11 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use thiserror::Error;
 
-use crate::adapters::cached_sources::{CachedRemoteSourceLoadError, load_remote_sources};
+use crate::adapters::cached_sources::load_remote_sources;
 use crate::adapters::path::ResolvedPaths;
 use crate::adapters::source_files::{SOURCE_FILE_READ_LIMIT, read_cidrs_from_source_file};
+use crate::adapters::source_load::SourceLoadError;
 use crate::core::network::CanonicalCidr;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,16 +23,8 @@ pub struct AnalysisSources {
 }
 
 #[derive(Debug, Error)]
-pub enum AnalysisSourceLoadError {
-    #[error("failed to read source file {path}: {reason}")]
-    SourceRead { path: PathBuf, reason: String },
-
-    #[error("failed to read remote cache directory {path}: {reason}")]
-    CacheDirRead { path: PathBuf, reason: String },
-
-    #[error("failed to read remote cache directory entry in {path}: {reason}")]
-    CacheDirEntryRead { path: PathBuf, reason: String },
-}
+#[error(transparent)]
+pub struct AnalysisSourceLoadError(#[from] pub SourceLoadError);
 
 pub fn load_analysis_sources(
     paths: &ResolvedPaths,
@@ -44,8 +37,8 @@ pub fn load_analysis_sources(
 
     let mut remote_sources = Vec::new();
     if paths.remote_cache_dir.exists() {
-        let loaded = load_remote_sources(&paths.remote_cache_dir)
-            .map_err(|err| map_cached_remote_load_error(paths, err))?;
+        let loaded =
+            load_remote_sources(&paths.remote_cache_dir).map_err(AnalysisSourceLoadError::from)?;
 
         for source in loaded {
             let cidrs = source.entries.into_iter().map(|entry| entry.cidr).collect();
@@ -68,34 +61,11 @@ pub fn load_analysis_sources(
 
 fn read_source_file(path: &Path) -> Result<Vec<CanonicalCidr>, AnalysisSourceLoadError> {
     read_cidrs_from_source_file(path, SOURCE_FILE_READ_LIMIT).map_err(|err| {
-        AnalysisSourceLoadError::SourceRead {
+        AnalysisSourceLoadError::from(SourceLoadError::SourceRead {
             path: path.to_path_buf(),
             reason: err.to_string(),
-        }
+        })
     })
-}
-
-fn map_cached_remote_load_error(
-    paths: &ResolvedPaths,
-    err: CachedRemoteSourceLoadError,
-) -> AnalysisSourceLoadError {
-    match err {
-        CachedRemoteSourceLoadError::SourceRead { path, reason } => {
-            AnalysisSourceLoadError::SourceRead { path, reason }
-        }
-        CachedRemoteSourceLoadError::CacheDirRead { reason, .. } => {
-            AnalysisSourceLoadError::CacheDirRead {
-                path: paths.remote_cache_dir.clone(),
-                reason,
-            }
-        }
-        CachedRemoteSourceLoadError::CacheDirEntryRead { reason, .. } => {
-            AnalysisSourceLoadError::CacheDirEntryRead {
-                path: paths.remote_cache_dir.clone(),
-                reason,
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -107,6 +77,7 @@ mod tests {
     use super::load_analysis_sources;
     use crate::adapters::hash::sha256_hex;
     use crate::adapters::path::ResolvedPaths;
+    use crate::adapters::source_load::SourceLoadError;
 
     fn test_paths(root: &std::path::Path) -> ResolvedPaths {
         ResolvedPaths {
@@ -163,8 +134,8 @@ mod tests {
         .expect("write meta");
 
         let err = load_analysis_sources(&paths, 86_400).expect_err("load must fail");
-        match err {
-            super::AnalysisSourceLoadError::SourceRead { reason, .. } => {
+        match err.0 {
+            SourceLoadError::SourceRead { reason, .. } => {
                 assert!(reason.contains("hash mismatch"));
             }
             _ => panic!("unexpected error variant"),

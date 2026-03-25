@@ -72,6 +72,9 @@ pub enum KidoboError {
     #[error("blocklist prompt failed: {reason}")]
     BlocklistPrompt { reason: String },
 
+    #[error("blocklist changed while preparing the update; rerun the command")]
+    BlocklistChanged,
+
     #[error("ASN operation failed: {source}")]
     Asn {
         #[from]

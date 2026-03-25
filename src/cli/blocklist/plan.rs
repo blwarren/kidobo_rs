@@ -1,14 +1,13 @@
 use std::collections::HashSet;
 use std::path::Path;
 
+use crate::adapters::blocklist_file::{BlocklistFile, write_blocklist_lines};
 use crate::core::blocklist::{
     BlocklistTargetParseError, UnbanIndexPlan,
     parse_blocklist_target as parse_blocklist_target_core, plan_unban,
 };
 use crate::core::network::CanonicalCidr;
 use crate::error::KidoboError;
-
-use super::storage::{BlocklistFile, write_blocklist_lines};
 
 #[derive(Debug, Clone)]
 pub(super) struct PartialMatch {

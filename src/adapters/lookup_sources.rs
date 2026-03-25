@@ -3,32 +3,16 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
-use crate::adapters::cached_sources::{CachedRemoteSourceLoadError, load_remote_sources};
+use crate::adapters::cached_sources::load_remote_sources;
 use crate::adapters::limited_io::read_to_string_with_limit;
 use crate::adapters::path::ResolvedPaths;
 use crate::adapters::source_files::{SOURCE_FILE_READ_LIMIT, parse_cidr_source_line};
+use crate::adapters::source_load::SourceLoadError;
 use crate::core::lookup::LookupSourceEntry;
 
 #[derive(Debug, Error)]
-pub enum LookupSourceLoadError {
-    #[error("failed to read source file {path}: {reason}")]
-    SourceRead {
-        path: std::path::PathBuf,
-        reason: String,
-    },
-
-    #[error("failed to read remote cache directory {path}: {reason}")]
-    CacheDirRead {
-        path: std::path::PathBuf,
-        reason: String,
-    },
-
-    #[error("failed to read remote cache directory entry in {path}: {reason}")]
-    CacheDirEntryRead {
-        path: std::path::PathBuf,
-        reason: String,
-    },
-}
+#[error(transparent)]
+pub struct LookupSourceLoadError(#[from] pub SourceLoadError);
 
 pub fn load_lookup_sources(
     paths: &ResolvedPaths,
@@ -43,8 +27,8 @@ pub fn load_lookup_sources(
     }
 
     if paths.remote_cache_dir.exists() {
-        let remote_sources = load_remote_sources(&paths.remote_cache_dir)
-            .map_err(|err| map_cached_remote_load_error(paths, err))?;
+        let remote_sources =
+            load_remote_sources(&paths.remote_cache_dir).map_err(LookupSourceLoadError::from)?;
 
         for source in remote_sources {
             let source_label: Arc<str> = Arc::from(source.label);
@@ -66,49 +50,22 @@ fn read_source_file(
     source_label: &str,
 ) -> Result<Vec<LookupSourceEntry>, LookupSourceLoadError> {
     let contents = read_to_string_with_limit(path, SOURCE_FILE_READ_LIMIT).map_err(|err| {
-        LookupSourceLoadError::SourceRead {
+        LookupSourceLoadError::from(SourceLoadError::SourceRead {
             path: path.to_path_buf(),
             reason: err.to_string(),
-        }
+        })
     })?;
 
     let source_label: Arc<str> = Arc::from(source_label);
     Ok(contents
         .lines()
-        .filter_map(parse_lookup_source_line)
+        .filter_map(parse_cidr_source_line)
         .map(|(cidr, token)| LookupSourceEntry {
             source_label: Arc::clone(&source_label),
             source_line: token.to_string(),
             cidr,
         })
         .collect())
-}
-
-fn parse_lookup_source_line(line: &str) -> Option<(crate::core::network::CanonicalCidr, &str)> {
-    parse_cidr_source_line(line)
-}
-
-fn map_cached_remote_load_error(
-    paths: &ResolvedPaths,
-    err: CachedRemoteSourceLoadError,
-) -> LookupSourceLoadError {
-    match err {
-        CachedRemoteSourceLoadError::SourceRead { path, reason } => {
-            LookupSourceLoadError::SourceRead { path, reason }
-        }
-        CachedRemoteSourceLoadError::CacheDirRead { reason, .. } => {
-            LookupSourceLoadError::CacheDirRead {
-                path: paths.remote_cache_dir.clone(),
-                reason,
-            }
-        }
-        CachedRemoteSourceLoadError::CacheDirEntryRead { reason, .. } => {
-            LookupSourceLoadError::CacheDirEntryRead {
-                path: paths.remote_cache_dir.clone(),
-                reason,
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -120,6 +77,8 @@ mod tests {
     use super::load_lookup_sources;
     use crate::adapters::hash::sha256_hex;
     use crate::adapters::path::ResolvedPaths;
+    use crate::adapters::source_files::parse_cidr_source_line;
+    use crate::adapters::source_load::SourceLoadError;
 
     fn test_paths(root: &std::path::Path) -> ResolvedPaths {
         ResolvedPaths {
@@ -228,8 +187,8 @@ mod tests {
         .expect("write remote meta");
 
         let err = load_lookup_sources(&paths).expect_err("load must fail");
-        match err {
-            super::LookupSourceLoadError::SourceRead { reason, .. } => {
+        match err.0 {
+            SourceLoadError::SourceRead { reason, .. } => {
                 assert!(reason.contains("hash mismatch"));
             }
             _ => panic!("unexpected error variant"),
@@ -350,8 +309,8 @@ mod tests {
         .expect("write oversized iplist");
 
         let err = load_lookup_sources(&paths).expect_err("must fail");
-        match err {
-            super::LookupSourceLoadError::SourceRead { reason, .. } => {
+        match err.0 {
+            SourceLoadError::SourceRead { reason, .. } => {
                 assert!(reason.contains("file exceeds 16777216 byte limit"));
             }
             _ => panic!("expected source read error"),
@@ -368,18 +327,17 @@ mod tests {
 
         let err = load_lookup_sources(&paths).expect_err("must fail");
         assert!(matches!(
-            err,
-            super::LookupSourceLoadError::CacheDirRead { .. }
-                | super::LookupSourceLoadError::CacheDirEntryRead { .. }
+            err.0,
+            SourceLoadError::CacheDirRead { .. } | SourceLoadError::CacheDirEntryRead { .. }
         ));
     }
 
     #[test]
     fn parse_lookup_source_line_tolerates_comments_and_blank_lines() {
-        assert!(super::parse_lookup_source_line("# comment").is_none());
-        assert!(super::parse_lookup_source_line("   ").is_none());
+        assert!(parse_cidr_source_line("# comment").is_none());
+        assert!(parse_cidr_source_line("   ").is_none());
 
-        let parsed = super::parse_lookup_source_line("203.0.113.1 # trailing").expect("parse");
+        let parsed = parse_cidr_source_line("203.0.113.1 # trailing").expect("parse");
         assert_eq!(parsed.1, "203.0.113.1");
     }
 

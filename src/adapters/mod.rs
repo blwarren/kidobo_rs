@@ -17,3 +17,4 @@ pub mod lock;
 pub mod lookup_sources;
 pub mod path;
 pub mod source_files;
+pub mod source_load;

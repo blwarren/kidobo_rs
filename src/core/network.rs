@@ -401,12 +401,14 @@ fn sort_intervals_u32_for_merge(intervals: &mut [IntervalU32]) {
     }
 
     // Two-pass LSD radix sort over 32-bit starts (16 bits per pass).
-    radix_sort_intervals_u32_by_start(intervals);
+    if !radix_sort_intervals_u32_by_start(intervals) {
+        intervals.sort_unstable();
+    }
 }
 
-fn radix_sort_intervals_u32_by_start(intervals: &mut [IntervalU32]) {
+fn radix_sort_intervals_u32_by_start(intervals: &mut [IntervalU32]) -> bool {
     if intervals.len() < 2 {
-        return;
+        return true;
     }
 
     let mut src = intervals.to_vec();
@@ -419,7 +421,7 @@ fn radix_sort_intervals_u32_by_start(intervals: &mut [IntervalU32]) {
         for interval in &src {
             let bucket = ((interval.start >> shift) & 0xFFFF) as usize;
             let Some(count) = counts.get_mut(bucket) else {
-                return;
+                return false;
             };
             *count += 1;
         }
@@ -434,14 +436,14 @@ fn radix_sort_intervals_u32_by_start(intervals: &mut [IntervalU32]) {
         for interval in &src {
             let bucket = ((interval.start >> shift) & 0xFFFF) as usize;
             let Some(out_idx) = counts.get(bucket).copied() else {
-                return;
+                return false;
             };
             let Some(slot) = dst.get_mut(out_idx) else {
-                return;
+                return false;
             };
             *slot = *interval;
             let Some(count) = counts.get_mut(bucket) else {
-                return;
+                return false;
             };
             *count += 1;
         }
@@ -450,6 +452,7 @@ fn radix_sort_intervals_u32_by_start(intervals: &mut [IntervalU32]) {
     }
 
     intervals.copy_from_slice(&src);
+    true
 }
 
 fn merge_intervals_u128_owned(mut intervals: Vec<IntervalU128>) -> Vec<IntervalU128> {

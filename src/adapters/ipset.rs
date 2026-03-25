@@ -1,5 +1,5 @@
 use std::env;
-use std::fmt::{Display, Write as _};
+use std::fmt::Display;
 use std::fs::{self, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
@@ -170,58 +170,6 @@ pub fn generate_temp_set_name(base_set_name: &str) -> String {
     }
 }
 
-pub fn build_restore_script<T: Display + Ord>(
-    spec: &IpsetSetSpec,
-    temp_set_name: &str,
-    entries: &[T],
-) -> String {
-    let mut script = String::new();
-    writeln!(
-        &mut script,
-        "create {} {} family {} hashsize {} maxelem {} timeout {}",
-        temp_set_name,
-        spec.set_type,
-        spec.family.as_str(),
-        spec.hashsize,
-        spec.maxelem,
-        spec.timeout
-    )
-    .ok();
-
-    for entry in sorted_unique_entries(entries) {
-        writeln!(&mut script, "add {temp_set_name} {entry}").ok();
-    }
-
-    writeln!(&mut script, "swap {temp_set_name} {}", spec.set_name).ok();
-    script
-}
-
-pub fn execute_ipset_restore(
-    runner: &dyn IpsetCommandRunner,
-    script: &str,
-) -> Result<(), IpsetError> {
-    let (mut file, path) = create_restore_script_file()?;
-    file.write_all(script.as_bytes())
-        .and_then(|()| file.flush())
-        .map_err(|err| IpsetError::WriteRestoreScript {
-            path: path.clone(),
-            reason: err.to_string(),
-        })?;
-    drop(file);
-
-    let path_string = path.display().to_string();
-    let restore_result = run_checked(runner, "ipset", &["restore", "-file", &path_string]);
-
-    if let Err(err) = fs::remove_file(&path) {
-        warn!(
-            "failed to remove temporary ipset restore script {}: {err}",
-            path.display()
-        );
-    }
-
-    restore_result.map(|_| ())
-}
-
 pub fn atomic_replace_ipset_values<T: Ord + Display>(
     runner: &dyn IpsetCommandRunner,
     spec: &IpsetSetSpec,
@@ -236,14 +184,6 @@ pub fn atomic_replace_ipset_values<T: Ord + Display>(
     best_effort_destroy_set(runner, &temp_set_name);
 
     restore_result
-}
-
-pub fn atomic_replace_ipset(
-    runner: &dyn IpsetCommandRunner,
-    spec: &IpsetSetSpec,
-    entries: &[String],
-) -> Result<(), IpsetError> {
-    atomic_replace_ipset_values(runner, spec, entries)
 }
 
 fn run_checked(
@@ -275,7 +215,7 @@ fn execute_ipset_restore_with_entries<T: Ord + Display>(
 ) -> Result<(), IpsetError> {
     let (file, path) = create_restore_script_file()?;
     let mut writer = BufWriter::new(file);
-    if let Err(err) = write_restore_script_file(&mut writer, spec, temp_set_name, entries) {
+    if let Err(err) = write_restore_script(&mut writer, spec, temp_set_name, entries) {
         let reason = err.to_string();
         if let Err(cleanup_err) = fs::remove_file(&path) {
             warn!(
@@ -310,7 +250,7 @@ fn execute_ipset_restore_with_entries<T: Ord + Display>(
     restore_result.map(|_| ())
 }
 
-fn write_restore_script_file<T: Ord + Display>(
+fn write_restore_script<T: Ord + Display>(
     writer: &mut impl Write,
     spec: &IpsetSetSpec,
     temp_set_name: &str,
@@ -445,7 +385,7 @@ mod tests {
 
     use super::{
         IpsetCommandRunner, IpsetError, IpsetFamily, IpsetSetSpec, RESTORE_SCRIPT_READ_LIMIT,
-        atomic_replace_ipset, build_restore_script, generate_temp_set_name, ipset_exists,
+        atomic_replace_ipset_values, generate_temp_set_name, ipset_exists, write_restore_script,
     };
     use crate::adapters::command_runner::{CommandResult, CommandRunnerError, ProcessStatus};
     use crate::adapters::limited_io::read_to_string_with_limit;
@@ -548,7 +488,9 @@ mod tests {
             timeout: 0,
         };
 
-        let script = build_restore_script(
+        let mut script = Vec::new();
+        write_restore_script(
+            &mut script,
             &spec,
             "kidobo-temp",
             &[
@@ -556,7 +498,9 @@ mod tests {
                 "10.0.0.0/24".to_string(),
                 "203.0.113.0/24".to_string(),
             ],
-        );
+        )
+        .expect("write restore script");
+        let script = String::from_utf8(script).expect("restore script is utf8");
 
         assert_eq!(
             script,
@@ -638,7 +582,7 @@ mod tests {
             timeout: 0,
         };
 
-        atomic_replace_ipset(
+        atomic_replace_ipset_values(
             &runner,
             &spec,
             &["198.51.100.7/32".to_string(), "10.0.0.0/24".to_string()],
@@ -687,7 +631,7 @@ mod tests {
             timeout: 0,
         };
 
-        let err = atomic_replace_ipset(&runner, &spec, &["10.0.0.0/24".to_string()])
+        let err = atomic_replace_ipset_values(&runner, &spec, &["10.0.0.0/24".to_string()])
             .expect_err("must fail");
         assert!(matches!(err, IpsetError::CommandFailed { .. }));
 

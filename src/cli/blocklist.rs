@@ -1,5 +1,4 @@
 mod plan;
-mod storage;
 
 use std::collections::{BTreeSet, HashSet};
 use std::io::{self, Write};
@@ -11,6 +10,9 @@ use log::{info, warn};
 use crate::adapters::asn::{
     Bgpq4AsnPrefixResolver, delete_asn_cache_file, load_asn_prefixes_with_cache,
     normalize_asn_tokens,
+};
+use crate::adapters::blocklist_file::{
+    BLOCKLIST_READ_LIMIT, BlocklistFile, ensure_blocklist_parent, write_blocklist_lines,
 };
 use crate::adapters::config::load_config_from_file;
 use crate::adapters::config_edit::update_asn_bans;
@@ -25,9 +27,6 @@ use crate::error::KidoboError;
 
 use self::plan::{
     PartialMatch, UnbanPlan, apply_unban_plan, build_unban_plan, parse_blocklist_target,
-};
-use self::storage::{
-    BLOCKLIST_READ_LIMIT, BlocklistFile, ensure_blocklist_parent, write_blocklist_lines,
 };
 #[cfg(test)]
 use crate::adapters::blocklist_file::{
@@ -100,13 +99,13 @@ pub fn run_unban_command(
 ) -> Result<(), KidoboError> {
     let path_input = PathResolutionInput::from_process(None);
     let paths = resolve_paths(&path_input)?;
-    let _lock = acquire_non_blocking(&paths.lock_file)?;
     if let Some(asn_tokens) = asn {
+        let _lock = acquire_non_blocking(&paths.lock_file)?;
         return run_unban_asn_command(&paths.config_file, &paths.cache_dir, asn_tokens);
     }
 
     if let Some(file) = file {
-        return run_unban_file_command(&paths.blocklist_file, file, yes);
+        return run_unban_file_command(&paths.blocklist_file, &paths.lock_file, file, yes);
     }
 
     let Some(target) = target else {
@@ -114,44 +113,47 @@ pub fn run_unban_command(
             input: String::new(),
         });
     };
-    let mut plan = build_unban_plan(&paths.blocklist_file, target)?;
-
-    if !plan.partial_matches.is_empty() {
-        println!(
-            "{} also matches the following blocklist entries:",
-            plan.target
-        );
-        for partial in &plan.partial_matches {
-            println!("  - {}", partial.entry);
-        }
-
-        plan.remove_partial = if yes {
-            println!("auto-approving removal of partial matches");
-            true
-        } else {
-            prompt_confirmation()?
-        };
-    }
-
-    if plan.total_removal() == 0 {
-        println!("no blocklist entries match {}", plan.target);
-        return Ok(());
-    }
-
-    let result = apply_unban_plan(&paths.blocklist_file, &plan)?;
-    println!(
-        "removed {} blocklist entries for {}",
-        result.total(),
-        plan.target
-    );
-    println!("changes take effect after running `sudo kidobo sync`");
-    Ok(())
+    run_unban_target_command(&paths.blocklist_file, &paths.lock_file, target, yes)
 }
 
 #[derive(Debug)]
 struct FileUnbanRequest {
     requested_target_count: usize,
     plan: UnbanPlan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UnbanPreview {
+    target: String,
+    exact_entries: Vec<String>,
+    partial_entries: Vec<String>,
+}
+
+impl UnbanPreview {
+    fn from_plan(plan: &UnbanPlan) -> Self {
+        Self {
+            target: plan.target.clone(),
+            exact_entries: plan_entry_strings(&plan.blocklist, &plan.exact_indexes),
+            partial_entries: partial_entry_strings(&plan.partial_matches),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileUnbanPreview {
+    requested_target_count: usize,
+    exact_entries: Vec<String>,
+    partial_entries: Vec<String>,
+}
+
+impl FileUnbanPreview {
+    fn from_request(request: &FileUnbanRequest) -> Self {
+        Self {
+            requested_target_count: request.requested_target_count,
+            exact_entries: plan_entry_strings(&request.plan.blocklist, &request.plan.exact_indexes),
+            partial_entries: partial_entry_strings(&request.plan.partial_matches),
+        }
+    }
 }
 
 #[allow(clippy::print_stdout, clippy::print_stderr)]
@@ -179,6 +181,7 @@ fn run_ban_file_command(blocklist_path: &Path, target_file: &Path) -> Result<(),
 #[allow(clippy::print_stdout)]
 fn run_unban_file_command(
     blocklist_path: &Path,
+    lock_path: &Path,
     target_file: &Path,
     yes: bool,
 ) -> Result<(), KidoboError> {
@@ -190,20 +193,20 @@ fn run_unban_file_command(
         return Ok(());
     }
 
-    let mut request = build_unban_file_request(blocklist_path, &targets)?;
-    if !request.plan.partial_matches.is_empty() {
-        println!("file targets also match the following blocklist entries:");
-        for partial in &request.plan.partial_matches {
-            println!("  - {}", partial.entry);
-        }
+    let preview_request = build_unban_file_request(blocklist_path, &targets)?;
+    let preview = FileUnbanPreview::from_request(&preview_request);
+    let remove_partial = confirm_partial_matches(
+        "file targets also match the following blocklist entries:",
+        &preview_request.plan.partial_matches,
+        yes,
+    )?;
 
-        request.plan.remove_partial = if yes {
-            println!("auto-approving removal of partial matches");
-            true
-        } else {
-            prompt_confirmation()?
-        };
+    let _lock = acquire_non_blocking(lock_path)?;
+    let mut request = build_unban_file_request(blocklist_path, &targets)?;
+    if FileUnbanPreview::from_request(&request) != preview {
+        return Err(KidoboError::BlocklistChanged);
     }
+    request.plan.remove_partial = remove_partial;
 
     if request.plan.total_removal() == 0 {
         if request.plan.partial_matches.is_empty() {
@@ -225,6 +228,46 @@ fn run_unban_file_command(
         "removed {} blocklist entries for {} file target(s)",
         result.total(),
         request.requested_target_count
+    );
+    println!("changes take effect after running `sudo kidobo sync`");
+    Ok(())
+}
+
+#[allow(clippy::print_stdout)]
+fn run_unban_target_command(
+    blocklist_path: &Path,
+    lock_path: &Path,
+    target: &str,
+    yes: bool,
+) -> Result<(), KidoboError> {
+    let preview_plan = build_unban_plan(blocklist_path, target)?;
+    let preview = UnbanPreview::from_plan(&preview_plan);
+    let remove_partial = confirm_partial_matches(
+        &format!(
+            "{} also matches the following blocklist entries:",
+            preview_plan.target
+        ),
+        &preview_plan.partial_matches,
+        yes,
+    )?;
+
+    let _lock = acquire_non_blocking(lock_path)?;
+    let mut plan = build_unban_plan(blocklist_path, target)?;
+    if UnbanPreview::from_plan(&plan) != preview {
+        return Err(KidoboError::BlocklistChanged);
+    }
+    plan.remove_partial = remove_partial;
+
+    if plan.total_removal() == 0 {
+        println!("no blocklist entries match {}", plan.target);
+        return Ok(());
+    }
+
+    let result = apply_unban_plan(blocklist_path, &plan)?;
+    println!(
+        "removed {} blocklist entries for {}",
+        result.total(),
+        plan.target
     );
     println!("changes take effect after running `sudo kidobo sync`");
     Ok(())
@@ -519,6 +562,25 @@ fn partial_matches_for_indexes(blocklist: &BlocklistFile, indexes: &[usize]) -> 
         .collect()
 }
 
+fn plan_entry_strings(blocklist: &BlocklistFile, indexes: &[usize]) -> Vec<String> {
+    let mut entries = indexes
+        .iter()
+        .filter_map(|idx| blocklist.lines.get(*idx))
+        .filter_map(|line| line.canonical.map(|canonical| canonical.to_string()))
+        .collect::<Vec<_>>();
+    entries.sort_unstable();
+    entries
+}
+
+fn partial_entry_strings(partial_matches: &[PartialMatch]) -> Vec<String> {
+    let mut entries = partial_matches
+        .iter()
+        .map(|partial| partial.entry.clone())
+        .collect::<Vec<_>>();
+    entries.sort_unstable();
+    entries
+}
+
 #[allow(clippy::print_stdout)]
 fn prompt_confirmation() -> Result<bool, KidoboError> {
     print!("Remove these entries as well? [y/N]: ");
@@ -537,6 +599,29 @@ fn prompt_confirmation() -> Result<bool, KidoboError> {
 
     let response = buffer.trim().to_ascii_lowercase();
     Ok(matches!(response.as_str(), "y" | "yes"))
+}
+
+#[allow(clippy::print_stdout)]
+fn confirm_partial_matches(
+    heading: &str,
+    partial_matches: &[PartialMatch],
+    yes: bool,
+) -> Result<bool, KidoboError> {
+    if partial_matches.is_empty() {
+        return Ok(false);
+    }
+
+    println!("{heading}");
+    for partial in partial_matches {
+        println!("  - {}", partial.entry);
+    }
+
+    if yes {
+        println!("auto-approving removal of partial matches");
+        Ok(true)
+    } else {
+        prompt_confirmation()
+    }
 }
 
 #[cfg(test)]

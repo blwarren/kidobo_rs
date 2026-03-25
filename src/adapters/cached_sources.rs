@@ -2,13 +2,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use thiserror::Error;
-
 use crate::adapters::source_files::{
     REMOTE_META_READ_LIMIT, RemoteCacheFilesError, SOURCE_FILE_READ_LIMIT,
     collect_remote_cache_files, parse_cidr_source_line, read_remote_cache_iplist_text,
     resolve_remote_source_label,
 };
+use crate::adapters::source_load::SourceLoadError;
 use crate::core::network::CanonicalCidr;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,37 +24,23 @@ pub struct CachedRemoteSource {
     pub age_secs: Option<u64>,
 }
 
-#[derive(Debug, Error)]
-pub enum CachedRemoteSourceLoadError {
-    #[error("failed to read source file {path}: {reason}")]
-    SourceRead { path: PathBuf, reason: String },
-
-    #[error("failed to read remote cache directory {path}: {reason}")]
-    CacheDirRead { path: PathBuf, reason: String },
-
-    #[error("failed to read remote cache directory entry in {path}: {reason}")]
-    CacheDirEntryRead { path: PathBuf, reason: String },
-}
-
 pub fn load_remote_sources(
     remote_cache_dir: &Path,
-) -> Result<Vec<CachedRemoteSource>, CachedRemoteSourceLoadError> {
+) -> Result<Vec<CachedRemoteSource>, SourceLoadError> {
     if !remote_cache_dir.exists() {
         return Ok(Vec::new());
     }
 
     let mut remote_files =
         collect_remote_cache_files(remote_cache_dir).map_err(|err| match err {
-            RemoteCacheFilesError::ReadDir(err) => CachedRemoteSourceLoadError::CacheDirRead {
+            RemoteCacheFilesError::ReadDir(err) => SourceLoadError::CacheDirRead {
                 path: remote_cache_dir.to_path_buf(),
                 reason: err.to_string(),
             },
-            RemoteCacheFilesError::ReadDirEntry(err) => {
-                CachedRemoteSourceLoadError::CacheDirEntryRead {
-                    path: remote_cache_dir.to_path_buf(),
-                    reason: err.to_string(),
-                }
-            }
+            RemoteCacheFilesError::ReadDirEntry(err) => SourceLoadError::CacheDirEntryRead {
+                path: remote_cache_dir.to_path_buf(),
+                reason: err.to_string(),
+            },
         })?;
 
     remote_files.sort();
@@ -64,7 +49,7 @@ pub fn load_remote_sources(
     for path in remote_files {
         let contents =
             read_remote_cache_iplist_text(&path, SOURCE_FILE_READ_LIMIT, REMOTE_META_READ_LIMIT)
-                .map_err(|err| CachedRemoteSourceLoadError::SourceRead {
+                .map_err(|err| SourceLoadError::SourceRead {
                     path: path.clone(),
                     reason: err.to_string(),
                 })?;
@@ -106,8 +91,9 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{CachedRemoteSourceLoadError, load_remote_sources};
+    use super::load_remote_sources;
     use crate::adapters::hash::sha256_hex;
+    use crate::adapters::source_load::SourceLoadError;
 
     #[test]
     fn loads_remote_sources_and_sorts_by_resolved_label() {
@@ -164,7 +150,7 @@ mod tests {
 
         let err = load_remote_sources(&remote_cache_dir).expect_err("must fail");
         match err {
-            CachedRemoteSourceLoadError::SourceRead { reason, .. } => {
+            SourceLoadError::SourceRead { reason, .. } => {
                 assert!(reason.contains("hash mismatch"));
             }
             _ => panic!("unexpected error variant"),

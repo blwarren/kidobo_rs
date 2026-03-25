@@ -73,8 +73,8 @@ mod tests {
         fetch_remote_networks_concurrently, remote_fetch_worker_count_for,
     };
     use crate::core::config::{
-        AsnConfig, CacheStaleAfterSecs, Config, FirewallAction, HashsizePow2, IpsetConfig, MaxElem,
-        RemoteConfig, RemoteTimeoutSecs, SafeConfig,
+        AsnCacheStaleAfterSecs, AsnConfig, Config, FirewallAction, HashsizePow2, IpsetConfig,
+        MaxElem, RemoteCacheStaleAfterSecs, RemoteConfig, RemoteTimeoutSecs, SafeConfig,
     };
     use crate::core::network::{CanonicalCidr, cidr_overlaps, parse_ip_cidr_token};
     use crate::error::KidoboError;
@@ -319,11 +319,12 @@ mod tests {
             remote: RemoteConfig {
                 urls,
                 timeout_secs: RemoteTimeoutSecs::new(30).expect("valid timeout"),
-                cache_stale_after_secs: CacheStaleAfterSecs::new(86_400).expect("valid stale"),
+                cache_stale_after_secs: RemoteCacheStaleAfterSecs::new(86_400)
+                    .expect("valid stale"),
             },
             asn: AsnConfig {
                 banned: Vec::new(),
-                cache_stale_after_secs: CacheStaleAfterSecs::new(86_400).expect("valid stale"),
+                cache_stale_after_secs: AsnCacheStaleAfterSecs::new(86_400).expect("valid stale"),
             },
         }
     }
@@ -349,11 +350,12 @@ mod tests {
             remote: RemoteConfig {
                 urls,
                 timeout_secs: RemoteTimeoutSecs::new(30).expect("valid timeout"),
-                cache_stale_after_secs: CacheStaleAfterSecs::new(86_400).expect("valid stale"),
+                cache_stale_after_secs: RemoteCacheStaleAfterSecs::new(86_400)
+                    .expect("valid stale"),
             },
             asn: AsnConfig {
                 banned: Vec::new(),
-                cache_stale_after_secs: CacheStaleAfterSecs::new(86_400).expect("valid stale"),
+                cache_stale_after_secs: AsnCacheStaleAfterSecs::new(86_400).expect("valid stale"),
             },
         }
     }

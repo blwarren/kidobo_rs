@@ -93,9 +93,9 @@ impl From<RemoteTimeoutSecs> for u32 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct CacheStaleAfterSecs(NonZeroU32);
+pub struct RemoteCacheStaleAfterSecs(NonZeroU32);
 
-impl CacheStaleAfterSecs {
+impl RemoteCacheStaleAfterSecs {
     pub fn new(value: u32) -> Option<Self> {
         let non_zero = NonZeroU32::new(value)?;
         if value <= REMOTE_CACHE_STALE_AFTER_SECS_MAX {
@@ -110,8 +110,32 @@ impl CacheStaleAfterSecs {
     }
 }
 
-impl From<CacheStaleAfterSecs> for u32 {
-    fn from(value: CacheStaleAfterSecs) -> Self {
+impl From<RemoteCacheStaleAfterSecs> for u32 {
+    fn from(value: RemoteCacheStaleAfterSecs) -> Self {
+        value.get()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct AsnCacheStaleAfterSecs(NonZeroU32);
+
+impl AsnCacheStaleAfterSecs {
+    pub fn new(value: u32) -> Option<Self> {
+        let non_zero = NonZeroU32::new(value)?;
+        if value <= ASN_CACHE_STALE_AFTER_SECS_MAX {
+            Some(Self(non_zero))
+        } else {
+            None
+        }
+    }
+
+    pub fn get(self) -> u32 {
+        self.0.get()
+    }
+}
+
+impl From<AsnCacheStaleAfterSecs> for u32 {
+    fn from(value: AsnCacheStaleAfterSecs) -> Self {
         value.get()
     }
 }
@@ -154,25 +178,13 @@ pub struct SafeConfig {
 pub struct RemoteConfig {
     pub urls: Vec<String>,
     pub timeout_secs: RemoteTimeoutSecs,
-    pub cache_stale_after_secs: CacheStaleAfterSecs,
+    pub cache_stale_after_secs: RemoteCacheStaleAfterSecs,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AsnConfig {
     pub banned: Vec<u32>,
-    pub cache_stale_after_secs: CacheStaleAfterSecs,
-}
-
-impl Default for RemoteConfig {
-    fn default() -> Self {
-        Self {
-            urls: Vec::new(),
-            timeout_secs: RemoteTimeoutSecs::new(DEFAULT_REMOTE_TIMEOUT_SECS)
-                .unwrap_or(RemoteTimeoutSecs(NonZeroU32::MIN)),
-            cache_stale_after_secs: CacheStaleAfterSecs::new(DEFAULT_REMOTE_CACHE_STALE_AFTER_SECS)
-                .unwrap_or(CacheStaleAfterSecs(NonZeroU32::MIN)),
-        }
-    }
+    pub cache_stale_after_secs: AsnCacheStaleAfterSecs,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -414,12 +426,10 @@ fn parse_remote(raw: RawRemoteConfig) -> Result<RemoteConfig, ConfigError> {
         1,
         REMOTE_CACHE_STALE_AFTER_SECS_MAX,
     )?;
-    let cache_stale_after_secs =
-        CacheStaleAfterSecs::new(cache_stale_after_secs).ok_or_else(|| {
-            ConfigError::InvalidField {
-                field: "remote.cache_stale_after_secs",
-                reason: format!("must be between 1 and {REMOTE_CACHE_STALE_AFTER_SECS_MAX}"),
-            }
+    let cache_stale_after_secs = RemoteCacheStaleAfterSecs::new(cache_stale_after_secs)
+        .ok_or_else(|| ConfigError::InvalidField {
+            field: "remote.cache_stale_after_secs",
+            reason: format!("must be between 1 and {REMOTE_CACHE_STALE_AFTER_SECS_MAX}"),
         })?;
 
     Ok(RemoteConfig {
@@ -448,7 +458,7 @@ fn parse_asn(raw: RawAsnConfig) -> Result<AsnConfig, ConfigError> {
         ASN_CACHE_STALE_AFTER_SECS_MAX,
     )?;
     let cache_stale_after_secs =
-        CacheStaleAfterSecs::new(cache_stale_after_secs).ok_or_else(|| {
+        AsnCacheStaleAfterSecs::new(cache_stale_after_secs).ok_or_else(|| {
             ConfigError::InvalidField {
                 field: "asn.cache_stale_after_secs",
                 reason: format!("must be between 1 and {ASN_CACHE_STALE_AFTER_SECS_MAX}"),
