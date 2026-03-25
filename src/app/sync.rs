@@ -18,15 +18,13 @@ use crate::adapters::ipset::{
 use crate::adapters::iptables::{
     ChainAction, FirewallCommandRunner, ensure_firewall_wiring_for_families,
 };
-use crate::adapters::limited_io::read_to_string_with_limit;
 use crate::adapters::path::ResolvedPaths;
 use crate::core::config::{Config, FirewallAction};
-use crate::core::network::{CanonicalCidr, parse_lines_non_strict};
+use crate::core::network::CanonicalCidr;
 use crate::core::sync::compute_effective_blocklists;
 use crate::error::KidoboError;
 
 pub(crate) const MAX_REMOTE_FETCH_WORKERS: usize = 5;
-const BLOCKLIST_READ_LIMIT: usize = 16 * 1024 * 1024;
 const BLOCKLIST_FAST_STATE_FILE: &str = "blocklist-normalize.fast-state";
 #[cfg(test)]
 pub(crate) const RESTORE_SCRIPT_READ_LIMIT: usize = 8 * 1024 * 1024;
@@ -268,14 +266,12 @@ fn load_internal_blocklist(path: &Path) -> Result<Vec<CanonicalCidr>, KidoboErro
         return Ok(Vec::new());
     }
 
-    let contents = read_to_string_with_limit(path, BLOCKLIST_READ_LIMIT).map_err(|err| {
-        KidoboError::BlocklistRead {
-            path: path.to_path_buf(),
-            reason: err.to_string(),
-        }
-    })?;
-
-    Ok(parse_lines_non_strict(contents.lines()))
+    let blocklist = crate::adapters::blocklist_file::BlocklistFile::load(path)?;
+    Ok(blocklist
+        .lines
+        .iter()
+        .filter_map(|line| line.canonical)
+        .collect())
 }
 
 pub(crate) fn fetch_remote_networks_concurrently<S: AsRef<str> + Sync>(

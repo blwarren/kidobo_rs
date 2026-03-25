@@ -13,7 +13,7 @@ use thiserror::Error;
 
 use crate::adapters::hash::sha256_hex;
 use crate::adapters::http_fetch::{
-    ConditionalFetchOutcome, ConditionalFetchResult, fetch_with_conditional_cache,
+    dispatch_conditional_fetch_result, fetch_with_conditional_cache,
 };
 use crate::adapters::limited_io::{
     read_to_string_with_limit, write_bytes_atomic, write_string_atomic,
@@ -100,10 +100,6 @@ impl Default for ReqwestHttpClient {
 }
 
 impl ReqwestHttpClient {
-    pub fn new(user_agent: impl Into<String>) -> Self {
-        Self::new_with_timeout(user_agent, DEFAULT_HTTP_REQUEST_TIMEOUT)
-    }
-
     pub fn with_timeout(request_timeout: Duration) -> Self {
         Self::new_with_timeout(default_user_agent(), request_timeout)
     }
@@ -241,6 +237,7 @@ pub fn max_http_body_bytes(env: &BTreeMap<String, String>) -> usize {
         .unwrap_or(DEFAULT_MAX_HTTP_BODY_BYTES)
 }
 
+#[cfg(test)]
 pub fn normalize_remote_text(raw: &[u8]) -> String {
     format_normalized_cidrs(&parse_remote_cidrs(raw))
 }
@@ -297,7 +294,7 @@ pub fn fetch_iplist_with_cache(
         (meta.etag.clone(), meta.last_modified.clone())
     });
 
-    let ConditionalFetchResult { outcome, response } = fetch_with_conditional_cache(
+    let result = fetch_with_conditional_cache(
         client,
         url,
         max_bytes,
@@ -306,38 +303,45 @@ pub fn fetch_iplist_with_cache(
         cached_networks.is_some(),
         "remote source",
     );
+    let cached_networks_for_not_modified = cached_networks.clone();
+    let cached_meta_for_not_modified = cached_meta.clone();
+    let cached_networks_for_fallback = cached_networks.clone();
+    let cached_meta_for_fallback = cached_meta.clone();
 
-    match (outcome, response) {
-        (ConditionalFetchOutcome::CacheNotModified, _) => {
-            if let Some(networks) = cached_networks {
+    dispatch_conditional_fetch_result(
+        result,
+        &format!("remote fetch returned network outcome without response for {url}"),
+        || {
+            if let Some(networks) = cached_networks_for_not_modified {
                 return Ok(CachedIplist {
                     networks,
                     source: CacheSource::CacheNotModified,
-                    metadata: cached_meta,
+                    metadata: cached_meta_for_not_modified,
                 });
             }
-            Ok(CachedIplist {
+            Ok::<CachedIplist, HttpCacheError>(CachedIplist {
                 networks: Vec::new(),
                 source: CacheSource::Empty,
                 metadata: None,
             })
-        }
-        (ConditionalFetchOutcome::FallbackCache, _) => {
-            Ok(cache_fallback(cached_networks, cached_meta))
-        }
-        (ConditionalFetchOutcome::Network, Some(response)) => handle_network_response(
-            response,
-            url,
-            &cache_paths,
-            max_bytes,
-            cached_networks,
-            cached_meta,
-        ),
-        (ConditionalFetchOutcome::Network, None) => {
-            warn!("remote fetch returned network outcome without response for {url}");
-            Ok(cache_fallback(cached_networks, cached_meta))
-        }
-    }
+        },
+        || {
+            Ok(cache_fallback(
+                cached_networks_for_fallback,
+                cached_meta_for_fallback,
+            ))
+        },
+        |response| {
+            handle_network_response(
+                response,
+                url,
+                &cache_paths,
+                max_bytes,
+                cached_networks,
+                cached_meta,
+            )
+        },
+    )
 }
 
 fn handle_network_response(

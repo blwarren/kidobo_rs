@@ -362,15 +362,25 @@ fn file_exists_check(check_name: &'static str, path: &Path) -> DoctorCheck {
 }
 
 fn cache_writability_check(remote_cache_dir: &Path) -> DoctorCheck {
-    match ensure_cache_writable(remote_cache_dir) {
-        Ok(()) => ok_check(
+    match ensure_cache_path_ready(remote_cache_dir) {
+        Ok(CachePathReady::ExistingDirectory) => ok_check(
             "cache_writable",
-            format!("remote cache writable: {}", remote_cache_dir.display()),
+            format!(
+                "remote cache directory is writable: {}",
+                remote_cache_dir.display()
+            ),
+        ),
+        Ok(CachePathReady::CreatableFromParent { parent }) => ok_check(
+            "cache_writable",
+            format!(
+                "remote cache can be created under writable parent: {}",
+                parent.display()
+            ),
         ),
         Err(reason) => fail_check(
             "cache_writable",
             format!(
-                "remote cache not writable at {}: {reason}",
+                "remote cache path is not writable at {}: {reason}",
                 remote_cache_dir.display()
             ),
         ),
@@ -379,43 +389,63 @@ fn cache_writability_check(remote_cache_dir: &Path) -> DoctorCheck {
 
 #[derive(Debug, Error)]
 enum CacheWritableError {
-    #[error("failed to create directory {path}: {source}")]
-    CreateDir {
+    #[error("failed to read metadata for {path}: {source}")]
+    Metadata {
         path: PathBuf,
         #[source]
         source: std::io::Error,
     },
 
-    #[error("failed to write probe file {path}: {source}")]
-    WriteProbe {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
+    #[error("path exists but is not a directory: {path}")]
+    NotDirectory { path: PathBuf },
 
-    #[error("failed to remove probe file {path}: {source}")]
-    RemoveProbe {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
+    #[error("path is read-only: {path}")]
+    ReadOnly { path: PathBuf },
+
+    #[error("no existing parent directory found for {path}")]
+    MissingParent { path: PathBuf },
 }
 
-fn ensure_cache_writable(remote_cache_dir: &Path) -> Result<(), CacheWritableError> {
-    fs::create_dir_all(remote_cache_dir).map_err(|source| CacheWritableError::CreateDir {
-        path: remote_cache_dir.to_path_buf(),
-        source,
-    })?;
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CachePathReady {
+    ExistingDirectory,
+    CreatableFromParent { parent: PathBuf },
+}
 
-    let probe_path = remote_cache_dir.join(format!(".doctor-write-test-{}", std::process::id()));
-    fs::write(&probe_path, b"kidobo").map_err(|source| CacheWritableError::WriteProbe {
-        path: probe_path.clone(),
+fn ensure_cache_path_ready(remote_cache_dir: &Path) -> Result<CachePathReady, CacheWritableError> {
+    if remote_cache_dir.exists() {
+        ensure_directory_is_writable(remote_cache_dir)?;
+        return Ok(CachePathReady::ExistingDirectory);
+    }
+
+    let parent = remote_cache_dir
+        .ancestors()
+        .skip(1)
+        .find(|candidate| candidate.exists())
+        .map(Path::to_path_buf)
+        .ok_or_else(|| CacheWritableError::MissingParent {
+            path: remote_cache_dir.to_path_buf(),
+        })?;
+    ensure_directory_is_writable(&parent)?;
+    Ok(CachePathReady::CreatableFromParent { parent })
+}
+
+fn ensure_directory_is_writable(path: &Path) -> Result<(), CacheWritableError> {
+    let metadata = fs::metadata(path).map_err(|source| CacheWritableError::Metadata {
+        path: path.to_path_buf(),
         source,
     })?;
-    fs::remove_file(&probe_path).map_err(|source| CacheWritableError::RemoveProbe {
-        path: probe_path,
-        source,
-    })
+    if !metadata.is_dir() {
+        return Err(CacheWritableError::NotDirectory {
+            path: path.to_path_buf(),
+        });
+    }
+    if metadata.permissions().readonly() {
+        return Err(CacheWritableError::ReadOnly {
+            path: path.to_path_buf(),
+        });
+    }
+    Ok(())
 }
 
 fn sudo_probe_check(
@@ -740,6 +770,41 @@ mod tests {
         assert_eq!(
             find_check(&report.checks, "cache_writable").status,
             DoctorCheckStatus::Fail
+        );
+    }
+
+    #[test]
+    fn doctor_report_does_not_create_cache_directory_for_read_only_check() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = temp.path();
+        write_config(root, false);
+        write_blocklist(root);
+
+        let locator = MockBinaryLocator::new(&[
+            "sudo",
+            "bgpq4",
+            "ipset",
+            "iptables",
+            "iptables-save",
+            "iptables-restore",
+        ]);
+        let probes = MockProbeRunner::new(vec![
+            Ok(probe_ok()),
+            Ok(probe_ok()),
+            Ok(probe_ok()),
+            Ok(probe_ok()),
+        ]);
+
+        let report = build_doctor_report(&path_input_for_root(root), &locator, &probes);
+
+        assert_eq!(report.overall, DoctorOverall::Ok);
+        assert_eq!(
+            find_check(&report.checks, "cache_writable").status,
+            DoctorCheckStatus::Ok
+        );
+        assert!(
+            !root.join("cache/remote").exists(),
+            "doctor should not create cache directories during a read-only check"
         );
     }
 

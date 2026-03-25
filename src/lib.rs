@@ -35,9 +35,9 @@
     )
 )]
 
-pub mod adapters;
+mod adapters;
 mod app;
-pub mod cli;
+mod cli;
 pub mod core;
 pub mod error;
 pub mod logging;

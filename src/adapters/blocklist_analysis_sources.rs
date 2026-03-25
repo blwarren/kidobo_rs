@@ -61,7 +61,7 @@ pub fn load_analysis_sources(
 
 fn read_source_file(path: &Path) -> Result<Vec<CanonicalCidr>, AnalysisSourceLoadError> {
     read_cidrs_from_source_file(path, SOURCE_FILE_READ_LIMIT).map_err(|err| {
-        AnalysisSourceLoadError::from(SourceLoadError::SourceRead {
+        AnalysisSourceLoadError::from(SourceLoadError::Source {
             path: path.to_path_buf(),
             reason: err.to_string(),
         })
@@ -135,7 +135,7 @@ mod tests {
 
         let err = load_analysis_sources(&paths, 86_400).expect_err("load must fail");
         match err.0 {
-            SourceLoadError::SourceRead { reason, .. } => {
+            SourceLoadError::Source { reason, .. } => {
                 assert!(reason.contains("hash mismatch"));
             }
             _ => panic!("unexpected error variant"),

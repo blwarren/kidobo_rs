@@ -1,17 +1,15 @@
-use std::collections::BTreeMap;
 use std::fs;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use kidobo::adapters::config::load_config_from_file;
-use kidobo::adapters::http_cache::{ReqwestHttpClient, fetch_iplist_with_cache};
-use kidobo::adapters::limited_io::read_to_string_with_limit;
+use kidobo::core::config::Config;
 use kidobo::core::lookup::{LookupSourceEntry, run_lookup};
 use kidobo::core::network::{
-    CanonicalCidr, IntervalU32, Ipv4Cidr, Ipv6Cidr, ipv4_to_interval, merge_intervals_u32,
-    parse_lines_non_strict, subtract_safelist_ipv4, subtract_safelist_ipv6,
+    CanonicalCidr, Ipv4Cidr, Ipv6Cidr, collapse_ipv4, parse_ip_cidr_strict, subtract_safelist_ipv4,
+    subtract_safelist_ipv6,
 };
 use kidobo::core::sync::compute_effective_blocklists;
 
@@ -53,7 +51,7 @@ fn generate_candidates(v4_count: usize, v6_count: usize) -> Vec<CanonicalCidr> {
     out
 }
 
-fn deterministic_shuffle_u32(data: &mut [IntervalU32]) {
+fn deterministic_shuffle<T>(data: &mut [T]) {
     let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
     for i in (1..data.len()).rev() {
         state ^= state << 7;
@@ -64,97 +62,24 @@ fn deterministic_shuffle_u32(data: &mut [IntervalU32]) {
     }
 }
 
-fn generate_disjoint_intervals(count: usize) -> Vec<IntervalU32> {
+fn generate_disjoint_ipv4_hosts(count: usize) -> Vec<Ipv4Cidr> {
     let mut out = Vec::with_capacity(count);
     for i in 0..count {
-        let start = (i as u32) * 4;
-        out.push(IntervalU32 {
-            start,
-            end: start + 1,
-        });
+        out.push(Ipv4Cidr::from_parts((i as u32) * 4, 32));
     }
     out
 }
 
-fn generate_overlapping_intervals(count: usize) -> Vec<IntervalU32> {
+fn generate_contiguous_ipv4_hosts(count: usize) -> Vec<Ipv4Cidr> {
     let mut out = Vec::with_capacity(count);
     for i in 0..count {
-        let start = i as u32;
-        out.push(IntervalU32 {
-            start,
-            end: start + 32,
-        });
+        out.push(Ipv4Cidr::from_parts(i as u32, 32));
     }
     out
 }
 
-fn radix_sort_intervals_by_start_u32(intervals: &mut [IntervalU32]) {
-    if intervals.len() < 2 {
-        return;
-    }
-
-    let len = intervals.len();
-    let mut src = intervals.to_vec();
-    let mut dst = vec![IntervalU32 { start: 0, end: 0 }; len];
-    let mut counts = vec![0_usize; 1 << 16];
-
-    for shift in [0_u32, 16_u32] {
-        counts.fill(0);
-
-        for interval in &src {
-            let bucket = ((interval.start >> shift) & 0xFFFF) as usize;
-            counts[bucket] += 1;
-        }
-
-        let mut running = 0_usize;
-        for count in &mut counts {
-            let current = *count;
-            *count = running;
-            running += current;
-        }
-
-        for interval in &src {
-            let bucket = ((interval.start >> shift) & 0xFFFF) as usize;
-            let out_idx = counts[bucket];
-            dst[out_idx] = *interval;
-            counts[bucket] += 1;
-        }
-
-        std::mem::swap(&mut src, &mut dst);
-    }
-
-    intervals.copy_from_slice(&src);
-}
-
-fn merge_intervals_u32_radix(intervals: &[IntervalU32]) -> Vec<IntervalU32> {
-    if intervals.is_empty() {
-        return Vec::new();
-    }
-
-    let mut sorted = intervals.to_vec();
-    radix_sort_intervals_by_start_u32(&mut sorted);
-
-    let mut iter = sorted.into_iter();
-    let Some(mut current) = iter.next() else {
-        return Vec::new();
-    };
-    let mut merged = Vec::new();
-
-    for interval in iter {
-        if interval.start <= current.end.saturating_add(1) {
-            current.end = current.end.max(interval.end);
-        } else {
-            merged.push(current);
-            current = interval;
-        }
-    }
-
-    merged.push(current);
-    merged
-}
-
-fn generate_almost_sorted_intervals(count: usize) -> Vec<IntervalU32> {
-    let mut out = generate_disjoint_intervals(count);
+fn generate_almost_sorted_ipv4_hosts(count: usize) -> Vec<Ipv4Cidr> {
+    let mut out = generate_disjoint_ipv4_hosts(count);
     if out.len() < 4 {
         return out;
     }
@@ -167,85 +92,49 @@ fn generate_almost_sorted_intervals(count: usize) -> Vec<IntervalU32> {
     out
 }
 
-fn benchmark_merge_intervals_ipv4(c: &mut Criterion) {
-    let mut group = c.benchmark_group("merge_intervals_ipv4");
+fn benchmark_collapse_ipv4(c: &mut Criterion) {
+    let mut group = c.benchmark_group("collapse_ipv4");
     for size in [10_000_usize, 50_000_usize, 100_000_usize] {
-        let disjoint_sorted = generate_disjoint_intervals(size);
-        let disjoint_almost_sorted = generate_almost_sorted_intervals(size);
+        let disjoint_sorted = generate_disjoint_ipv4_hosts(size);
+        let disjoint_almost_sorted = generate_almost_sorted_ipv4_hosts(size);
+        let contiguous_sorted = generate_contiguous_ipv4_hosts(size);
         let mut disjoint_shuffled = disjoint_sorted.clone();
-        deterministic_shuffle_u32(&mut disjoint_shuffled);
-        let overlap_sorted = generate_overlapping_intervals(size);
+        deterministic_shuffle(&mut disjoint_shuffled);
 
         group.throughput(Throughput::Elements(size as u64));
         group.bench_with_input(
             BenchmarkId::new("disjoint_sorted", size),
             &disjoint_sorted,
-            |b, intervals| {
+            |b, cidrs| {
                 b.iter(|| {
-                    black_box(merge_intervals_u32(black_box(intervals)));
-                });
-            },
-        );
-        group.bench_with_input(
-            BenchmarkId::new("disjoint_sorted_radix", size),
-            &disjoint_sorted,
-            |b, intervals| {
-                b.iter(|| {
-                    black_box(merge_intervals_u32_radix(black_box(intervals)));
+                    black_box(collapse_ipv4(black_box(cidrs)));
                 });
             },
         );
         group.bench_with_input(
             BenchmarkId::new("disjoint_almost_sorted", size),
             &disjoint_almost_sorted,
-            |b, intervals| {
+            |b, cidrs| {
                 b.iter(|| {
-                    black_box(merge_intervals_u32(black_box(intervals)));
-                });
-            },
-        );
-        group.bench_with_input(
-            BenchmarkId::new("disjoint_almost_sorted_radix", size),
-            &disjoint_almost_sorted,
-            |b, intervals| {
-                b.iter(|| {
-                    black_box(merge_intervals_u32_radix(black_box(intervals)));
+                    black_box(collapse_ipv4(black_box(cidrs)));
                 });
             },
         );
         group.bench_with_input(
             BenchmarkId::new("disjoint_shuffled", size),
             &disjoint_shuffled,
-            |b, intervals| {
+            |b, cidrs| {
                 b.iter(|| {
-                    black_box(merge_intervals_u32(black_box(intervals)));
+                    black_box(collapse_ipv4(black_box(cidrs)));
                 });
             },
         );
         group.bench_with_input(
-            BenchmarkId::new("disjoint_shuffled_radix", size),
-            &disjoint_shuffled,
-            |b, intervals| {
+            BenchmarkId::new("contiguous_sorted", size),
+            &contiguous_sorted,
+            |b, cidrs| {
                 b.iter(|| {
-                    black_box(merge_intervals_u32_radix(black_box(intervals)));
-                });
-            },
-        );
-        group.bench_with_input(
-            BenchmarkId::new("overlap_sorted", size),
-            &overlap_sorted,
-            |b, intervals| {
-                b.iter(|| {
-                    black_box(merge_intervals_u32(black_box(intervals)));
-                });
-            },
-        );
-        group.bench_with_input(
-            BenchmarkId::new("overlap_sorted_radix", size),
-            &overlap_sorted,
-            |b, intervals| {
-                b.iter(|| {
-                    black_box(merge_intervals_u32_radix(black_box(intervals)));
+                    black_box(collapse_ipv4(black_box(cidrs)));
                 });
             },
         );
@@ -371,8 +260,8 @@ fn benchmark_lookup(c: &mut Criterion) {
 struct RealWorldDataset {
     candidates: Vec<CanonicalCidr>,
     safelist: Vec<CanonicalCidr>,
-    ipv4_intervals: Vec<IntervalU32>,
-    ipv4_intervals_by_source: Vec<Vec<IntervalU32>>,
+    ipv4_cidrs: Vec<Ipv4Cidr>,
+    ipv4_cidrs_by_source: Vec<Vec<Ipv4Cidr>>,
 }
 
 fn repeat_vec<T: Clone>(values: &[T], scale: usize) -> Vec<T> {
@@ -406,25 +295,129 @@ fn find_real_world_config(root: &Path) -> Option<PathBuf> {
     None
 }
 
-fn fetch_remote_cache_from_config(root: &Path, config: &kidobo::core::config::Config) {
+fn read_to_string_with_limit(path: &Path, limit: usize) -> io::Result<String> {
+    let len = fs::metadata(path)?.len();
+    if len > limit as u64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("file exceeds {limit} byte limit"),
+        ));
+    }
+
+    let mut file = fs::File::open(path)?;
+    let mut bytes = Vec::with_capacity(len as usize);
+    file.read_to_end(&mut bytes)?;
+    String::from_utf8(bytes).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
+}
+
+fn parse_non_strict_line(input: &str) -> Option<CanonicalCidr> {
+    let token = input.split_whitespace().next()?.trim();
+    if token.is_empty() {
+        return None;
+    }
+
+    parse_ip_cidr_strict(token)
+}
+
+fn parse_lines_non_strict(text: &str) -> Vec<CanonicalCidr> {
+    text.lines().filter_map(parse_non_strict_line).collect()
+}
+
+fn format_cidrs(cidrs: &[CanonicalCidr]) -> String {
+    let mut rendered = String::new();
+    for (idx, cidr) in cidrs.iter().enumerate() {
+        if idx > 0 {
+            rendered.push('\n');
+        }
+        rendered.push_str(&cidr.to_string());
+    }
+    rendered.push('\n');
+    rendered
+}
+
+fn read_response_body_with_limit(
+    response: &mut reqwest::blocking::Response,
+    limit: usize,
+) -> io::Result<Vec<u8>> {
+    let mut body = Vec::new();
+    let mut chunk = [0_u8; 8192];
+
+    loop {
+        let read = response.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+
+        if body.len().checked_add(read).is_none_or(|next| next > limit) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("response body exceeds {limit} byte limit"),
+            ));
+        }
+
+        body.extend_from_slice(&chunk[..read]);
+    }
+
+    Ok(body)
+}
+
+fn fetch_remote_cache_from_config(root: &Path, config: &Config) {
     if config.remote.urls.is_empty() {
         return;
     }
 
-    if let Err(err) = fs::create_dir_all(root.join("cache/remote")) {
+    let cache_dir = root.join("cache/remote");
+    if let Err(err) = fs::create_dir_all(&cache_dir) {
         eprintln!("real-world bench: failed to create remote cache dir: {err}");
         return;
     }
 
     let timeout = Duration::from_secs(u64::from(config.remote.timeout_secs.get()));
-    let client = ReqwestHttpClient::with_timeout(timeout);
-    let env_map: BTreeMap<String, String> = std::env::vars().collect();
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(timeout)
+        .build()
+    {
+        Ok(client) => client,
+        Err(err) => {
+            eprintln!("real-world bench: failed to build HTTP client: {err}");
+            return;
+        }
+    };
+
     let mut fetched = 0_usize;
     let mut failed = 0_usize;
 
-    for url in &config.remote.urls {
-        match fetch_iplist_with_cache(&client, url, &root.join("cache/remote"), &env_map) {
-            Ok(_) => fetched += 1,
+    for (idx, url) in config.remote.urls.iter().enumerate() {
+        match client.get(url).send() {
+            Ok(mut response) if response.status().is_success() => {
+                match read_response_body_with_limit(&mut response, BENCH_REMOTE_IPLIST_READ_LIMIT) {
+                    Ok(body) => {
+                        let normalized =
+                            format_cidrs(&parse_lines_non_strict(&String::from_utf8_lossy(&body)));
+                        if let Err(err) =
+                            fs::write(cache_dir.join(format!("bench-{idx:03}.iplist")), normalized)
+                        {
+                            failed += 1;
+                            eprintln!(
+                                "real-world bench: failed to write remote cache for {url}: {err}"
+                            );
+                        } else {
+                            fetched += 1;
+                        }
+                    }
+                    Err(err) => {
+                        failed += 1;
+                        eprintln!("real-world bench: failed to read remote body for {url}: {err}");
+                    }
+                }
+            }
+            Ok(response) => {
+                failed += 1;
+                eprintln!(
+                    "real-world bench: remote fetch failed softly for {url}: status {}",
+                    response.status()
+                );
+            }
             Err(err) => {
                 failed += 1;
                 eprintln!("real-world bench: remote fetch failed softly for {url}: {err}");
@@ -445,7 +438,8 @@ fn load_real_world_dataset() -> Option<RealWorldDataset> {
         .unwrap_or_else(|| PathBuf::from(".local-scenarios/real"));
 
     let config_path = find_real_world_config(&root)?;
-    let config = load_config_from_file(&config_path).ok()?;
+    let config_text = read_to_string_with_limit(&config_path, BENCH_BLOCKLIST_READ_LIMIT).ok()?;
+    let config = Config::from_toml_str(&config_text).ok()?;
     if env_truthy("KIDOBO_BENCH_FETCH_REMOTE") {
         fetch_remote_cache_from_config(&root, &config);
     }
@@ -453,17 +447,17 @@ fn load_real_world_dataset() -> Option<RealWorldDataset> {
     let blocklist_path = root.join("data/blocklist.txt");
     let blocklist_text =
         read_to_string_with_limit(&blocklist_path, BENCH_BLOCKLIST_READ_LIMIT).ok()?;
-    let mut candidates = parse_lines_non_strict(blocklist_text.lines());
-    let mut ipv4_intervals_by_source = Vec::new();
-    let mut local_intervals = parse_lines_non_strict(blocklist_text.lines())
-        .into_iter()
+    let mut candidates = parse_lines_non_strict(&blocklist_text);
+    let mut ipv4_cidrs_by_source = Vec::new();
+    let mut local_ipv4 = candidates
+        .iter()
         .filter_map(|cidr| match cidr {
-            CanonicalCidr::V4(v4) => Some(ipv4_to_interval(v4)),
+            CanonicalCidr::V4(v4) => Some(*v4),
             CanonicalCidr::V6(_) => None,
         })
         .collect::<Vec<_>>();
-    local_intervals.sort_unstable();
-    ipv4_intervals_by_source.push(local_intervals);
+    local_ipv4.sort_unstable();
+    ipv4_cidrs_by_source.push(local_ipv4);
 
     let remote_cache_dir = root.join("cache/remote");
     if remote_cache_dir.is_dir() {
@@ -476,41 +470,41 @@ fn load_real_world_dataset() -> Option<RealWorldDataset> {
         files.sort();
         for file in files {
             if let Ok(text) = read_to_string_with_limit(&file, BENCH_REMOTE_IPLIST_READ_LIMIT) {
-                let parsed = parse_lines_non_strict(text.lines());
-                let mut source_intervals = parsed
+                let parsed = parse_lines_non_strict(&text);
+                let mut source_ipv4 = parsed
                     .iter()
                     .filter_map(|cidr| match cidr {
-                        CanonicalCidr::V4(v4) => Some(ipv4_to_interval(*v4)),
+                        CanonicalCidr::V4(v4) => Some(*v4),
                         CanonicalCidr::V6(_) => None,
                     })
                     .collect::<Vec<_>>();
-                source_intervals.sort_unstable();
-                ipv4_intervals_by_source.push(source_intervals);
+                source_ipv4.sort_unstable();
+                ipv4_cidrs_by_source.push(source_ipv4);
                 candidates.extend(parsed);
             }
         }
     }
 
-    let ipv4_intervals = candidates
+    let ipv4_cidrs = candidates
         .iter()
         .filter_map(|cidr| match cidr {
-            CanonicalCidr::V4(v4) => Some(ipv4_to_interval(*v4)),
+            CanonicalCidr::V4(v4) => Some(*v4),
             CanonicalCidr::V6(_) => None,
         })
         .collect::<Vec<_>>();
 
     eprintln!(
-        "real-world bench dataset: candidates={} safelist={} ipv4_intervals={}",
+        "real-world bench dataset: candidates={} safelist={} ipv4_cidrs={}",
         candidates.len(),
         config.safe.ips.len(),
-        ipv4_intervals.len()
+        ipv4_cidrs.len()
     );
 
     Some(RealWorldDataset {
         candidates,
         safelist: config.safe.ips,
-        ipv4_intervals,
-        ipv4_intervals_by_source,
+        ipv4_cidrs,
+        ipv4_cidrs_by_source,
     })
 }
 
@@ -522,61 +516,39 @@ fn benchmark_real_world(c: &mut Criterion) {
         return;
     };
 
-    let mut merge_group = c.benchmark_group("real_world_merge_intervals_ipv4");
-    merge_group.throughput(Throughput::Elements(dataset.ipv4_intervals.len() as u64));
+    let mut collapse_group = c.benchmark_group("real_world_collapse_ipv4");
+    collapse_group.throughput(Throughput::Elements(dataset.ipv4_cidrs.len() as u64));
     let source_sorted_concat = dataset
-        .ipv4_intervals_by_source
+        .ipv4_cidrs_by_source
         .iter()
         .flatten()
         .copied()
         .collect::<Vec<_>>();
-    merge_group.bench_function("as_loaded", |b| {
+    collapse_group.bench_function("as_loaded", |b| {
         b.iter(|| {
-            black_box(merge_intervals_u32(black_box(&dataset.ipv4_intervals)));
+            black_box(collapse_ipv4(black_box(&dataset.ipv4_cidrs)));
         });
     });
-    merge_group.bench_function("as_loaded_radix", |b| {
-        b.iter(|| {
-            black_box(merge_intervals_u32_radix(black_box(
-                &dataset.ipv4_intervals,
-            )));
-        });
-    });
-    let mut sorted = dataset.ipv4_intervals.clone();
+    let mut sorted = dataset.ipv4_cidrs.clone();
     sorted.sort_unstable();
-    merge_group.bench_function("pre_sorted", |b| {
+    collapse_group.bench_function("pre_sorted", |b| {
         b.iter(|| {
-            black_box(merge_intervals_u32(black_box(&sorted)));
+            black_box(collapse_ipv4(black_box(&sorted)));
         });
     });
-    merge_group.bench_function("pre_sorted_radix", |b| {
+    let mut shuffled = dataset.ipv4_cidrs.clone();
+    deterministic_shuffle(&mut shuffled);
+    collapse_group.bench_function("shuffled", |b| {
         b.iter(|| {
-            black_box(merge_intervals_u32_radix(black_box(&sorted)));
+            black_box(collapse_ipv4(black_box(&shuffled)));
         });
     });
-    let mut shuffled = dataset.ipv4_intervals.clone();
-    deterministic_shuffle_u32(&mut shuffled);
-    merge_group.bench_function("shuffled", |b| {
+    collapse_group.bench_function("source_sorted_concat", |b| {
         b.iter(|| {
-            black_box(merge_intervals_u32(black_box(&shuffled)));
+            black_box(collapse_ipv4(black_box(&source_sorted_concat)));
         });
     });
-    merge_group.bench_function("shuffled_radix", |b| {
-        b.iter(|| {
-            black_box(merge_intervals_u32_radix(black_box(&shuffled)));
-        });
-    });
-    merge_group.bench_function("source_sorted_concat", |b| {
-        b.iter(|| {
-            black_box(merge_intervals_u32(black_box(&source_sorted_concat)));
-        });
-    });
-    merge_group.bench_function("source_sorted_concat_radix", |b| {
-        b.iter(|| {
-            black_box(merge_intervals_u32_radix(black_box(&source_sorted_concat)));
-        });
-    });
-    merge_group.finish();
+    collapse_group.finish();
 
     let mut effective_group = c.benchmark_group("real_world_compute_effective_blocklists");
     effective_group.throughput(Throughput::Elements(
@@ -604,51 +576,33 @@ fn benchmark_real_world(c: &mut Criterion) {
 
     let scales = [1_usize, 2_usize, 5_usize, 10_usize];
 
-    let mut merge_scaled_group = c.benchmark_group("real_world_merge_intervals_ipv4_scaled");
+    let mut collapse_scaled_group = c.benchmark_group("real_world_collapse_ipv4_scaled");
     for scale in scales {
-        let intervals = repeat_vec(&dataset.ipv4_intervals, scale);
-        merge_scaled_group.throughput(Throughput::Elements(intervals.len() as u64));
-        merge_scaled_group.bench_with_input(
+        let cidrs = repeat_vec(&dataset.ipv4_cidrs, scale);
+        collapse_scaled_group.throughput(Throughput::Elements(cidrs.len() as u64));
+        collapse_scaled_group.bench_with_input(
             BenchmarkId::new("as_loaded", scale),
-            &intervals,
+            &cidrs,
             |b, input| {
                 b.iter(|| {
-                    black_box(merge_intervals_u32(black_box(input)));
-                });
-            },
-        );
-        merge_scaled_group.bench_with_input(
-            BenchmarkId::new("as_loaded_radix", scale),
-            &intervals,
-            |b, input| {
-                b.iter(|| {
-                    black_box(merge_intervals_u32_radix(black_box(input)));
+                    black_box(collapse_ipv4(black_box(input)));
                 });
             },
         );
 
-        let mut shuffled = intervals.clone();
-        deterministic_shuffle_u32(&mut shuffled);
-        merge_scaled_group.bench_with_input(
+        let mut shuffled = cidrs.clone();
+        deterministic_shuffle(&mut shuffled);
+        collapse_scaled_group.bench_with_input(
             BenchmarkId::new("shuffled", scale),
             &shuffled,
             |b, input| {
                 b.iter(|| {
-                    black_box(merge_intervals_u32(black_box(input)));
-                });
-            },
-        );
-        merge_scaled_group.bench_with_input(
-            BenchmarkId::new("shuffled_radix", scale),
-            &shuffled,
-            |b, input| {
-                b.iter(|| {
-                    black_box(merge_intervals_u32_radix(black_box(input)));
+                    black_box(collapse_ipv4(black_box(input)));
                 });
             },
         );
     }
-    merge_scaled_group.finish();
+    collapse_scaled_group.finish();
 
     let mut effective_scaled_group =
         c.benchmark_group("real_world_compute_effective_blocklists_scaled");
@@ -677,7 +631,7 @@ fn benchmark_real_world(c: &mut Criterion) {
 
 criterion_group!(
     core_perf,
-    benchmark_merge_intervals_ipv4,
+    benchmark_collapse_ipv4,
     benchmark_real_world,
     benchmark_effective_blocklists,
     benchmark_subtract_safelist,

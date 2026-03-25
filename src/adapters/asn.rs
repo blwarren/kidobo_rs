@@ -49,6 +49,7 @@ impl Bgpq4AsnPrefixResolver<SystemCommandExecutor> {
 }
 
 impl<E: CommandExecutor> Bgpq4AsnPrefixResolver<E> {
+    #[cfg(test)]
     pub fn new(executor: E, timeout: Duration) -> Self {
         Self { executor, timeout }
     }

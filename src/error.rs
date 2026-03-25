@@ -45,6 +45,9 @@ pub enum KidoboError {
     #[error("systemd setup failed during init for `{command}`: {reason}")]
     InitSystemd { command: String, reason: String },
 
+    #[error("kidobo binary not found at a trusted installed path; expected one of: {candidates}")]
+    InitBinaryPathUnavailable { candidates: String },
+
     #[error("required binary not found on PATH: {binary}")]
     MissingRequiredBinary { binary: &'static str },
 
@@ -56,6 +59,13 @@ pub enum KidoboError {
 
     #[error("failed to read blocklist file {path}: {reason}")]
     BlocklistRead { path: PathBuf, reason: String },
+
+    #[error("invalid blocklist entry in {path} at line {line}: {content}")]
+    BlocklistParseLine {
+        path: PathBuf,
+        line: usize,
+        content: String,
+    },
 
     #[error("failed to write blocklist file {path}: {reason}")]
     BlocklistWrite { path: PathBuf, reason: String },

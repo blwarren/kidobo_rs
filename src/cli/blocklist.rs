@@ -44,16 +44,17 @@ pub fn run_ban_command(
 ) -> Result<(), KidoboError> {
     let path_input = PathResolutionInput::from_process(None);
     let paths = resolve_paths(&path_input)?;
-    let _lock = acquire_non_blocking(&paths.lock_file)?;
     if let Some(asn_tokens) = asn {
         return run_ban_asn_command(
             &paths.config_file,
             &paths.blocklist_file,
             &paths.cache_dir,
+            &paths.lock_file,
             asn_tokens,
         );
     }
 
+    let _lock = acquire_non_blocking(&paths.lock_file)?;
     if let Some(file) = file {
         return run_ban_file_command(&paths.blocklist_file, file);
     }
@@ -100,8 +101,12 @@ pub fn run_unban_command(
     let path_input = PathResolutionInput::from_process(None);
     let paths = resolve_paths(&path_input)?;
     if let Some(asn_tokens) = asn {
-        let _lock = acquire_non_blocking(&paths.lock_file)?;
-        return run_unban_asn_command(&paths.config_file, &paths.cache_dir, asn_tokens);
+        return run_unban_asn_command(
+            &paths.config_file,
+            &paths.cache_dir,
+            &paths.lock_file,
+            asn_tokens,
+        );
     }
 
     if let Some(file) = file {
@@ -278,6 +283,7 @@ fn run_ban_asn_command(
     config_path: &Path,
     blocklist_path: &Path,
     cache_dir: &Path,
+    lock_path: &Path,
     asn_tokens: &[String],
 ) -> Result<(), KidoboError> {
     let requested_asns = normalize_asn_tokens(asn_tokens)?;
@@ -297,8 +303,19 @@ fn run_ban_asn_command(
     resolved_prefixes.sort_unstable();
     resolved_prefixes.dedup();
 
-    let update = update_asn_bans(config_path, &requested_asns, &[])?;
-    let removed_dups = remove_exact_blocklist_duplicates(blocklist_path, &resolved_prefixes)?;
+    let (update, removed_dups) = {
+        let _lock = acquire_non_blocking(lock_path)?;
+        let update = update_asn_bans(config_path, &requested_asns, &[])?;
+        let removed_dups =
+            match remove_exact_blocklist_duplicates(blocklist_path, &resolved_prefixes) {
+                Ok(removed) => removed,
+                Err(err) => {
+                    warn!("ASN ban duplicate cleanup failed after config update: {err}");
+                    0
+                }
+            };
+        (update, removed_dups)
+    };
 
     println!(
         "added {} ASN ban(s): {}",
@@ -316,15 +333,21 @@ fn run_ban_asn_command(
 fn run_unban_asn_command(
     config_path: &Path,
     cache_dir: &Path,
+    lock_path: &Path,
     asn_tokens: &[String],
 ) -> Result<(), KidoboError> {
     let requested_asns = normalize_asn_tokens(asn_tokens)?;
-    let update = update_asn_bans(config_path, &[], &requested_asns)?;
+    let update = {
+        let _lock = acquire_non_blocking(lock_path)?;
+        update_asn_bans(config_path, &[], &requested_asns)?
+    };
     let asn_cache_dir = cache_dir.join("asn");
     let mut deleted_cache_count = 0_usize;
     for asn in &requested_asns {
-        if delete_asn_cache_file(*asn, &asn_cache_dir)? {
-            deleted_cache_count += 1;
+        match delete_asn_cache_file(*asn, &asn_cache_dir) {
+            Ok(true) => deleted_cache_count += 1,
+            Ok(false) => {}
+            Err(err) => warn!("ASN cache cleanup failed for AS{asn}: {err}"),
         }
     }
 
@@ -795,6 +818,22 @@ mod tests {
     }
 
     #[test]
+    fn blocklist_file_load_rejects_invalid_local_entry_lines() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = write_temp_file(&temp, "# header\n203.0.113.7 trailing-junk\n");
+
+        let err = BlocklistFile::load(&path).expect_err("invalid line must fail");
+        assert!(matches!(
+            err,
+            KidoboError::BlocklistParseLine {
+                path: err_path,
+                line,
+                content,
+            } if err_path == path && line == 2 && content == "203.0.113.7 trailing-junk"
+        ));
+    }
+
+    #[test]
     fn build_plan_reports_partial_for_overlapping_entry() {
         let temp = TempDir::new().expect("tempdir");
         let path = temp.path().join("blocklist.txt");
@@ -952,6 +991,30 @@ mod tests {
     }
 
     #[test]
+    fn normalize_local_blocklist_rejects_invalid_lines_without_rewriting_file() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("blocklist.txt");
+        let original = "# header\n203.0.113.7 trailing-junk\n";
+        fs::write(&path, original).expect("write");
+
+        let err = normalize_local_blocklist(&path).expect_err("invalid line must fail");
+        assert!(matches!(
+            err,
+            KidoboError::BlocklistParseLine {
+                path: err_path,
+                line,
+                content,
+            } if err_path == path && line == 2 && content == "203.0.113.7 trailing-junk"
+        ));
+        assert_eq!(
+            read_to_string_with_limit(&path, BLOCKLIST_READ_LIMIT)
+                .expect("read")
+                .as_str(),
+            original
+        );
+    }
+
+    #[test]
     fn normalize_with_fast_state_skips_when_unchanged() {
         let temp = TempDir::new().expect("tempdir");
         let path = temp.path().join("blocklist.txt");
@@ -1092,7 +1155,7 @@ mod tests {
 
     #[test]
     fn canonicalize_blocklist_trims_header_trailing_blank_when_no_entries() {
-        let normalized = canonicalize_blocklist("# header\n\n");
+        let normalized = canonicalize_blocklist("# header\n\n").expect("canonicalize");
         assert_eq!(normalized, "# header\n");
     }
 }

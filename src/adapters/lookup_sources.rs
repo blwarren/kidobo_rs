@@ -50,7 +50,7 @@ fn read_source_file(
     source_label: &str,
 ) -> Result<Vec<LookupSourceEntry>, LookupSourceLoadError> {
     let contents = read_to_string_with_limit(path, SOURCE_FILE_READ_LIMIT).map_err(|err| {
-        LookupSourceLoadError::from(SourceLoadError::SourceRead {
+        LookupSourceLoadError::from(SourceLoadError::Source {
             path: path.to_path_buf(),
             reason: err.to_string(),
         })
@@ -188,7 +188,7 @@ mod tests {
 
         let err = load_lookup_sources(&paths).expect_err("load must fail");
         match err.0 {
-            SourceLoadError::SourceRead { reason, .. } => {
+            SourceLoadError::Source { reason, .. } => {
                 assert!(reason.contains("hash mismatch"));
             }
             _ => panic!("unexpected error variant"),
@@ -310,7 +310,7 @@ mod tests {
 
         let err = load_lookup_sources(&paths).expect_err("must fail");
         match err.0 {
-            SourceLoadError::SourceRead { reason, .. } => {
+            SourceLoadError::Source { reason, .. } => {
                 assert!(reason.contains("file exceeds 16777216 byte limit"));
             }
             _ => panic!("expected source read error"),
@@ -328,7 +328,7 @@ mod tests {
         let err = load_lookup_sources(&paths).expect_err("must fail");
         assert!(matches!(
             err.0,
-            SourceLoadError::CacheDirRead { .. } | SourceLoadError::CacheDirEntryRead { .. }
+            SourceLoadError::CacheDir { .. } | SourceLoadError::CacheDirEntry { .. }
         ));
     }
 

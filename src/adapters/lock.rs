@@ -25,14 +25,7 @@ pub enum LockError {
 
 #[derive(Debug)]
 pub struct FileLock {
-    path: PathBuf,
     file: File,
-}
-
-impl FileLock {
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
 }
 
 impl Drop for FileLock {
@@ -63,10 +56,7 @@ pub fn acquire_non_blocking(path: &Path) -> Result<FileLock, LockError> {
     enforce_mode_0600(path)?;
 
     match file.try_lock_exclusive() {
-        Ok(()) => Ok(FileLock {
-            path: path.to_path_buf(),
-            file,
-        }),
+        Ok(()) => Ok(FileLock { file }),
         Err(err) if is_would_block(&err) => Err(LockError::AlreadyHeld {
             path: path.to_path_buf(),
         }),
@@ -110,8 +100,8 @@ mod tests {
         let temp = TempDir::new().expect("tempdir");
         let path = temp.path().join("sync.lock");
 
-        let lock = acquire_non_blocking(&path).expect("acquire");
-        assert_eq!(lock.path(), path.as_path());
+        let _lock = acquire_non_blocking(&path).expect("acquire");
+        assert!(path.exists());
     }
 
     #[test]

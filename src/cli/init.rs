@@ -37,6 +37,7 @@ const DEFAULT_BLOCKLIST_TEMPLATE: &str =
     "# Add one IP or CIDR entry per line.\n# Example: 203.0.113.7\n";
 
 const DEFAULT_KIDOBO_BINARY_PATH: &str = "/usr/local/bin/kidobo";
+const FALLBACK_KIDOBO_BINARY_PATH: &str = "/usr/bin/kidobo";
 const DEFAULT_SYSTEMD_DIR: &str = "/etc/systemd/system";
 const KIDOBO_SYNC_SERVICE_FILE: &str = "kidobo-sync.service";
 const KIDOBO_SYNC_TIMER_FILE: &str = "kidobo-sync.timer";
@@ -107,8 +108,7 @@ pub fn run_init_command() -> Result<(), KidoboError> {
     ensure_init_binaries_available(env::var_os("PATH"))?;
     let path_input = PathResolutionInput::from_process(None);
     let paths = resolve_paths_for_init(&path_input)?;
-    let executable_path =
-        env::current_exe().unwrap_or_else(|_| PathBuf::from(DEFAULT_KIDOBO_BINARY_PATH));
+    let executable_path = resolve_installed_executable_path()?;
     let kido_root_override = path_input.env.get(ENV_KIDOBO_ROOT).map(PathBuf::from);
     let sudo_runner = SudoCommandRunner::default();
     let summary = run_init_with_context(
@@ -126,6 +126,30 @@ fn ensure_init_binaries_available(path: Option<OsString>) -> Result<(), KidoboEr
         return Err(KidoboError::MissingRequiredBinary { binary: "bgpq4" });
     }
     Ok(())
+}
+
+fn resolve_installed_executable_path() -> Result<PathBuf, KidoboError> {
+    let candidates = vec![
+        PathBuf::from(DEFAULT_KIDOBO_BINARY_PATH),
+        PathBuf::from(FALLBACK_KIDOBO_BINARY_PATH),
+    ];
+    resolve_installed_executable_path_from_candidates(&candidates)
+}
+
+fn resolve_installed_executable_path_from_candidates(
+    candidates: &[PathBuf],
+) -> Result<PathBuf, KidoboError> {
+    candidates
+        .iter()
+        .find(|candidate| candidate.is_file())
+        .cloned()
+        .ok_or_else(|| KidoboError::InitBinaryPathUnavailable {
+            candidates: candidates
+                .iter()
+                .map(|candidate| candidate.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+        })
 }
 
 #[cfg(test)]
@@ -366,8 +390,9 @@ mod tests {
         DEFAULT_SYSTEMD_DIR, DEFAULT_SYSTEMD_TIMER_TEMPLATE, INIT_FILE_READ_LIMIT,
         InitCommandRunner, KIDOBO_SYNC_SERVICE_FILE, KIDOBO_SYNC_TIMER_FILE,
         build_systemd_service_template, ensure_systemd_timer_enabled, infer_kido_root_override,
-        render_init_summary, resolve_systemd_dir, run_init_with_paths,
-        run_init_with_paths_and_runner, run_init_with_paths_with_summary,
+        render_init_summary, resolve_installed_executable_path_from_candidates,
+        resolve_systemd_dir, run_init_with_paths, run_init_with_paths_and_runner,
+        run_init_with_paths_with_summary,
     };
     use crate::adapters::command_runner::ProcessStatus;
     use crate::adapters::limited_io::read_to_string_with_limit;
@@ -705,5 +730,56 @@ mod tests {
         );
         assert!(with_root.contains("Environment=\"KIDOBO_LOG_FORMAT=journal\""));
         assert!(with_root.contains("Environment=\"KIDOBO_ROOT=/tmp/kidobo-root\""));
+    }
+
+    #[test]
+    fn trusted_executable_path_prefers_usr_local_candidate() {
+        let temp = TempDir::new().expect("tempdir");
+        let preferred = temp.path().join("usr/local/bin/kidobo");
+        let fallback = temp.path().join("usr/bin/kidobo");
+        fs::create_dir_all(preferred.parent().expect("preferred parent")).expect("mkdir preferred");
+        fs::create_dir_all(fallback.parent().expect("fallback parent")).expect("mkdir fallback");
+        fs::write(&preferred, "binary").expect("write preferred");
+        fs::write(&fallback, "binary").expect("write fallback");
+
+        let resolved = resolve_installed_executable_path_from_candidates(&[
+            preferred.clone(),
+            fallback.clone(),
+        ])
+        .expect("resolve executable");
+
+        assert_eq!(resolved, preferred);
+    }
+
+    #[test]
+    fn trusted_executable_path_uses_fallback_candidate_when_needed() {
+        let temp = TempDir::new().expect("tempdir");
+        let preferred = temp.path().join("usr/local/bin/kidobo");
+        let fallback = temp.path().join("usr/bin/kidobo");
+        fs::create_dir_all(fallback.parent().expect("fallback parent")).expect("mkdir fallback");
+        fs::write(&fallback, "binary").expect("write fallback");
+
+        let resolved =
+            resolve_installed_executable_path_from_candidates(&[preferred, fallback.clone()])
+                .expect("resolve executable");
+
+        assert_eq!(resolved, fallback);
+    }
+
+    #[test]
+    fn trusted_executable_path_fails_when_no_installed_candidate_exists() {
+        let temp = TempDir::new().expect("tempdir");
+        let temp_binary = temp.path().join("target/debug/kidobo");
+        fs::create_dir_all(temp_binary.parent().expect("temp binary parent"))
+            .expect("mkdir temp binary parent");
+        fs::write(&temp_binary, "binary").expect("write temp binary");
+
+        let err = resolve_installed_executable_path_from_candidates(&[
+            temp.path().join("usr/local/bin/kidobo"),
+            temp.path().join("usr/bin/kidobo"),
+        ])
+        .expect_err("missing trusted binary must fail");
+
+        assert!(matches!(err, KidoboError::InitBinaryPathUnavailable { .. }));
     }
 }

@@ -5,10 +5,10 @@ use std::time::UNIX_EPOCH;
 use log::warn;
 
 use crate::adapters::limited_io::{read_to_string_with_limit, write_string_atomic};
-use crate::core::network::{CanonicalCidr, parse_ip_cidr_non_strict};
-use crate::error::KidoboError;
-
+use crate::core::blocklist::InvalidBlocklistLine;
 pub use crate::core::blocklist::canonicalize_blocklist;
+use crate::core::network::{CanonicalCidr, parse_ip_cidr_strict};
+use crate::error::KidoboError;
 
 pub const BLOCKLIST_READ_LIMIT: usize = 16 * 1024 * 1024;
 const BLOCKLIST_FAST_STATE_VERSION: &str = "v1";
@@ -105,7 +105,8 @@ pub fn normalize_local_blocklist(path: &Path) -> Result<(), KidoboError> {
         }
     })?;
 
-    let normalized = canonicalize_blocklist(&original);
+    let normalized =
+        canonicalize_blocklist(&original).map_err(|err| map_invalid_blocklist_line(path, err))?;
 
     if normalized != original {
         write_string_atomic(path, &normalized).map_err(|err| KidoboError::BlocklistWrite {
@@ -187,7 +188,14 @@ impl BlocklistFile {
             }
         })?;
 
-        let lines = contents.lines().map(BlocklistLine::new).collect::<Vec<_>>();
+        let mut lines = Vec::new();
+        let mut in_header = true;
+        for (idx, line) in contents.lines().enumerate() {
+            lines.push(
+                BlocklistLine::new(line, idx + 1, &mut in_header)
+                    .map_err(|err| map_invalid_blocklist_line(path, err))?,
+            );
+        }
 
         Ok(Self {
             lines,
@@ -211,17 +219,51 @@ pub struct BlocklistLine {
 }
 
 impl BlocklistLine {
-    fn new(line: &str) -> Self {
+    fn new(
+        line: &str,
+        line_number: usize,
+        in_header: &mut bool,
+    ) -> Result<Self, InvalidBlocklistLine> {
         let trimmed = line.trim();
-        let canonical = if trimmed.is_empty() {
-            None
+        let canonical = if *in_header {
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                None
+            } else {
+                *in_header = false;
+                parse_local_blocklist_entry(line, line_number)?
+            }
         } else {
-            parse_ip_cidr_non_strict(trimmed)
+            parse_local_blocklist_entry(line, line_number)?
         };
 
-        Self {
+        Ok(Self {
             original: line.to_string(),
             canonical,
-        }
+        })
+    }
+}
+
+fn parse_local_blocklist_entry(
+    line: &str,
+    line_number: usize,
+) -> Result<Option<CanonicalCidr>, InvalidBlocklistLine> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return Ok(None);
+    }
+
+    parse_ip_cidr_strict(trimmed)
+        .map(Some)
+        .ok_or_else(|| InvalidBlocklistLine {
+            line_number,
+            content: line.to_string(),
+        })
+}
+
+fn map_invalid_blocklist_line(path: &Path, err: InvalidBlocklistLine) -> KidoboError {
+    KidoboError::BlocklistParseLine {
+        path: path.to_path_buf(),
+        line: err.line_number,
+        content: err.content,
     }
 }

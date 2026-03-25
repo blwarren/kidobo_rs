@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 pub const ENV_KIDOBO_ROOT: &str = "KIDOBO_ROOT";
-pub const ENV_KIDOBO_ALLOW_REPO_CONFIG_FALLBACK: &str = "KIDOBO_ALLOW_REPO_CONFIG_FALLBACK";
 pub const ENV_KIDOBO_TEST_SANDBOX: &str = "KIDOBO_TEST_SANDBOX";
 pub const ENV_KIDOBO_DISABLE_TEST_SANDBOX: &str = "KIDOBO_DISABLE_TEST_SANDBOX";
 
@@ -82,30 +81,27 @@ impl BasePaths {
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum PathResolutionError {
-    #[error("could not determine current directory: {reason}")]
-    CurrentDirectoryUnavailable { reason: String },
-
     #[error("explicit config path does not exist: {path}")]
     ExplicitConfigMissing { path: PathBuf },
 
     #[error("config file not found: {attempted}")]
     MissingConfig { attempted: PathBuf },
-
-    #[error("repo config fallback enabled but repository root was not found from: {start}")]
-    RepoRootNotFound { start: PathBuf },
-
-    #[error("repo config fallback enabled but config file is missing: {path}")]
-    RepoFallbackConfigMissing { path: PathBuf },
 }
 
 pub fn resolve_paths(input: &PathResolutionInput) -> Result<ResolvedPaths, PathResolutionError> {
     resolve_paths_with_policy(input, false)
 }
 
-pub fn resolve_paths_for_init(
+pub fn resolve_paths_without_config(
     input: &PathResolutionInput,
 ) -> Result<ResolvedPaths, PathResolutionError> {
     resolve_paths_with_policy(input, true)
+}
+
+pub fn resolve_paths_for_init(
+    input: &PathResolutionInput,
+) -> Result<ResolvedPaths, PathResolutionError> {
+    resolve_paths_without_config(input)
 }
 
 fn resolve_paths_with_policy(
@@ -165,25 +161,6 @@ fn select_config_path(
         return Ok(base.config_file.clone());
     }
 
-    if env_truthy(&input.env, ENV_KIDOBO_ALLOW_REPO_CONFIG_FALLBACK) {
-        let cwd =
-            input
-                .cwd
-                .as_ref()
-                .ok_or_else(|| PathResolutionError::CurrentDirectoryUnavailable {
-                    reason: "repo config fallback requires a valid current directory".to_string(),
-                })?;
-        let repo_root = find_repo_root(cwd)
-            .ok_or_else(|| PathResolutionError::RepoRootNotFound { start: cwd.clone() })?;
-
-        let fallback = repo_root.join("config.toml");
-        if fallback.exists() || allow_missing_config {
-            return Ok(fallback);
-        }
-
-        return Err(PathResolutionError::RepoFallbackConfigMissing { path: fallback });
-    }
-
     if allow_missing_config {
         Ok(base.config_file.clone())
     } else {
@@ -191,16 +168,6 @@ fn select_config_path(
             attempted: base.config_file.clone(),
         })
     }
-}
-
-fn find_repo_root(start: &Path) -> Option<PathBuf> {
-    for candidate in start.ancestors() {
-        if candidate.join(".git").exists() {
-            return Some(candidate.to_path_buf());
-        }
-    }
-
-    None
 }
 
 fn env_value<'a>(vars: &'a BTreeMap<String, String>, key: &str) -> Option<&'a str> {
@@ -230,9 +197,9 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        ENV_KIDOBO_ALLOW_REPO_CONFIG_FALLBACK, ENV_KIDOBO_DISABLE_TEST_SANDBOX, ENV_KIDOBO_ROOT,
-        ENV_KIDOBO_TEST_SANDBOX, PathResolutionError, PathResolutionInput, is_truthy_value,
-        resolve_paths, resolve_paths_for_init,
+        ENV_KIDOBO_DISABLE_TEST_SANDBOX, ENV_KIDOBO_ROOT, ENV_KIDOBO_TEST_SANDBOX,
+        PathResolutionError, PathResolutionInput, is_truthy_value, resolve_paths,
+        resolve_paths_for_init, resolve_paths_without_config,
     };
 
     fn test_input(temp: &TempDir) -> PathResolutionInput {
@@ -357,176 +324,6 @@ mod tests {
     }
 
     #[test]
-    fn repo_fallback_uses_nearest_git_root() {
-        let temp = TempDir::new().expect("tempdir");
-        let root = temp.path().join("override-root");
-        let repo = temp.path().join("repo");
-        let nested = repo.join("a/b/c");
-
-        fs::create_dir_all(&nested).expect("mkdir nested");
-        fs::create_dir_all(repo.join(".git")).expect("mkdir .git");
-        fs::write(repo.join("config.toml"), "[ipset]\nset_name='kidobo'\n")
-            .expect("write fallback config");
-
-        let mut input = test_input(&temp);
-        input.cwd = Some(nested);
-        input
-            .env
-            .insert(ENV_KIDOBO_ROOT.to_string(), root.display().to_string());
-        input.env.insert(
-            ENV_KIDOBO_ALLOW_REPO_CONFIG_FALLBACK.to_string(),
-            "yes".to_string(),
-        );
-
-        let resolved = resolve_paths(&input).expect("resolve");
-        assert_eq!(resolved.config_file, repo.join("config.toml"));
-    }
-
-    #[test]
-    fn repo_fallback_prefers_nearest_of_multiple_git_roots() {
-        let temp = TempDir::new().expect("tempdir");
-        let root = temp.path().join("override-root");
-        let outer = temp.path().join("outer");
-        let inner = outer.join("inner");
-        let nested = inner.join("a/b");
-
-        fs::create_dir_all(&nested).expect("mkdir nested");
-        fs::create_dir_all(outer.join(".git")).expect("mkdir outer .git");
-        fs::create_dir_all(inner.join(".git")).expect("mkdir inner .git");
-        fs::write(outer.join("config.toml"), "[ipset]\nset_name='outer'\n")
-            .expect("write outer config");
-        fs::write(inner.join("config.toml"), "[ipset]\nset_name='inner'\n")
-            .expect("write inner config");
-
-        let mut input = test_input(&temp);
-        input.cwd = Some(nested);
-        input
-            .env
-            .insert(ENV_KIDOBO_ROOT.to_string(), root.display().to_string());
-        input.env.insert(
-            ENV_KIDOBO_ALLOW_REPO_CONFIG_FALLBACK.to_string(),
-            "1".to_string(),
-        );
-
-        let resolved = resolve_paths(&input).expect("resolve");
-        assert_eq!(resolved.config_file, inner.join("config.toml"));
-    }
-
-    #[test]
-    fn repo_fallback_does_not_override_existing_root_config() {
-        let temp = TempDir::new().expect("tempdir");
-        let root = temp.path().join("override-root");
-        let root_config = root.join("config/config.toml");
-        let repo = temp.path().join("repo");
-        let nested = repo.join("nested");
-
-        fs::create_dir_all(root_config.parent().expect("parent")).expect("mkdir root config");
-        fs::create_dir_all(&nested).expect("mkdir nested");
-        fs::create_dir_all(repo.join(".git")).expect("mkdir .git");
-        fs::write(&root_config, "[ipset]\nset_name='root'\n").expect("write root config");
-        fs::write(repo.join("config.toml"), "[ipset]\nset_name='repo'\n")
-            .expect("write repo config");
-
-        let mut input = test_input(&temp);
-        input.cwd = Some(nested);
-        input
-            .env
-            .insert(ENV_KIDOBO_ROOT.to_string(), root.display().to_string());
-        input.env.insert(
-            ENV_KIDOBO_ALLOW_REPO_CONFIG_FALLBACK.to_string(),
-            "1".to_string(),
-        );
-
-        let resolved = resolve_paths(&input).expect("resolve");
-        assert_eq!(resolved.config_file, root_config);
-    }
-
-    #[test]
-    fn repo_fallback_keeps_non_config_paths_under_base_root() {
-        let temp = TempDir::new().expect("tempdir");
-        let root = temp.path().join("override-root");
-        let repo = temp.path().join("repo");
-        let nested = repo.join("nested");
-
-        fs::create_dir_all(&nested).expect("mkdir nested");
-        fs::create_dir_all(repo.join(".git")).expect("mkdir .git");
-        fs::write(repo.join("config.toml"), "[ipset]\nset_name='kidobo'\n")
-            .expect("write repo config");
-
-        let mut input = test_input(&temp);
-        input.cwd = Some(nested);
-        input
-            .env
-            .insert(ENV_KIDOBO_ROOT.to_string(), root.display().to_string());
-        input.env.insert(
-            ENV_KIDOBO_ALLOW_REPO_CONFIG_FALLBACK.to_string(),
-            "1".to_string(),
-        );
-
-        let resolved = resolve_paths(&input).expect("resolve");
-        assert_eq!(resolved.config_file, repo.join("config.toml"));
-        assert_eq!(resolved.data_dir, root.join("data"));
-        assert_eq!(resolved.cache_dir, root.join("cache"));
-        assert_eq!(resolved.lock_file, root.join("cache/sync.lock"));
-    }
-
-    #[test]
-    fn repo_fallback_requires_repo_root() {
-        let temp = TempDir::new().expect("tempdir");
-        let root = temp.path().join("override-root");
-        fs::create_dir_all(&root).expect("mkdir root");
-
-        let mut input = test_input(&temp);
-        input.cwd = Some(temp.path().join("outside-repo"));
-        let cwd = input.cwd.as_ref().expect("cwd");
-        fs::create_dir_all(cwd).expect("mkdir cwd");
-        input
-            .env
-            .insert(ENV_KIDOBO_ROOT.to_string(), root.display().to_string());
-        input.env.insert(
-            ENV_KIDOBO_ALLOW_REPO_CONFIG_FALLBACK.to_string(),
-            "on".to_string(),
-        );
-
-        let err = resolve_paths(&input).expect_err("must fail");
-        assert_eq!(
-            err,
-            PathResolutionError::RepoRootNotFound {
-                start: input.cwd.clone().expect("cwd"),
-            }
-        );
-    }
-
-    #[test]
-    fn repo_fallback_requires_repo_config_file() {
-        let temp = TempDir::new().expect("tempdir");
-        let root = temp.path().join("override-root");
-        let repo = temp.path().join("repo");
-        let nested = repo.join("nested");
-
-        fs::create_dir_all(&nested).expect("mkdir nested");
-        fs::create_dir_all(repo.join(".git")).expect("mkdir .git");
-
-        let mut input = test_input(&temp);
-        input.cwd = Some(nested);
-        input
-            .env
-            .insert(ENV_KIDOBO_ROOT.to_string(), root.display().to_string());
-        input.env.insert(
-            ENV_KIDOBO_ALLOW_REPO_CONFIG_FALLBACK.to_string(),
-            "true".to_string(),
-        );
-
-        let err = resolve_paths(&input).expect_err("must fail");
-        assert_eq!(
-            err,
-            PathResolutionError::RepoFallbackConfigMissing {
-                path: repo.join("config.toml"),
-            }
-        );
-    }
-
-    #[test]
     fn missing_config_without_repo_fallback_fails() {
         let temp = TempDir::new().expect("tempdir");
         let root = temp.path().join("override-root");
@@ -562,51 +359,17 @@ mod tests {
     }
 
     #[test]
-    fn init_resolution_allows_missing_repo_fallback_config() {
+    fn config_optional_resolution_allows_missing_default_config_path() {
         let temp = TempDir::new().expect("tempdir");
         let root = temp.path().join("root");
-        let repo = temp.path().join("repo");
-        fs::create_dir_all(&root).expect("mkdir root");
-        fs::create_dir_all(repo.join(".git")).expect("mkdir .git");
-
-        let mut input = test_input(&temp);
-        input.cwd = Some(repo.join("nested"));
-        let cwd = input.cwd.as_ref().expect("cwd");
-        fs::create_dir_all(cwd).expect("mkdir nested");
-        input
-            .env
-            .insert(ENV_KIDOBO_ROOT.to_string(), root.display().to_string());
-        input.env.insert(
-            ENV_KIDOBO_ALLOW_REPO_CONFIG_FALLBACK.to_string(),
-            "yes".to_string(),
-        );
-
-        let resolved = resolve_paths_for_init(&input).expect("resolve");
-        assert_eq!(resolved.config_file, repo.join("config.toml"));
-    }
-
-    #[test]
-    fn repo_fallback_requires_valid_current_directory() {
-        let temp = TempDir::new().expect("tempdir");
-        let root = temp.path().join("override-root");
         fs::create_dir_all(&root).expect("mkdir root");
 
         let mut input = test_input(&temp);
-        input.cwd = None;
         input
             .env
             .insert(ENV_KIDOBO_ROOT.to_string(), root.display().to_string());
-        input.env.insert(
-            ENV_KIDOBO_ALLOW_REPO_CONFIG_FALLBACK.to_string(),
-            "true".to_string(),
-        );
 
-        let err = resolve_paths(&input).expect_err("must fail");
-        assert_eq!(
-            err,
-            PathResolutionError::CurrentDirectoryUnavailable {
-                reason: "repo config fallback requires a valid current directory".to_string(),
-            }
-        );
+        let resolved = resolve_paths_without_config(&input).expect("resolve");
+        assert_eq!(resolved.config_file, root.join("config/config.toml"));
     }
 }

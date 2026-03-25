@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::core::network::{
     CanonicalCidr, IntervalU32, IntervalU128, cidr_overlaps as network_cidr_overlaps,
-    ipv4_to_interval, ipv6_to_interval, parse_ip_cidr_token,
+    ipv4_to_interval, ipv6_to_interval, parse_ip_cidr_strict,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,11 +38,7 @@ pub fn parse_target_strict(input: &str) -> Result<CanonicalCidr, LookupTargetPar
         return Err(LookupTargetParseError::Empty);
     }
 
-    if normalized.split_whitespace().count() != 1 {
-        return Err(LookupTargetParseError::Invalid);
-    }
-
-    parse_ip_cidr_token(normalized).ok_or(LookupTargetParseError::Invalid)
+    parse_ip_cidr_strict(normalized).ok_or(LookupTargetParseError::Invalid)
 }
 
 pub fn cidr_overlaps(a: CanonicalCidr, b: CanonicalCidr) -> bool {

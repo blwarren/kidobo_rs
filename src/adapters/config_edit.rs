@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use toml::Value;
+use toml_edit::{Array, DocumentMut, Item, Table, value};
 
 use crate::adapters::limited_io::{read_to_string_with_limit, write_string_atomic};
 use crate::core::config::{ConfigError, DEFAULT_ASN_CACHE_STALE_AFTER_SECS};
@@ -18,15 +18,9 @@ pub fn update_asn_bans(
     add: &[u32],
     remove: &[u32],
 ) -> Result<AsnBanUpdateResult, KidoboError> {
-    let mut doc = load_config_value(config_path)?;
-    let table = doc.as_table_mut().ok_or_else(|| KidoboError::ConfigParse {
-        source: ConfigError::Parse {
-            reason: "config root must be a TOML table".to_string(),
-        },
-    })?;
-    let asn_value = table
-        .entry("asn")
-        .or_insert_with(|| Value::Table(toml::Table::new()));
+    let mut doc = load_config_document(config_path)?;
+    let table = doc.as_table_mut();
+    let asn_value = table.entry("asn").or_insert(Item::Table(Table::new()));
     let asn_table = asn_value
         .as_table_mut()
         .ok_or_else(|| KidoboError::ConfigParse {
@@ -53,23 +47,16 @@ pub fn update_asn_bans(
 
     let added = after.difference(&before).copied().collect::<Vec<_>>();
     let removed = before.difference(&after).copied().collect::<Vec<_>>();
-    let values = after
-        .into_iter()
-        .map(|asn| Value::Integer(i64::from(asn)))
-        .collect::<Vec<_>>();
-    asn_table.insert("banned".to_string(), Value::Array(values));
+    let mut values = Array::default();
+    for asn in after {
+        values.push(i64::from(asn));
+    }
+    asn_table["banned"] = value(values);
     if !asn_table.contains_key("cache_stale_after_secs") {
-        asn_table.insert(
-            "cache_stale_after_secs".to_string(),
-            Value::Integer(i64::from(DEFAULT_ASN_CACHE_STALE_AFTER_SECS)),
-        );
+        asn_table["cache_stale_after_secs"] = value(i64::from(DEFAULT_ASN_CACHE_STALE_AFTER_SECS));
     }
 
-    let rendered = toml::to_string_pretty(&doc).map_err(|err| KidoboError::ConfigParse {
-        source: ConfigError::Parse {
-            reason: err.to_string(),
-        },
-    })?;
+    let rendered = doc.to_string();
     write_string_atomic(config_path, &rendered).map_err(|err| KidoboError::ConfigWrite {
         path: config_path.to_path_buf(),
         reason: err.to_string(),
@@ -77,20 +64,22 @@ pub fn update_asn_bans(
     Ok(AsnBanUpdateResult { added, removed })
 }
 
-fn load_config_value(path: &Path) -> Result<Value, KidoboError> {
+fn load_config_document(path: &Path) -> Result<DocumentMut, KidoboError> {
     let contents =
         read_to_string_with_limit(path, 64 * 1024).map_err(|err| KidoboError::ConfigRead {
             path: path.to_path_buf(),
             reason: err.to_string(),
         })?;
-    toml::from_str::<Value>(&contents).map_err(|err| KidoboError::ConfigParse {
-        source: ConfigError::Parse {
-            reason: err.to_string(),
-        },
-    })
+    contents
+        .parse::<DocumentMut>()
+        .map_err(|err| KidoboError::ConfigParse {
+            source: ConfigError::Parse {
+                reason: err.to_string(),
+            },
+        })
 }
 
-fn parse_asn_list_from_toml(value: &Value) -> Result<Vec<u32>, KidoboError> {
+fn parse_asn_list_from_toml(value: &Item) -> Result<Vec<u32>, KidoboError> {
     let array = value.as_array().ok_or_else(|| KidoboError::ConfigParse {
         source: ConfigError::InvalidField {
             field: "asn.banned",
@@ -220,5 +209,27 @@ mod tests {
                 source: crate::core::config::ConfigError::InvalidField { field, .. }
             } if field == "asn.banned"
         ));
+    }
+
+    #[test]
+    fn update_asn_bans_preserves_comments_and_unrelated_formatting() {
+        let temp = TempDir::new().expect("tempdir");
+        let config_path = temp.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            "# top comment\n[ipset]\nset_name = 'kidobo'\n\n# keep this comment\n[remote]\nurls = [\"https://example.com/list.txt\"]\n",
+        )
+        .expect("write");
+
+        let result = update_asn_bans(&config_path, &[64513], &[]).expect("update");
+        assert_eq!(result.added, vec![64513]);
+
+        let rendered = read_to_string_with_limit(&config_path, 64 * 1024).expect("read");
+        assert!(rendered.contains("# top comment"));
+        assert!(rendered.contains("# keep this comment"));
+        assert!(rendered.contains("[remote]"));
+        assert!(rendered.contains("urls = [\"https://example.com/list.txt\"]"));
+        assert!(rendered.contains("[asn]"));
+        assert!(rendered.contains("banned = [64513]"));
     }
 }

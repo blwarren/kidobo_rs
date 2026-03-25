@@ -1,12 +1,12 @@
 use std::env;
 use std::fs::{self, OpenOptions};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::Duration;
 
 use fs2::FileExt;
-use kidobo::adapters::limited_io::read_to_string_with_limit;
 use tempfile::TempDir;
 
 const BLOCKLIST_READ_LIMIT: usize = 16 * 1024 * 1024;
@@ -23,7 +23,6 @@ fn kidobo_with_root_command(root: &Path, args: &[&str]) -> Command {
     command
         .args(args)
         .env("KIDOBO_ROOT", root)
-        .env("KIDOBO_ALLOW_REPO_CONFIG_FALLBACK", "0")
         .env_remove("KIDOBO_TEST_SANDBOX")
         .env_remove("KIDOBO_DISABLE_TEST_SANDBOX");
     command
@@ -53,8 +52,34 @@ fn create_lookup_root(blocklist_contents: &str) -> TempDir {
     create_root("[ipset]\nset_name='kidobo'\n", blocklist_contents)
 }
 
+fn create_lookup_root_without_config(blocklist_contents: &str) -> TempDir {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+
+    fs::create_dir_all(root.join("data")).expect("create data dir");
+    fs::create_dir_all(root.join("cache/remote")).expect("create remote cache dir");
+    fs::write(root.join("data/blocklist.txt"), blocklist_contents).expect("write blocklist");
+
+    temp
+}
+
 fn create_sync_root(config_contents: &str) -> TempDir {
     create_root(config_contents, "")
+}
+
+fn read_to_string_with_limit(path: &Path, limit: usize) -> io::Result<String> {
+    let len = fs::metadata(path)?.len();
+    if len > limit as u64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("file exceeds {limit} byte limit"),
+        ));
+    }
+
+    let mut file = fs::File::open(path)?;
+    let mut bytes = Vec::with_capacity(len as usize);
+    file.read_to_end(&mut bytes)?;
+    String::from_utf8(bytes).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
 }
 
 fn hold_lock(lock_path: &Path) -> std::fs::File {
@@ -160,6 +185,49 @@ esac
     script_path
 }
 
+fn write_fake_bgpq4_script(temp: &TempDir) -> PathBuf {
+    let bin_dir = temp.path().join("bin");
+    fs::create_dir_all(&bin_dir).expect("create fake bin dir");
+    let script_path = bin_dir.join("bgpq4");
+    fs::write(
+        &script_path,
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -n "${KIDOBO_TEST_BGPQ4_TOUCHED:-}" ]]; then
+  : > "${KIDOBO_TEST_BGPQ4_TOUCHED}"
+fi
+
+family="${1:-}"
+
+case "${family}" in
+  -4)
+    printf '203.0.113.0/24\n'
+    ;;
+  -6)
+    printf '2001:db8::/64\n'
+    ;;
+  *)
+    echo "unexpected family flag: ${family}" >&2
+    exit 1
+    ;;
+esac
+"#,
+    )
+    .expect("write fake bgpq4");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut perms = fs::metadata(&script_path).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script_path, perms).expect("chmod fake bgpq4");
+    }
+
+    script_path
+}
+
 #[test]
 fn help_exits_with_zero() {
     let output = run_kidobo(&["--help"]);
@@ -239,6 +307,34 @@ fn lookup_invalid_target_exits_with_one() {
     assert!(
         stderr.contains("lookup failed for 1 invalid target(s)"),
         "missing final lookup error message: {stderr}"
+    );
+}
+
+#[test]
+fn lookup_succeeds_without_config_file() {
+    let root = create_lookup_root_without_config("203.0.113.7\n");
+    let output = run_kidobo_with_root(root.path(), &["lookup", "203.0.113.7"]);
+
+    assert_eq!(output.status.code(), Some(0));
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("203.0.113.7\tinternal:blocklist\t203.0.113.7"),
+        "unexpected lookup output: {stdout}"
+    );
+}
+
+#[test]
+fn lookup_succeeds_when_config_is_invalid() {
+    let root = create_root("not valid = [", "203.0.113.7\n");
+    let output = run_kidobo_with_root(root.path(), &["lookup", "203.0.113.7"]);
+
+    assert_eq!(output.status.code(), Some(0));
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("203.0.113.7\tinternal:blocklist\t203.0.113.7"),
+        "unexpected lookup output: {stdout}"
     );
 }
 
@@ -475,6 +571,40 @@ fn sync_normalization_drops_non_header_comments() {
 }
 
 #[test]
+fn sync_rejects_invalid_local_blocklist_without_rewriting_file() {
+    let original = "# header comment\n203.0.113.7 trailing-junk\n";
+    let root = create_root(
+        "[ipset]\nset_name='kidobo'\nenable_ipv6=false\n[safe]\ninclude_github_meta=false\n",
+        original,
+    );
+    let fake_sudo = write_fake_sudo_script(&root);
+    let blocklist = root.path().join("data/blocklist.txt");
+
+    let mut command = kidobo_with_root_command(root.path(), &["sync"]);
+    command.env(
+        "PATH",
+        path_with_bin_prefix(fake_sudo.parent().expect("sudo parent")),
+    );
+    let output = command.output().expect("run sync");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid blocklist entry in"),
+        "missing invalid blocklist error: {stderr}"
+    );
+    assert!(stderr.contains("line 2"), "missing line number: {stderr}");
+    assert!(
+        stderr.contains("203.0.113.7 trailing-junk"),
+        "missing offending line: {stderr}"
+    );
+
+    let after =
+        read_to_string_with_limit(&blocklist, BLOCKLIST_READ_LIMIT).expect("read blocklist");
+    assert_eq!(after, original);
+}
+
+#[test]
 fn sync_oversized_blocklist_fails_with_read_error() {
     let root = create_root(
         "[ipset]\nset_name='kidobo'\nenable_ipv6=false\n[safe]\ninclude_github_meta=false\n",
@@ -569,6 +699,47 @@ fn ban_and_unban_target_flow_is_idempotent_and_updates_blocklist() {
 }
 
 #[test]
+fn ban_rejects_target_with_trailing_junk() {
+    let root = create_root("[ipset]\nset_name='kidobo'\n", "");
+    let blocklist = root.path().join("data/blocklist.txt");
+
+    let output = run_kidobo_with_root(root.path(), &["ban", "203.0.113.7 trailing-junk"]);
+    assert_eq!(output.status.code(), Some(1));
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("failed to parse blocklist target 203.0.113.7 trailing-junk"),
+        "missing parse error: {stderr}"
+    );
+
+    let contents =
+        read_to_string_with_limit(&blocklist, BLOCKLIST_READ_LIMIT).expect("read blocklist");
+    assert!(
+        contents.is_empty(),
+        "blocklist should remain empty: {contents}"
+    );
+}
+
+#[test]
+fn unban_rejects_target_with_trailing_junk() {
+    let root = create_root("[ipset]\nset_name='kidobo'\n", "203.0.113.7/32\n");
+    let blocklist = root.path().join("data/blocklist.txt");
+
+    let output = run_kidobo_with_root(root.path(), &["unban", "203.0.113.7 trailing-junk"]);
+    assert_eq!(output.status.code(), Some(1));
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("failed to parse blocklist target 203.0.113.7 trailing-junk"),
+        "missing parse error: {stderr}"
+    );
+
+    let contents =
+        read_to_string_with_limit(&blocklist, BLOCKLIST_READ_LIMIT).expect("read blocklist");
+    assert_eq!(contents, "203.0.113.7/32\n");
+}
+
+#[test]
 fn ban_file_mode_updates_blocklist_and_preserves_per_target_results() {
     let root = create_root("[ipset]\nset_name='kidobo'\n", "");
     let blocklist = root.path().join("data/blocklist.txt");
@@ -635,6 +806,36 @@ fn ban_file_mode_invalid_target_fails_without_writes() {
 }
 
 #[test]
+fn ban_file_mode_rejects_target_with_trailing_junk() {
+    let root = create_root("[ipset]\nset_name='kidobo'\n", "");
+    let blocklist = root.path().join("data/blocklist.txt");
+    let targets = root.path().join("targets.txt");
+    fs::write(&targets, "203.0.113.7 trailing-junk\n").expect("write targets");
+    let target_path = targets.display().to_string();
+    let args = vec!["ban", "--file", target_path.as_str()];
+
+    let output = run_kidobo_with_root(root.path(), &args);
+    assert_eq!(output.status.code(), Some(1));
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid target: 203.0.113.7 trailing-junk"),
+        "missing invalid-target output: {stderr}"
+    );
+    assert!(
+        stderr.contains("blocklist update failed for 1 invalid target(s)"),
+        "missing final invalid-target error: {stderr}"
+    );
+
+    let contents =
+        read_to_string_with_limit(&blocklist, BLOCKLIST_READ_LIMIT).expect("read blocklist");
+    assert!(
+        contents.is_empty(),
+        "blocklist should remain empty: {contents}"
+    );
+}
+
+#[test]
 fn ban_fails_when_lock_is_held() {
     let root = create_root("[ipset]\nset_name='kidobo'\n", "");
     let blocklist = root.path().join("data/blocklist.txt");
@@ -653,6 +854,103 @@ fn ban_fails_when_lock_is_held() {
     assert!(
         contents.is_empty(),
         "blocklist should remain unchanged: {contents}"
+    );
+}
+
+#[test]
+fn ban_asn_resolves_prefixes_before_lock_failure() {
+    let root = create_root("[ipset]\nset_name='kidobo'\n", "");
+    let _held_lock = hold_lock(&root.path().join("cache/sync.lock"));
+    let fake_bgpq4 = write_fake_bgpq4_script(&root);
+    let touched = root.path().join("bgpq4-touched");
+
+    let mut command = kidobo_with_root_command(root.path(), &["ban", "--asn", "64512"]);
+    command.env(
+        "PATH",
+        path_with_bin_prefix(fake_bgpq4.parent().expect("bgpq4 parent")),
+    );
+    command.env("KIDOBO_TEST_BGPQ4_TOUCHED", &touched);
+    let output = command.output().expect("run ban --asn");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("lock already held"),
+        "missing lock-held error message: {stderr}"
+    );
+    assert!(
+        touched.exists(),
+        "ASN resolution did not run before lock failure"
+    );
+}
+
+#[test]
+fn ban_asn_cleanup_failure_warns_without_reverting_config_update() {
+    let root = create_root("[ipset]\nset_name='kidobo'\n", "");
+    let fake_bgpq4 = write_fake_bgpq4_script(&root);
+    let blocklist = root.path().join("data/blocklist.txt");
+    fs::remove_file(&blocklist).expect("remove blocklist file");
+    fs::create_dir(&blocklist).expect("create blocking directory");
+
+    let mut command = kidobo_with_root_command(root.path(), &["ban", "--asn", "64512"]);
+    command.env(
+        "PATH",
+        path_with_bin_prefix(fake_bgpq4.parent().expect("bgpq4 parent")),
+    );
+    let output = command.output().expect("run ban --asn");
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "ban --asn should succeed despite cleanup warning: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("ASN ban duplicate cleanup failed after config update"),
+        "missing cleanup warning: {stderr}"
+    );
+
+    let config_text = read_to_string_with_limit(
+        &root.path().join("config/config.toml"),
+        BLOCKLIST_READ_LIMIT,
+    )
+    .expect("read config");
+    let config = kidobo::core::config::Config::from_toml_str(&config_text).expect("parse config");
+    assert_eq!(config.asn.banned, vec![64512], "config was not updated");
+}
+
+#[test]
+fn unban_asn_cleanup_failure_warns_without_reverting_config_update() {
+    let root = create_root("[ipset]\nset_name='kidobo'\n[asn]\nbanned=[64512]\n", "");
+    let asn_cache_file = root.path().join("cache/asn/as64512.iplist");
+    fs::create_dir_all(asn_cache_file.parent().expect("asn cache parent")).expect("mkdir asn");
+    fs::create_dir(&asn_cache_file).expect("create blocking cache directory");
+
+    let output = run_kidobo_with_root(root.path(), &["unban", "--asn", "64512"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "unban --asn should succeed despite cleanup warning: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("ASN cache cleanup failed for AS64512"),
+        "missing cleanup warning: {stderr}"
+    );
+
+    let config_text = read_to_string_with_limit(
+        &root.path().join("config/config.toml"),
+        BLOCKLIST_READ_LIMIT,
+    )
+    .expect("read config");
+    let config = kidobo::core::config::Config::from_toml_str(&config_text).expect("parse config");
+    assert!(
+        config.asn.banned.is_empty(),
+        "config update was reverted or not written: {config_text}"
     );
 }
 

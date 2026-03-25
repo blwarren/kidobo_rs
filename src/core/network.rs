@@ -113,13 +113,13 @@ pub struct FamilyCidrs {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct IntervalU32 {
+pub(crate) struct IntervalU32 {
     pub start: u32,
     pub end: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct IntervalU128 {
+pub(crate) struct IntervalU128 {
     pub start: u128,
     pub end: u128,
 }
@@ -136,13 +136,26 @@ impl From<Ipv6Cidr> for IntervalU128 {
     }
 }
 
-pub fn parse_ip_cidr_non_strict(input: &str) -> Option<CanonicalCidr> {
+pub(crate) fn parse_ip_cidr_non_strict(input: &str) -> Option<CanonicalCidr> {
     let token = input.split_whitespace().next()?.trim();
     if token.is_empty() {
         return None;
     }
 
     parse_ip_cidr_token(token)
+}
+
+pub fn parse_ip_cidr_strict(input: &str) -> Option<CanonicalCidr> {
+    let normalized = input.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    if normalized.split_whitespace().count() != 1 {
+        return None;
+    }
+
+    parse_ip_cidr_token(normalized)
 }
 
 pub(crate) fn parse_ip_cidr_token(token: &str) -> Option<CanonicalCidr> {
@@ -163,7 +176,7 @@ pub(crate) fn parse_ip_cidr_token(token: &str) -> Option<CanonicalCidr> {
     }
 }
 
-pub fn parse_lines_non_strict<I, S>(inputs: I) -> Vec<CanonicalCidr>
+pub(crate) fn parse_lines_non_strict<I, S>(inputs: I) -> Vec<CanonicalCidr>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
@@ -211,7 +224,7 @@ pub fn collapse_ipv6(cidrs: &[Ipv6Cidr]) -> Vec<Ipv6Cidr> {
     intervals_to_ipv6_cidrs_from_merged(&merged)
 }
 
-pub fn ipv4_to_interval(cidr: Ipv4Cidr) -> IntervalU32 {
+pub(crate) fn ipv4_to_interval(cidr: Ipv4Cidr) -> IntervalU32 {
     let start = cidr.network;
     let end = if cidr.prefix == 0 {
         u32::MAX
@@ -224,7 +237,7 @@ pub fn ipv4_to_interval(cidr: Ipv4Cidr) -> IntervalU32 {
     IntervalU32 { start, end }
 }
 
-pub fn ipv6_to_interval(cidr: Ipv6Cidr) -> IntervalU128 {
+pub(crate) fn ipv6_to_interval(cidr: Ipv6Cidr) -> IntervalU128 {
     let start = cidr.network;
     let end = if cidr.prefix == 0 {
         u128::MAX
@@ -241,11 +254,13 @@ pub fn ipv6_to_interval(cidr: Ipv6Cidr) -> IntervalU128 {
     IntervalU128 { start, end }
 }
 
-pub fn merge_intervals_u32(intervals: &[IntervalU32]) -> Vec<IntervalU32> {
+#[cfg(test)]
+pub(crate) fn merge_intervals_u32(intervals: &[IntervalU32]) -> Vec<IntervalU32> {
     merge_intervals_u32_owned(intervals.to_vec())
 }
 
-pub fn merge_intervals_u128(intervals: &[IntervalU128]) -> Vec<IntervalU128> {
+#[cfg(test)]
+pub(crate) fn merge_intervals_u128(intervals: &[IntervalU128]) -> Vec<IntervalU128> {
     merge_intervals_u128_owned(intervals.to_vec())
 }
 
@@ -289,12 +304,14 @@ pub fn subtract_safelist_ipv6(candidates: &[Ipv6Cidr], safelist: &[Ipv6Cidr]) ->
     intervals_to_ipv6_cidrs_from_merged(&carved)
 }
 
-pub fn intervals_to_ipv4_cidrs(intervals: &[IntervalU32]) -> Vec<Ipv4Cidr> {
+#[cfg(test)]
+pub(crate) fn intervals_to_ipv4_cidrs(intervals: &[IntervalU32]) -> Vec<Ipv4Cidr> {
     let merged = merge_intervals_u32_owned(intervals.to_vec());
     intervals_to_ipv4_cidrs_from_merged(&merged)
 }
 
-pub fn intervals_to_ipv6_cidrs(intervals: &[IntervalU128]) -> Vec<Ipv6Cidr> {
+#[cfg(test)]
+pub(crate) fn intervals_to_ipv6_cidrs(intervals: &[IntervalU128]) -> Vec<Ipv6Cidr> {
     let merged = merge_intervals_u128_owned(intervals.to_vec());
     intervals_to_ipv6_cidrs_from_merged(&merged)
 }

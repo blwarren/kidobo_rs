@@ -1,13 +1,19 @@
 use std::collections::{BTreeSet, HashSet};
 
 use crate::core::network::{
-    CanonicalCidr, cidr_overlaps, collapse_ipv4, collapse_ipv6, parse_ip_cidr_non_strict,
+    CanonicalCidr, cidr_overlaps, collapse_ipv4, collapse_ipv6, parse_ip_cidr_strict,
     split_by_family,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlocklistTargetParseError {
     Invalid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidBlocklistLine {
+    pub line_number: usize,
+    pub content: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,28 +28,9 @@ pub struct UnbanIndexPlan {
     pub partial_indexes: Vec<usize>,
 }
 
-impl UnbanIndexPlan {
-    pub fn total_removal(&self, include_partial: bool) -> usize {
-        self.exact_indexes.len()
-            + if include_partial {
-                self.partial_indexes.len()
-            } else {
-                0
-            }
-    }
-
-    pub fn removal_indexes(&self, include_partial: bool) -> Vec<usize> {
-        let mut indexes = self.exact_indexes.clone();
-        if include_partial {
-            indexes.extend(&self.partial_indexes);
-        }
-        indexes
-    }
-}
-
 pub fn parse_blocklist_target(input: &str) -> Result<CanonicalCidr, BlocklistTargetParseError> {
     let token = input.trim();
-    parse_ip_cidr_non_strict(token).ok_or(BlocklistTargetParseError::Invalid)
+    parse_ip_cidr_strict(token).ok_or(BlocklistTargetParseError::Invalid)
 }
 
 pub fn classify_ban_targets(
@@ -115,12 +102,12 @@ pub fn exact_match_indexes(
     indexes
 }
 
-pub fn canonicalize_blocklist(contents: &str) -> String {
+pub fn canonicalize_blocklist(contents: &str) -> Result<String, InvalidBlocklistLine> {
     let mut lines = Vec::new();
     let mut entries = Vec::new();
     let mut in_header = true;
 
-    for line in contents.lines() {
+    for (idx, line) in contents.lines().enumerate() {
         let trimmed = line.trim();
 
         if in_header {
@@ -135,9 +122,13 @@ pub fn canonicalize_blocklist(contents: &str) -> String {
             continue;
         }
 
-        if let Some(cidr) = parse_ip_cidr_non_strict(trimmed) {
-            entries.push(cidr);
-        }
+        let Some(cidr) = parse_ip_cidr_strict(trimmed) else {
+            return Err(InvalidBlocklistLine {
+                line_number: idx + 1,
+                content: line.to_string(),
+            });
+        };
+        entries.push(cidr);
     }
 
     let canonical_entries = canonical_entry_lines(&entries);
@@ -154,7 +145,7 @@ pub fn canonicalize_blocklist(contents: &str) -> String {
     if !normalized.is_empty() {
         normalized.push('\n');
     }
-    normalized
+    Ok(normalized)
 }
 
 fn canonical_entry_lines(entries: &[CanonicalCidr]) -> Vec<String> {
@@ -173,15 +164,17 @@ mod tests {
     use crate::core::network::{CanonicalCidr, parse_ip_cidr_non_strict};
 
     use super::{
-        BanClassification, canonicalize_blocklist, classify_ban_targets, exact_match_indexes,
-        parse_blocklist_target, plan_unban, plan_unban_many,
+        BanClassification, BlocklistTargetParseError, InvalidBlocklistLine, canonicalize_blocklist,
+        classify_ban_targets, exact_match_indexes, parse_blocklist_target, plan_unban,
+        plan_unban_many,
     };
 
     #[test]
     fn canonicalize_blocklist_preserves_header_and_canonicalizes_entries() {
         let normalized = canonicalize_blocklist(
             "# top comment \n203.0.113.7\n# dropped later comment\n203.0.113.0/24\n2001:db8::/64\n2001:db8::/64\n",
-        );
+        )
+        .expect("canonicalize");
 
         assert_eq!(
             normalized,
@@ -191,7 +184,24 @@ mod tests {
 
     #[test]
     fn canonicalize_blocklist_trims_header_trailing_blank_when_no_entries() {
-        assert_eq!(canonicalize_blocklist("# header\n\n"), "# header\n");
+        assert_eq!(
+            canonicalize_blocklist("# header\n\n").expect("canonicalize"),
+            "# header\n"
+        );
+    }
+
+    #[test]
+    fn canonicalize_blocklist_rejects_invalid_non_header_lines() {
+        let err = canonicalize_blocklist("# header\n203.0.113.7 trailing-junk\n")
+            .expect_err("invalid line must fail");
+
+        assert_eq!(
+            err,
+            InvalidBlocklistLine {
+                line_number: 2,
+                content: "203.0.113.7 trailing-junk".to_string(),
+            }
+        );
     }
 
     #[test]
@@ -266,6 +276,14 @@ mod tests {
         assert_eq!(
             parsed,
             CanonicalCidr::V4(crate::core::network::Ipv4Cidr::from_parts(0xcb007107, 32))
+        );
+    }
+
+    #[test]
+    fn parse_blocklist_target_rejects_trailing_tokens() {
+        assert_eq!(
+            parse_blocklist_target("203.0.113.7 trailing-junk"),
+            Err(BlocklistTargetParseError::Invalid)
         );
     }
 }

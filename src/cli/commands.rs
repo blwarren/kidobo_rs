@@ -10,7 +10,7 @@ use crate::adapters::blocklist_analysis_sources::load_analysis_sources;
 use crate::adapters::config::load_config_from_file;
 use crate::adapters::limited_io::read_to_string_with_limit;
 use crate::adapters::lookup_sources::load_lookup_sources;
-use crate::adapters::path::{PathResolutionInput, resolve_paths};
+use crate::adapters::path::{PathResolutionInput, resolve_paths, resolve_paths_without_config};
 use crate::cli::args::{AnalyzeCommand, Command};
 use crate::cli::blocklist::{run_ban_command, run_unban_command};
 use crate::cli::doctor::run_doctor_command;
@@ -93,9 +93,7 @@ fn run_lookup_command(ip: Option<String>, file: Option<PathBuf>) -> Result<(), K
     let targets = collect_lookup_targets(ip, file)?;
 
     let path_input = PathResolutionInput::from_process(None);
-    let paths = resolve_paths(&path_input)?;
-
-    let _config = load_config_from_file(&paths.config_file)?;
+    let paths = resolve_paths_without_config(&path_input)?;
     let sources = load_lookup_sources(&paths)?;
 
     let mut matched_targets = BTreeSet::new();

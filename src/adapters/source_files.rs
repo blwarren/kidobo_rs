@@ -57,18 +57,6 @@ pub fn read_remote_cache_iplist_text(
     Ok(contents)
 }
 
-pub fn read_cidrs_from_remote_cache_iplist(
-    iplist_path: &Path,
-    read_limit: usize,
-    meta_read_limit: usize,
-) -> io::Result<Vec<CanonicalCidr>> {
-    let contents = read_remote_cache_iplist_text(iplist_path, read_limit, meta_read_limit)?;
-    Ok(contents
-        .lines()
-        .filter_map(|line| parse_cidr_source_line(line).map(|(cidr, _)| cidr))
-        .collect())
-}
-
 pub fn parse_cidr_source_line(line: &str) -> Option<(CanonicalCidr, &str)> {
     let token = line.split_whitespace().next()?.trim();
     if token.is_empty() {

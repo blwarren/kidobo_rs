@@ -33,11 +33,11 @@ pub fn load_remote_sources(
 
     let mut remote_files =
         collect_remote_cache_files(remote_cache_dir).map_err(|err| match err {
-            RemoteCacheFilesError::ReadDir(err) => SourceLoadError::CacheDirRead {
+            RemoteCacheFilesError::ReadDir(err) => SourceLoadError::CacheDir {
                 path: remote_cache_dir.to_path_buf(),
                 reason: err.to_string(),
             },
-            RemoteCacheFilesError::ReadDirEntry(err) => SourceLoadError::CacheDirEntryRead {
+            RemoteCacheFilesError::ReadDirEntry(err) => SourceLoadError::CacheDirEntry {
                 path: remote_cache_dir.to_path_buf(),
                 reason: err.to_string(),
             },
@@ -49,7 +49,7 @@ pub fn load_remote_sources(
     for path in remote_files {
         let contents =
             read_remote_cache_iplist_text(&path, SOURCE_FILE_READ_LIMIT, REMOTE_META_READ_LIMIT)
-                .map_err(|err| SourceLoadError::SourceRead {
+                .map_err(|err| SourceLoadError::Source {
                     path: path.clone(),
                     reason: err.to_string(),
                 })?;
@@ -150,7 +150,7 @@ mod tests {
 
         let err = load_remote_sources(&remote_cache_dir).expect_err("must fail");
         match err {
-            SourceLoadError::SourceRead { reason, .. } => {
+            SourceLoadError::Source { reason, .. } => {
                 assert!(reason.contains("hash mismatch"));
             }
             _ => panic!("unexpected error variant"),

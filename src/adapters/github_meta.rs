@@ -10,7 +10,7 @@ use thiserror::Error;
 use crate::adapters::hash::sha256_hex;
 use crate::adapters::http_cache::{HttpClient, HttpResponse, max_http_body_bytes};
 use crate::adapters::http_fetch::{
-    ConditionalFetchOutcome, ConditionalFetchResult, fetch_with_conditional_cache,
+    dispatch_conditional_fetch_result, fetch_with_conditional_cache,
 };
 use crate::adapters::limited_io::{read_bytes_with_limit, write_bytes_atomic};
 use crate::core::config::{DEFAULT_GITHUB_META_CATEGORIES, GithubMetaCategoryMode};
@@ -121,7 +121,7 @@ pub fn load_github_meta_safelist(
         (meta.etag.clone(), meta.last_modified.clone())
     });
 
-    let ConditionalFetchResult { outcome, response } = fetch_with_conditional_cache(
+    let result = fetch_with_conditional_cache(
         client,
         github_meta_url,
         max_bytes,
@@ -130,59 +130,58 @@ pub fn load_github_meta_safelist(
         cached_networks.is_some(),
         "github meta",
     );
+    let cached_networks_for_not_modified = cached_networks.clone();
+    let cached_meta_for_not_modified = cached_meta.clone();
+    let cached_networks_for_fallback = cached_networks.clone();
+    let cached_meta_for_fallback = cached_meta.clone();
 
-    match (outcome, response) {
-        (ConditionalFetchOutcome::CacheNotModified, _) => {
-            if let Some(networks) = cached_networks {
+    dispatch_conditional_fetch_result(
+        result,
+        "github meta fetch returned network outcome without response",
+        || {
+            if let Some(networks) = cached_networks_for_not_modified {
                 return Ok(GithubMetaLoadResult {
                     networks,
                     source: GithubMetaSource::CacheNotModified,
-                    metadata: cached_meta,
+                    metadata: cached_meta_for_not_modified,
                 });
             }
 
-            Ok(cache_fallback(
+            Ok::<GithubMetaLoadResult, GithubMetaLoadError>(cache_fallback(
                 cached_raw.as_deref(),
                 None,
-                cached_meta,
+                cached_meta_for_not_modified,
                 cached_sidecar.as_ref(),
                 &selection,
                 GithubMetaSource::FallbackCache,
             ))
-        }
-        (ConditionalFetchOutcome::FallbackCache, _) => Ok(cache_fallback(
-            cached_raw.as_deref(),
-            cached_networks,
-            cached_meta,
-            cached_sidecar.as_ref(),
-            &selection,
-            GithubMetaSource::FallbackCache,
-        )),
-        (ConditionalFetchOutcome::Network, Some(response)) => handle_network_response(
-            response,
-            &paths,
-            github_meta_url,
-            max_bytes,
-            CachedFallback {
-                raw: cached_raw.as_deref(),
-                networks: cached_networks,
-                meta: cached_meta,
-                sidecar: cached_sidecar.as_ref(),
-            },
-            &selection,
-        ),
-        (ConditionalFetchOutcome::Network, None) => {
-            warn!("github meta fetch returned network outcome without response");
+        },
+        || {
             Ok(cache_fallback(
                 cached_raw.as_deref(),
-                cached_networks,
-                cached_meta,
+                cached_networks_for_fallback,
+                cached_meta_for_fallback,
                 cached_sidecar.as_ref(),
                 &selection,
                 GithubMetaSource::FallbackCache,
             ))
-        }
-    }
+        },
+        |response| {
+            handle_network_response(
+                response,
+                &paths,
+                github_meta_url,
+                max_bytes,
+                CachedFallback {
+                    raw: cached_raw.as_deref(),
+                    networks: cached_networks,
+                    meta: cached_meta,
+                    sidecar: cached_sidecar.as_ref(),
+                },
+                &selection,
+            )
+        },
+    )
 }
 
 fn handle_network_response(

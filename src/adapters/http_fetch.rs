@@ -16,6 +16,29 @@ pub struct ConditionalFetchResult {
     pub response: Option<HttpResponse>,
 }
 
+pub fn dispatch_conditional_fetch_result<T, E, FCacheNotModified, FFallback, FNetwork>(
+    result: ConditionalFetchResult,
+    missing_response_warning: &str,
+    on_cache_not_modified: FCacheNotModified,
+    on_fallback_cache: FFallback,
+    on_network: FNetwork,
+) -> Result<T, E>
+where
+    FCacheNotModified: FnOnce() -> Result<T, E>,
+    FFallback: FnOnce() -> Result<T, E>,
+    FNetwork: FnOnce(HttpResponse) -> Result<T, E>,
+{
+    match (result.outcome, result.response) {
+        (ConditionalFetchOutcome::CacheNotModified, _) => on_cache_not_modified(),
+        (ConditionalFetchOutcome::FallbackCache, _) => on_fallback_cache(),
+        (ConditionalFetchOutcome::Network, Some(response)) => on_network(response),
+        (ConditionalFetchOutcome::Network, None) => {
+            warn!("{missing_response_warning}");
+            on_fallback_cache()
+        }
+    }
+}
+
 pub fn fetch_with_conditional_cache(
     client: &dyn HttpClient,
     url: &str,

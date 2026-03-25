@@ -30,6 +30,7 @@ sha2 = "0.10"
 thiserror = "2"
 tabled = "0.20"
 toml = "1"
+toml_edit = "0.22"
 
 [dev-dependencies]
 criterion = "0.5"
