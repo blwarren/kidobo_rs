@@ -2,6 +2,7 @@ use std::num::NonZeroU32;
 
 use serde::Deserialize;
 use thiserror::Error;
+use toml_edit::de::from_str as parse_toml_str;
 
 use crate::core::network::{CanonicalCidr, parse_ip_cidr_token};
 
@@ -259,7 +260,7 @@ struct RawAsnConfig {
 
 impl Config {
     pub fn from_toml_str(contents: &str) -> Result<Self, ConfigError> {
-        let raw: RawConfig = toml::from_str(contents).map_err(|err| ConfigError::Parse {
+        let raw: RawConfig = parse_toml_str(contents).map_err(|err| ConfigError::Parse {
             reason: err.to_string(),
         })?;
 
@@ -978,6 +979,127 @@ mod tests {
         match err {
             ConfigError::Parse { .. } => {}
             _ => panic!("expected parse error"),
+        }
+    }
+
+    #[test]
+    fn parser_accepts_comments_blank_lines_and_trailing_commas() {
+        let config = Config::from_toml_str(
+            "# leading comment\n\
+             [ipset]\n\
+             set_name = 'kidobo'\n\
+             \n\
+             [safe]\n\
+             # comment inside table\n\
+             ips = [\n\
+               '10.0.0.1',\n\
+             ]\n\
+             \n\
+             [remote]\n\
+             urls = [\n\
+               'https://example.com/list.txt',\n\
+             ]\n\
+             \n\
+             [asn]\n\
+             banned = [\n\
+               64512,\n\
+             ]\n",
+        )
+        .expect("parse");
+
+        assert_eq!(config.ipset.set_name, "kidobo");
+        assert_eq!(
+            config.safe.ips,
+            vec![CanonicalCidr::V4(Ipv4Cidr::from_parts(0x0a000001, 32))]
+        );
+        assert_eq!(
+            config.remote.urls,
+            vec!["https://example.com/list.txt".to_string()]
+        );
+        assert_eq!(config.asn.banned, vec![64512]);
+    }
+
+    #[test]
+    fn parser_accepts_dotted_keys_for_nested_sections() {
+        let config = Config::from_toml_str(
+            "ipset.set_name = 'kidobo'\n\
+             ipset.enable_ipv6 = false\n\
+             safe.ips = ['10.0.0.1']\n\
+             safe.github_meta_url = 'https://example.com/meta'\n\
+             remote.urls = ['https://example.com/list.txt']\n\
+             remote.timeout_secs = 45\n\
+             asn.banned = [64512]\n\
+             asn.cache_stale_after_secs = 7200\n",
+        )
+        .expect("parse");
+
+        assert_eq!(config.ipset.set_name, "kidobo");
+        assert!(!config.ipset.enable_ipv6);
+        assert_eq!(
+            config.safe.ips,
+            vec![CanonicalCidr::V4(Ipv4Cidr::from_parts(0x0a000001, 32))]
+        );
+        assert_eq!(config.safe.github_meta_url, "https://example.com/meta");
+        assert_eq!(
+            config.remote.urls,
+            vec!["https://example.com/list.txt".to_string()]
+        );
+        assert_eq!(config.remote.timeout_secs.get(), 45);
+        assert_eq!(config.asn.banned, vec![64512]);
+        assert_eq!(config.asn.cache_stale_after_secs.get(), 7200);
+    }
+
+    #[test]
+    fn parser_accepts_inline_tables_for_sections() {
+        let config = Config::from_toml_str(
+            "ipset = { set_name = 'kidobo', enable_ipv6 = false }\n\
+             safe = { include_github_meta = false, github_meta_url = 'https://example.com/meta' }\n\
+             remote = { urls = ['https://example.com/list.txt'], timeout_secs = 45 }\n\
+             asn = { banned = [64513, 64512], cache_stale_after_secs = 7200 }\n",
+        )
+        .expect("parse");
+
+        assert_eq!(config.ipset.set_name, "kidobo");
+        assert!(!config.ipset.enable_ipv6);
+        assert!(!config.safe.include_github_meta);
+        assert_eq!(config.safe.github_meta_url, "https://example.com/meta");
+        assert_eq!(
+            config.remote.urls,
+            vec!["https://example.com/list.txt".to_string()]
+        );
+        assert_eq!(config.remote.timeout_secs.get(), 45);
+        assert_eq!(config.asn.banned, vec![64512, 64513]);
+        assert_eq!(config.asn.cache_stale_after_secs.get(), 7200);
+    }
+
+    #[test]
+    fn parser_rejects_duplicate_keys() {
+        let err = Config::from_toml_str(
+            "[ipset]\n\
+             set_name = 'kidobo'\n\
+             set_name = 'kidobo-duplicate'\n",
+        )
+        .expect_err("must fail");
+
+        match err {
+            ConfigError::Parse { .. } => {}
+            _ => panic!("expected parse error for duplicate key"),
+        }
+    }
+
+    #[test]
+    fn parser_rejects_duplicate_tables() {
+        let err = Config::from_toml_str(
+            "[ipset]\n\
+             set_name = 'kidobo'\n\
+             [ipset]\n\
+             enable_ipv6 = false\n",
+        )
+        .expect_err("must fail");
+
+        match err {
+            ConfigError::Parse { .. } => {}
+            _ => panic!("expected parse error for duplicate table"),
         }
     }
 }
