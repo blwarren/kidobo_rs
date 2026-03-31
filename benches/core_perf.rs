@@ -1,10 +1,11 @@
 use std::fs;
+use std::hint::black_box;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use kidobo::core::config::Config;
 use kidobo::core::lookup::{LookupSourceEntry, run_lookup};
 use kidobo::core::network::{
