@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::adapters::blocklist_file::{BlocklistFile, write_blocklist_lines};
+use crate::adapters::blocklist_file::{BlocklistDocument, write_blocklist_lines};
 use crate::core::blocklist::{
     BlocklistTargetParseError, UnbanIndexPlan,
     parse_blocklist_target as parse_blocklist_target_core, plan_unban,
@@ -18,7 +18,7 @@ pub(super) struct PartialMatch {
 #[derive(Debug)]
 pub(super) struct UnbanPlan {
     pub(super) target: String,
-    pub(super) blocklist: BlocklistFile,
+    pub(super) blocklist: BlocklistDocument,
     pub(super) exact_indexes: Vec<usize>,
     pub(super) partial_matches: Vec<PartialMatch>,
     pub(super) remove_partial: bool,
@@ -49,7 +49,7 @@ impl UnbanResult {
 
 pub(super) fn build_unban_plan(path: &Path, input: &str) -> Result<UnbanPlan, KidoboError> {
     let canonical = parse_blocklist_target(input)?;
-    let blocklist = BlocklistFile::load(path)?;
+    let blocklist = BlocklistDocument::load(path)?;
     let line_canonicals = blocklist
         .lines
         .iter()
@@ -118,7 +118,7 @@ pub(super) fn parse_blocklist_target(input: &str) -> Result<CanonicalCidr, Kidob
     })
 }
 
-fn partial_matches(blocklist: &BlocklistFile, plan: &UnbanIndexPlan) -> Vec<PartialMatch> {
+fn partial_matches(blocklist: &BlocklistDocument, plan: &UnbanIndexPlan) -> Vec<PartialMatch> {
     let partial_indexes = plan.partial_indexes.iter().copied().collect::<HashSet<_>>();
 
     blocklist

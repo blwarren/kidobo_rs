@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use log::warn;
@@ -7,12 +6,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::adapters::cached_fetch::{
+    CachedFetchRequest, read_optional_json_lossy, read_validated_bytes_lossy, run_cached_fetch,
+    write_bytes_atomic_in_cache, write_json_pretty_atomic,
+};
 use crate::adapters::hash::sha256_hex;
 use crate::adapters::http_cache::{HttpClient, HttpResponse, max_http_body_bytes};
-use crate::adapters::http_fetch::{
-    dispatch_conditional_fetch_result, fetch_with_conditional_cache,
-};
-use crate::adapters::limited_io::{read_bytes_with_limit, write_bytes_atomic};
 use crate::core::config::{DEFAULT_GITHUB_META_CATEGORIES, GithubMetaCategoryMode};
 use crate::core::network::{CanonicalCidr, parse_ip_cidr_non_strict};
 
@@ -21,9 +20,7 @@ const GITHUB_META_META_CACHE_FILE: &str = "github-meta.meta.json";
 const GITHUB_META_CATEGORY_CACHE_FILE: &str = "github-meta.categories.json";
 
 const GITHUB_META_CACHE_READ_LIMIT: usize = 8 * 1024 * 1024;
-#[cfg(test)]
 const GITHUB_META_META_READ_LIMIT: usize = 512 * 1024;
-#[cfg(test)]
 const GITHUB_META_CATEGORY_READ_LIMIT: usize = 256 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,9 +54,6 @@ pub struct GithubMetaLoadResult {
 
 #[derive(Debug, Error)]
 pub enum GithubMetaLoadError {
-    #[error("failed to create github meta cache directory {path}: {reason}")]
-    CreateCacheDir { path: PathBuf, reason: String },
-
     #[error("failed to write github meta cache file {path}: {reason}")]
     WriteCacheFile { path: PathBuf, reason: String },
 }
@@ -106,9 +100,24 @@ pub fn load_github_meta_safelist(
     let max_bytes = max_http_body_bytes(env);
     let paths = CachePaths::from_cache_dir(cache_dir);
 
-    let cached_meta = read_optional_json::<GithubMetaCacheMetadata>(&paths.meta_path);
-    let cached_raw = read_validated_raw_cache(&paths.raw_path, cached_meta.as_ref());
-    let cached_sidecar = read_optional_json::<GithubMetaCategorySidecar>(&paths.category_path);
+    let cached_meta = read_optional_json_lossy::<GithubMetaCacheMetadata>(
+        &paths.meta_path,
+        GITHUB_META_META_READ_LIMIT,
+        "github meta cache file",
+    );
+    let cached_raw = read_validated_bytes_lossy(
+        &paths.raw_path,
+        GITHUB_META_CACHE_READ_LIMIT,
+        "github meta cache file",
+        cached_meta.as_ref().map(|meta| meta.sha256_raw.as_str()),
+        "github meta raw cache",
+        "raw body",
+    );
+    let cached_sidecar = read_optional_json_lossy::<GithubMetaCategorySidecar>(
+        &paths.category_path,
+        GITHUB_META_CATEGORY_READ_LIMIT,
+        "github meta cache file",
+    );
     let cache_is_compatible = cache_scope_compatible(&selection, cached_sidecar.as_ref());
     let cached_networks = if cache_is_compatible {
         cached_raw
@@ -121,23 +130,22 @@ pub fn load_github_meta_safelist(
         (meta.etag.clone(), meta.last_modified.clone())
     });
 
-    let result = fetch_with_conditional_cache(
-        client,
-        github_meta_url,
-        max_bytes,
-        cached_etag,
-        cached_last_modified,
-        cached_networks.is_some(),
-        "github meta",
-    );
     let cached_networks_for_not_modified = cached_networks.clone();
     let cached_meta_for_not_modified = cached_meta.clone();
     let cached_networks_for_fallback = cached_networks.clone();
     let cached_meta_for_fallback = cached_meta.clone();
 
-    dispatch_conditional_fetch_result(
-        result,
-        "github meta fetch returned network outcome without response",
+    run_cached_fetch(
+        CachedFetchRequest {
+            client,
+            url: github_meta_url,
+            max_body_bytes: max_bytes,
+            cached_etag,
+            cached_last_modified,
+            has_usable_cache: cached_networks.is_some(),
+            log_subject: "github meta",
+            missing_response_warning: "github meta fetch returned network outcome without response",
+        },
         || {
             if let Some(networks) = cached_networks_for_not_modified {
                 return Ok(GithubMetaLoadResult {
@@ -257,14 +265,7 @@ fn persist_cache(
     metadata: &GithubMetaCacheMetadata,
     selection: &CategorySelection,
 ) -> Result<(), GithubMetaLoadError> {
-    if let Some(parent) = paths.raw_path.parent() {
-        fs::create_dir_all(parent).map_err(|err| GithubMetaLoadError::CreateCacheDir {
-            path: parent.to_path_buf(),
-            reason: err.to_string(),
-        })?;
-    }
-
-    write_bytes_atomic(&paths.raw_path, raw).map_err(|err| {
+    write_bytes_atomic_in_cache(&paths.raw_path, raw).map_err(|err| {
         GithubMetaLoadError::WriteCacheFile {
             path: paths.raw_path.clone(),
             reason: err.to_string(),
@@ -272,26 +273,14 @@ fn persist_cache(
     })?;
 
     let sidecar = selection.to_sidecar();
-    let sidecar_bytes =
-        serde_json::to_vec_pretty(&sidecar).map_err(|err| GithubMetaLoadError::WriteCacheFile {
-            path: paths.category_path.clone(),
-            reason: err.to_string(),
-        })?;
-
-    write_bytes_atomic(&paths.category_path, &sidecar_bytes).map_err(|err| {
+    write_json_pretty_atomic(&paths.category_path, &sidecar).map_err(|err| {
         GithubMetaLoadError::WriteCacheFile {
             path: paths.category_path.clone(),
             reason: err.to_string(),
         }
     })?;
 
-    let metadata_bytes =
-        serde_json::to_vec_pretty(metadata).map_err(|err| GithubMetaLoadError::WriteCacheFile {
-            path: paths.meta_path.clone(),
-            reason: err.to_string(),
-        })?;
-
-    write_bytes_atomic(&paths.meta_path, &metadata_bytes).map_err(|err| {
+    write_json_pretty_atomic(&paths.meta_path, metadata).map_err(|err| {
         GithubMetaLoadError::WriteCacheFile {
             path: paths.meta_path.clone(),
             reason: err.to_string(),
@@ -398,61 +387,6 @@ fn collect_networks_recursively(value: &Value, extracted: &mut Vec<CanonicalCidr
                 }
             }
             _ => {}
-        }
-    }
-}
-
-fn read_optional_bytes(path: &Path) -> Option<Vec<u8>> {
-    if !path.exists() {
-        return None;
-    }
-
-    match read_bytes_with_limit(path, GITHUB_META_CACHE_READ_LIMIT) {
-        Ok(contents) => Some(contents),
-        Err(err) => {
-            warn!(
-                "failed to read github meta cache file {}: {err}",
-                path.display()
-            );
-            None
-        }
-    }
-}
-
-fn read_validated_raw_cache(
-    path: &Path,
-    metadata: Option<&GithubMetaCacheMetadata>,
-) -> Option<Vec<u8>> {
-    let raw = read_optional_bytes(path)?;
-
-    if let Some(metadata) = metadata {
-        let actual_hash = sha256_hex(&raw);
-        if actual_hash != metadata.sha256_raw {
-            warn!(
-                "github meta raw cache hash mismatch for {}: ignoring cached raw body",
-                path.display()
-            );
-            return None;
-        }
-    }
-
-    Some(raw)
-}
-
-fn read_optional_json<T>(path: &Path) -> Option<T>
-where
-    T: for<'de> Deserialize<'de>,
-{
-    let bytes = read_optional_bytes(path)?;
-
-    match serde_json::from_slice::<T>(&bytes) {
-        Ok(parsed) => Some(parsed),
-        Err(err) => {
-            warn!(
-                "failed to parse github meta cache file {} as JSON: {err}",
-                path.display()
-            );
-            None
         }
     }
 }

@@ -16,6 +16,99 @@ pub struct InvalidBlocklistLine {
     pub content: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlocklistDocument {
+    pub lines: Vec<BlocklistLine>,
+    pub has_content: bool,
+    pub trailing_newline: bool,
+}
+
+impl BlocklistDocument {
+    pub fn parse(contents: &str) -> Result<Self, InvalidBlocklistLine> {
+        let mut lines = Vec::new();
+        let mut in_header = true;
+
+        for (idx, line) in contents.lines().enumerate() {
+            lines.push(BlocklistLine::parse(line, idx + 1, &mut in_header)?);
+        }
+
+        Ok(Self {
+            lines,
+            has_content: !contents.is_empty(),
+            trailing_newline: contents.ends_with('\n'),
+        })
+    }
+
+    pub fn canonicalized_contents(&self) -> String {
+        let mut header_lines = Vec::new();
+        let mut entries = Vec::new();
+        let mut in_header = true;
+
+        for line in &self.lines {
+            let trimmed = line.original.trim();
+
+            if in_header {
+                if line.canonical.is_none() && (trimmed.is_empty() || trimmed.starts_with('#')) {
+                    header_lines.push(trimmed.to_string());
+                    continue;
+                }
+                in_header = false;
+            }
+
+            if let Some(cidr) = line.canonical {
+                entries.push(cidr);
+            }
+        }
+
+        let canonical_entries = canonical_entry_lines(&entries);
+        if !canonical_entries.is_empty() {
+            if !header_lines.is_empty() && !header_lines.last().is_some_and(String::is_empty) {
+                header_lines.push(String::new());
+            }
+            header_lines.extend(canonical_entries);
+        } else if header_lines.last().is_some_and(String::is_empty) {
+            header_lines.pop();
+        }
+
+        let mut normalized = header_lines.join("\n");
+        if !normalized.is_empty() {
+            normalized.push('\n');
+        }
+        normalized
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlocklistLine {
+    pub original: String,
+    pub canonical: Option<CanonicalCidr>,
+}
+
+impl BlocklistLine {
+    fn parse(
+        line: &str,
+        line_number: usize,
+        in_header: &mut bool,
+    ) -> Result<Self, InvalidBlocklistLine> {
+        let trimmed = line.trim();
+        let canonical = if *in_header {
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                None
+            } else {
+                *in_header = false;
+                parse_blocklist_entry(line, line_number)?
+            }
+        } else {
+            parse_blocklist_entry(line, line_number)?
+        };
+
+        Ok(Self {
+            original: line.to_string(),
+            canonical,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BanClassification {
     Added(CanonicalCidr),
@@ -103,49 +196,7 @@ pub fn exact_match_indexes(
 }
 
 pub fn canonicalize_blocklist(contents: &str) -> Result<String, InvalidBlocklistLine> {
-    let mut lines = Vec::new();
-    let mut entries = Vec::new();
-    let mut in_header = true;
-
-    for (idx, line) in contents.lines().enumerate() {
-        let trimmed = line.trim();
-
-        if in_header {
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                lines.push(trimmed.to_string());
-                continue;
-            }
-            in_header = false;
-        }
-
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-
-        let Some(cidr) = parse_ip_cidr_strict(trimmed) else {
-            return Err(InvalidBlocklistLine {
-                line_number: idx + 1,
-                content: line.to_string(),
-            });
-        };
-        entries.push(cidr);
-    }
-
-    let canonical_entries = canonical_entry_lines(&entries);
-    if !canonical_entries.is_empty() {
-        if !lines.is_empty() && !lines.last().is_some_and(String::is_empty) {
-            lines.push(String::new());
-        }
-        lines.extend(canonical_entries);
-    } else if lines.last().is_some_and(String::is_empty) {
-        lines.pop();
-    }
-
-    let mut normalized = lines.join("\n");
-    if !normalized.is_empty() {
-        normalized.push('\n');
-    }
-    Ok(normalized)
+    Ok(BlocklistDocument::parse(contents)?.canonicalized_contents())
 }
 
 fn canonical_entry_lines(entries: &[CanonicalCidr]) -> Vec<String> {
@@ -159,14 +210,31 @@ fn canonical_entry_lines(entries: &[CanonicalCidr]) -> Vec<String> {
     canonical
 }
 
+fn parse_blocklist_entry(
+    line: &str,
+    line_number: usize,
+) -> Result<Option<CanonicalCidr>, InvalidBlocklistLine> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return Ok(None);
+    }
+
+    parse_ip_cidr_strict(trimmed)
+        .map(Some)
+        .ok_or_else(|| InvalidBlocklistLine {
+            line_number,
+            content: line.to_string(),
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use crate::core::network::{CanonicalCidr, parse_ip_cidr_non_strict};
 
     use super::{
-        BanClassification, BlocklistTargetParseError, InvalidBlocklistLine, canonicalize_blocklist,
-        classify_ban_targets, exact_match_indexes, parse_blocklist_target, plan_unban,
-        plan_unban_many,
+        BanClassification, BlocklistDocument, BlocklistTargetParseError, InvalidBlocklistLine,
+        canonicalize_blocklist, classify_ban_targets, exact_match_indexes, parse_blocklist_target,
+        plan_unban, plan_unban_many,
     };
 
     #[test]
@@ -285,5 +353,19 @@ mod tests {
             parse_blocklist_target("203.0.113.7 trailing-junk"),
             Err(BlocklistTargetParseError::Invalid)
         );
+    }
+
+    #[test]
+    fn parse_document_preserves_original_lines_for_mutation_workflows() {
+        let document =
+            BlocklistDocument::parse("# header\n203.0.113.0/24\n# comment\n\n").expect("parse");
+
+        assert_eq!(document.lines.len(), 4);
+        assert_eq!(document.lines[0].original, "# header");
+        assert_eq!(document.lines[1].original, "203.0.113.0/24");
+        assert_eq!(document.lines[2].original, "# comment");
+        assert_eq!(document.lines[3].original, "");
+        assert!(document.trailing_newline);
+        assert!(document.has_content);
     }
 }

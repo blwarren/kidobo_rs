@@ -266,7 +266,7 @@ fn load_internal_blocklist(path: &Path) -> Result<Vec<CanonicalCidr>, KidoboErro
         return Ok(Vec::new());
     }
 
-    let blocklist = crate::adapters::blocklist_file::BlocklistFile::load(path)?;
+    let blocklist = crate::adapters::blocklist_file::BlocklistDocument::load(path)?;
     Ok(blocklist
         .lines
         .iter()

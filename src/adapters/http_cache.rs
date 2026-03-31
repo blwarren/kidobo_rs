@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Once;
@@ -11,13 +10,12 @@ use reqwest::header::{ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED, USE
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::adapters::cached_fetch::{
+    CachedFetchRequest, read_optional_json_lossy, run_cached_fetch, write_bytes_atomic_in_cache,
+    write_json_pretty_atomic,
+};
 use crate::adapters::hash::sha256_hex;
-use crate::adapters::http_fetch::{
-    dispatch_conditional_fetch_result, fetch_with_conditional_cache,
-};
-use crate::adapters::limited_io::{
-    read_to_string_with_limit, write_bytes_atomic, write_string_atomic,
-};
+use crate::adapters::limited_io::{read_to_string_with_limit, write_string_atomic};
 use crate::core::network::{CanonicalCidr, parse_ip_cidr_non_strict, parse_lines_non_strict};
 
 pub const DEFAULT_MAX_HTTP_BODY_BYTES: usize = 32 * 1024 * 1024;
@@ -195,9 +193,6 @@ fn read_response_body_capped(
 
 #[derive(Debug, Error)]
 pub enum HttpCacheError {
-    #[error("failed to create cache directory {path}: {reason}")]
-    CreateCacheDir { path: PathBuf, reason: String },
-
     #[error("failed to write iplist cache {path}: {reason}")]
     WriteIplist { path: PathBuf, reason: String },
 
@@ -209,12 +204,6 @@ pub enum HttpCacheError {
 
     #[error("failed to read iplist cache {path}: {reason}")]
     ReadIplist { path: PathBuf, reason: String },
-
-    #[error("failed to read metadata cache {path}: {reason}")]
-    ReadMetadata { path: PathBuf, reason: String },
-
-    #[error("failed to parse metadata cache {path}: {reason}")]
-    ParseMetadata { path: PathBuf, reason: String },
 }
 
 pub fn url_hash_prefix(url: &str) -> String {
@@ -293,24 +282,24 @@ pub fn fetch_iplist_with_cache(
     let (cached_etag, cached_last_modified) = cached_meta.as_ref().map_or((None, None), |meta| {
         (meta.etag.clone(), meta.last_modified.clone())
     });
-
-    let result = fetch_with_conditional_cache(
-        client,
-        url,
-        max_bytes,
-        cached_etag,
-        cached_last_modified,
-        cached_networks.is_some(),
-        "remote source",
-    );
     let cached_networks_for_not_modified = cached_networks.clone();
     let cached_meta_for_not_modified = cached_meta.clone();
     let cached_networks_for_fallback = cached_networks.clone();
     let cached_meta_for_fallback = cached_meta.clone();
 
-    dispatch_conditional_fetch_result(
-        result,
-        &format!("remote fetch returned network outcome without response for {url}"),
+    run_cached_fetch(
+        CachedFetchRequest {
+            client,
+            url,
+            max_body_bytes: max_bytes,
+            cached_etag,
+            cached_last_modified,
+            has_usable_cache: cached_networks.is_some(),
+            log_subject: "remote source",
+            missing_response_warning: &format!(
+                "remote fetch returned network outcome without response for {url}"
+            ),
+        },
         || {
             if let Some(networks) = cached_networks_for_not_modified {
                 return Ok(CachedIplist {
@@ -394,14 +383,7 @@ fn persist_cache(
     raw: &[u8],
     meta: &RemoteCacheMetadata,
 ) -> Result<(), HttpCacheError> {
-    if let Some(parent) = paths.iplist_path.parent() {
-        fs::create_dir_all(parent).map_err(|err| HttpCacheError::CreateCacheDir {
-            path: parent.to_path_buf(),
-            reason: err.to_string(),
-        })?;
-    }
-
-    write_bytes_atomic(&paths.raw_path, raw).map_err(|err| HttpCacheError::WriteRaw {
+    write_bytes_atomic_in_cache(&paths.raw_path, raw).map_err(|err| HttpCacheError::WriteRaw {
         path: paths.raw_path.clone(),
         reason: err.to_string(),
     })?;
@@ -411,13 +393,7 @@ fn persist_cache(
         reason: err.to_string(),
     })?;
 
-    let meta_json =
-        serde_json::to_vec_pretty(meta).map_err(|err| HttpCacheError::WriteMetadata {
-            path: paths.meta_path.clone(),
-            reason: err.to_string(),
-        })?;
-
-    write_bytes_atomic(&paths.meta_path, &meta_json).map_err(|err| {
+    write_json_pretty_atomic(&paths.meta_path, meta).map_err(|err| {
         HttpCacheError::WriteMetadata {
             path: paths.meta_path.clone(),
             reason: err.to_string(),
@@ -457,41 +433,12 @@ fn read_optional_iplist_networks(
     Ok(Some(parse_cached_iplist(&iplist)))
 }
 
-fn read_optional_metadata(
-    paths: &CachePaths,
-) -> Result<Option<RemoteCacheMetadata>, HttpCacheError> {
-    if !paths.meta_path.exists() {
-        return Ok(None);
-    }
-
-    let contents =
-        read_to_string_with_limit(&paths.meta_path, MAX_METADATA_READ_BYTES).map_err(|err| {
-            HttpCacheError::ReadMetadata {
-                path: paths.meta_path.clone(),
-                reason: err.to_string(),
-            }
-        })?;
-
-    let metadata =
-        serde_json::from_str(&contents).map_err(|err| HttpCacheError::ParseMetadata {
-            path: paths.meta_path.clone(),
-            reason: err.to_string(),
-        })?;
-
-    Ok(Some(metadata))
-}
-
 fn read_optional_metadata_lossy(paths: &CachePaths) -> Option<RemoteCacheMetadata> {
-    match read_optional_metadata(paths) {
-        Ok(metadata) => metadata,
-        Err(err) => {
-            warn!(
-                "failed to read remote metadata cache {}: {err}",
-                paths.meta_path.display()
-            );
-            None
-        }
-    }
+    read_optional_json_lossy(
+        &paths.meta_path,
+        MAX_METADATA_READ_BYTES,
+        "remote metadata cache",
+    )
 }
 
 fn cache_fallback(

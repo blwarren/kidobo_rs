@@ -5,9 +5,9 @@ use std::time::UNIX_EPOCH;
 use log::warn;
 
 use crate::adapters::limited_io::{read_to_string_with_limit, write_string_atomic};
+pub use crate::core::blocklist::BlocklistDocument;
 use crate::core::blocklist::InvalidBlocklistLine;
-pub use crate::core::blocklist::canonicalize_blocklist;
-use crate::core::network::{CanonicalCidr, parse_ip_cidr_strict};
+use crate::core::blocklist::canonicalize_blocklist;
 use crate::error::KidoboError;
 
 pub const BLOCKLIST_READ_LIMIT: usize = 16 * 1024 * 1024;
@@ -164,14 +164,7 @@ fn write_blocklist_fast_state(
     write_string_atomic(path, &state.serialize())
 }
 
-#[derive(Debug)]
-pub struct BlocklistFile {
-    pub lines: Vec<BlocklistLine>,
-    pub has_content: bool,
-    pub trailing_newline: bool,
-}
-
-impl BlocklistFile {
+impl BlocklistDocument {
     pub fn load(path: &Path) -> Result<Self, KidoboError> {
         if !path.exists() {
             return Ok(Self {
@@ -187,77 +180,8 @@ impl BlocklistFile {
                 reason: err.to_string(),
             }
         })?;
-
-        let mut lines = Vec::new();
-        let mut in_header = true;
-        for (idx, line) in contents.lines().enumerate() {
-            lines.push(
-                BlocklistLine::new(line, idx + 1, &mut in_header)
-                    .map_err(|err| map_invalid_blocklist_line(path, err))?,
-            );
-        }
-
-        Ok(Self {
-            lines,
-            has_content: !contents.is_empty(),
-            trailing_newline: contents.ends_with('\n'),
-        })
+        BlocklistDocument::parse(&contents).map_err(|err| map_invalid_blocklist_line(path, err))
     }
-
-    #[cfg(test)]
-    pub fn contains_canonical(&self, canonical: CanonicalCidr) -> bool {
-        self.lines
-            .iter()
-            .any(|line| line.canonical == Some(canonical))
-    }
-}
-
-#[derive(Debug)]
-pub struct BlocklistLine {
-    pub original: String,
-    pub canonical: Option<CanonicalCidr>,
-}
-
-impl BlocklistLine {
-    fn new(
-        line: &str,
-        line_number: usize,
-        in_header: &mut bool,
-    ) -> Result<Self, InvalidBlocklistLine> {
-        let trimmed = line.trim();
-        let canonical = if *in_header {
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                None
-            } else {
-                *in_header = false;
-                parse_local_blocklist_entry(line, line_number)?
-            }
-        } else {
-            parse_local_blocklist_entry(line, line_number)?
-        };
-
-        Ok(Self {
-            original: line.to_string(),
-            canonical,
-        })
-    }
-}
-
-fn parse_local_blocklist_entry(
-    line: &str,
-    line_number: usize,
-) -> Result<Option<CanonicalCidr>, InvalidBlocklistLine> {
-    let trimmed = line.trim();
-    if trimmed.is_empty() || trimmed.starts_with('#') {
-        return Ok(None);
-    }
-
-    parse_ip_cidr_strict(trimmed)
-        .map(Some)
-        .ok_or_else(|| InvalidBlocklistLine {
-            line_number,
-            content: line.to_string(),
-        })
 }
 
 fn map_invalid_blocklist_line(path: &Path, err: InvalidBlocklistLine) -> KidoboError {
