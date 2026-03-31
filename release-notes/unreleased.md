@@ -1,31 +1,3 @@
-### Fixed
-
-- `kidobo sync` now fails on invalid persisted local blocklist entries with the
-  file path, line number, and offending content instead of silently dropping
-  malformed non-header lines during normalization.
-- `kidobo init` now generates default systemd units only when `kidobo` is
-  installed at `/usr/local/bin/kidobo` or `/usr/bin/kidobo`, preventing broken
-  `ExecStart` entries from arbitrary build paths.
-- Remote feed, GitHub meta, and ASN cache writes now use atomic replacement,
-  and cache readers now reject hash-mismatched or malformed cached content
-  instead of silently reusing partial or corrupted cache state.
-
 ### Changed
 
-- `kidobo ban` and `kidobo unban` now support `--file <PATH>` for batch
-  IP/CIDR updates using one target per line, with invalid file inputs rejected
-  before any local blocklist write occurs.
-- `kidobo ban`, `kidobo unban`, and file-driven blocklist target loading now
-  reject trailing junk after an IP/CIDR target instead of silently accepting
-  only the first token.
-- `kidobo analyze overlap` is now strictly read-only again; the
-  `--apply-fully-covered-local` option has been removed.
-- `kidobo doctor` is now read-only by default and no longer creates cache
-  directories or probe files while checking cache path readiness.
-- `kidobo lookup` remains offline-only and no longer requires a valid config
-  file to inspect the local blocklist and cached remote sources.
-- `KIDOBO_ALLOW_REPO_CONFIG_FALLBACK` has been removed. Use `KIDOBO_ROOT` for
-  alternate config/data/cache roots.
-- Large local blocklist rewrite paths now avoid extra retained-line copies,
-  reducing peak memory use and improving rewrite speed for large `ban`/`unban`
-  and related cleanup operations.
+- TODO

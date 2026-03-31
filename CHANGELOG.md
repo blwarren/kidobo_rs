@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- TODO
+
+## [0.10.0] - 2026-03-31
+
 ### Fixed
 
 - `kidobo sync` now fails on invalid persisted local blocklist entries with the
